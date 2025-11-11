@@ -1,0 +1,56 @@
+import json
+from pathlib import Path
+from datetime import datetime
+
+current_dir = Path(__file__).resolve().parent
+file_path = current_dir / "ipfs_locator_zone.json"
+
+ipfs_locator = {
+    "bafybeigd123abc456xyz789def111": {
+        "node_id": "node_01",
+        "node_address": "10.0.0.21",
+        "gateway_endpoint": "http://10.0.0.21:8080/api/v0/cat?arg=bafybeigd123abc456xyz789def111",
+        "replica_nodes": [
+            {
+                "node_id": "node_02",
+                "node_address": "10.0.0.22",
+                "gateway_endpoint": "http://10.0.0.22:8080/api/v0/cat?arg=bafybeigd123abc456xyz789def111"
+            },
+            {
+                "node_id": "node_03",
+                "node_address": "10.0.0.23",
+                "gateway_endpoint": "http://10.0.0.23:8080/api/v0/cat?arg=bafybeigd123abc456xyz789def111"
+            }
+        ],
+        "last_verified": "2025-11-07T18:20:00Z",
+        "status": "available"
+    },
+    "bafybeigd999def222uvw333opq444": {
+        "node_id": "node_02",
+        "node_address": "10.0.0.22",
+        "gateway_endpoint": "http://10.0.0.22:8080/api/v0/cat?arg=bafybeigd999def222uvw333opq444",
+        "replica_nodes": [],
+        "last_verified": "2025-11-07T18:25:00Z",
+        "status": "available"
+    },
+    "bafybeigd555aaa777rrr888ttt999": {
+        "node_id": "node_03",
+        "node_address": "10.0.0.23",
+        "gateway_endpoint": "http://10.0.0.23:8080/api/v0/cat?arg=bafybeigd555aaa777rrr888ttt999",
+        "replica_nodes": [
+            {
+                "node_id": "node_01",
+                "node_address": "10.0.0.21",
+                "gateway_endpoint": "http://10.0.0.21:8080/api/v0/cat?arg=bafybeigd555aaa777rrr888ttt999"
+            }
+        ],
+        "last_verified": "2025-11-07T18:28:00Z",
+        "status": "available"
+    }
+}
+
+
+with open(file_path, "w", encoding="utf-8") as f:
+    json.dump(ipfs_locator, f, indent=4, ensure_ascii=False)
+
+print("Off-Chain IPFS Mapping stored to: ", file_path.name)
