@@ -25,11 +25,11 @@ Paper/
 
 <p align="center"><font size="5"><b>Links</b></font></p>
 
-## [1. Background](./Paper/1.Background/)
-## [2. Current Solution](./Paper/2.CurrentSituation/)
-## [3. Case Study](./Paper/3.CaseStudy/)
-## [4. Risk Identification & Analysis](./Paper/4.RiskIdentificationAnalysis/)
-## [5. Solution Architecture](./Paper/5.SolutionArchitecture/)
-## [6. Financial Evaluation](./Paper/6.FinancialEvaluation/)
-## [7. Summary & Conclusion](./Paper/7.SummaryConclusion/)
-## [8. References](./Paper/8.References/)
+## [1. Background](./1.Background/)
+## [2. Current Solution](./2.CurrentSituation/)
+## [3. Case Study](./3.CaseStudy/)
+## [4. Risk Identification & Analysis](./4.RiskIdentificationAnalysis/)
+## [5. Solution Architecture](./5.SolutionArchitecture/)
+## [6. Financial Evaluation](./6.FinancialEvaluation/)
+## [7. Summary & Conclusion](./7.SummaryConclusion/)
+## [8. References](./8.References/)
