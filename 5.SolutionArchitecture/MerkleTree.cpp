@@ -154,6 +154,271 @@ class MerkleTree
         Traverse(tree->left);
         Traverse(tree->right);
     }
+
+    void Traverse2(const Node* tree)
+    {
+        if(!tree) return;
+        Traverse2(tree->left);
+        Traverse2(tree->right);
+        cout << tree->hashValue << endl;
+    }
+
+    void UpdateHash(Node *leftN)
+    {
+        Node *parentN = leftN->parent, *rightN = nullptr;
+        while(parentN)
+        {
+            if(parentN->left == leftN) rightN = parentN->right;
+            else
+            {
+                rightN = leftN;
+                leftN = parentN->left;
+            }
+
+            parentN->hashValue = SHA256(leftN->hashValue + rightN->hashValue);
+            leftN = parentN;
+            parentN = parentN->parent;
+        }
+    }
+
+    // Append a new block into the tree
+    bool Append(string strBlock)
+    {
+        if(!strBlock.length())
+        {
+            cout << "Error: Empty block" << endl;
+            return false;
+        }
+
+        blockNo++;
+        Node *parentN = nullptr, *leftN = nullptr, *rightN = nullptr;
+           
+        // if it is a complete tree, add a new subtree and add one more level.
+        if(blockNo == pow(2, levels))
+        {
+            cout << "1: blockNo: " << blockNo << "\tlevels: " << levels << endl;
+            // Make a new root node.
+            parentN = new Node;
+            parentN->value = parentN->hashValue = "";
+            parentN->blockID = -1;
+            parentN->left = root;
+            parentN->right = parentN->parent = nullptr;
+            root->parent = parentN;
+            root = parentN;
+
+            parentN = new Node;
+            parentN->value = parentN->hashValue = "";
+            parentN->blockID = -1;
+            parentN->left = parentN->right = nullptr;
+            parentN->parent = root;
+            root->parent = parentN;
+            root->right = parentN;
+
+            // Make levels number of null nodes to make a new path
+            for(int i = 0; i < levels; i++)
+            {
+                leftN = new Node;
+                leftN->value = "";
+                leftN->hashValue = SHA256("NULL");
+                leftN->blockID = -1;
+                leftN->left = leftN->right = nullptr;
+
+                rightN = new Node;
+                rightN->blockID = -1;
+                rightN->value = "";
+                rightN->hashValue = SHA256("NULL");
+                rightN->left = rightN->right = nullptr;
+                
+                parentN->left = leftN;
+                parentN->right = rightN;
+                leftN->parent = rightN->parent = parentN;
+                parentN = leftN;
+            }
+            
+            leftN->blockID = blockNo;
+            leftN->hashValue = SHA256(strBlock);
+            levels++;
+        }
+
+        else
+        {
+            parentN = root;
+            int tempN = blockNo;
+            if(blockNo % 2)
+            {
+                cout << "2: blockNo: " << blockNo << endl;
+                for(int i=levels-1; i>=0; i--)
+                {
+                    if(tempN < pow(2, i)) parentN = parentN->left; // Go left
+                    else
+                    {
+                        tempN -= pow(2, i);
+                        parentN = parentN->right;
+                    }
+                }
+
+                leftN = parentN;
+                leftN->blockID = blockNo;
+                leftN->hashValue = SHA256(strBlock);
+            }
+
+            else
+            {
+                cout << "3: blockNo: " << blockNo << endl;
+                int i = levels;
+                for(; i >=0; i--)
+                {
+                    if(tempN < pow(2, i-1)) 
+                    {
+                        if(parentN->left) parentN = parentN->left; // Go left
+                        else break;
+                    }
+
+                    else
+                    {
+                        tempN -= pow(2, i-1);
+                        if(parentN->right) parentN = parentN->right;
+                        else break;
+                    }
+                }
+            
+                // Now add the required part of the path
+                while(i>0)
+                {
+                    leftN = new Node;
+                    leftN->blockID = -1;
+                    leftN->value = leftN->hashValue = "";
+                    leftN->left = leftN->right = nullptr;
+
+                    rightN = new Node;
+                    rightN->blockID = -1;
+                    rightN->value = "";
+                    rightN->hashValue = SHA256("NULL");
+                    rightN->left = rightN->right = nullptr;
+                
+                    parentN->left = leftN;
+                    parentN->right = rightN;
+                    leftN->parent = rightN->parent = parentN;
+                    parentN = leftN;
+                    i--;
+                }
+                leftN->blockID = blockNo;
+                leftN->hashValue = SHA256(strBlock);
+            }
+        }
+
+        // Now update the hash values from bottom up
+        UpdateHash(leftN);
+        return false;
+    }
+
+    bool ReadBlock(int n)
+    {
+        if(n > blockNo)
+        {
+            cout << "Not Found" << endl;
+            return false;
+        }
+
+        int tempN = n;
+        Node * tree = root;
+        for(int i = levels; i>=0; i--)
+        {
+            if(tempN < pow(2, i-1))
+            {
+                if(tree->left) tree = tree->left; // Go left
+                else
+                {
+                    cout << "Found: " << tree->hashValue << endl;
+                    return true;
+                }
+            }
+
+            else
+            {
+                tempN -= pow(2, i-1);
+                if(tree->right) tree = tree->right;
+                else
+                {
+                    cout << "Found: " << tree->hashValue << endl;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // When a block is requested, find it, and return it with a proof of membership
+    string ProverBlock(int n)
+    {
+        string proof("");
+        if(n > blockNo)
+        {
+            cout << "Not Found" << endl;
+            return proof;
+        }
+
+        int tempN = n;
+        Node *tree = root;
+        for(int i = levels; i>=0; i--)
+        {
+            if(tempN < pow(2, i-1))
+            {
+                if(tree->left) tree = tree->left; // Go left
+                else cout << "Found: " << tree->hashValue << endl;
+            }
+
+            else
+            {
+                tempN -= pow(2, i-1);
+                if(tree->right) tree = tree->right;
+                else cout << "Found: " << tree->hashValue << endl;
+            }
+        }
+
+        // Now prepare the proof
+        bool bFirst = true;
+        Node *leftN = tree, *parentN = leftN->parent, *rightN = nullptr;
+        while(parentN)
+        {
+            if(parentN->left == leftN)
+            {
+                rightN = parentN->right;
+                if(bFirst)
+                {
+                    proof += "L:";
+                    proof += leftN->hashValue;
+                    bFirst = false;
+                }
+                proof += "R:";
+                proof += rightN->hashValue;
+            }
+
+            else
+            {
+                rightN = leftN;
+                leftN = parentN->left;
+                if(bFirst)
+                {
+                    proof += "R:";
+                    proof += rightN->hashValue;
+                    bFirst = false;
+                }
+                proof += "L:";
+                proof += leftN->hashValue;
+            }
+            leftN = parentN;
+            parentN = parentN->parent;
+        }
+        return proof;
+    }
+
+    // Verify if the root' is the same as the Merkle Root
+    bool Verify(string proof)
+    {
+        return false;
+    }
 };
 
 int main()
