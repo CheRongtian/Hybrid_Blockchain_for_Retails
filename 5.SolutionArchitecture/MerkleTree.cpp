@@ -505,3 +505,30 @@ int main()
     while(menu(T));
     return 0;
 }
+
+/*
+1. Append() assumes the tree is a complete binary tree
+It relies on every left/right child existing; 
+it fails when the initial tree (built from input) is not complete, leading to null pointer access.
+
+2. levels and blockNo are calculated incorrectly
+The computed levels do not match the real tree height; 
+path traversal during append becomes incorrect and leads to invalid pointer access.
+
+3. Append algorithm is hard-coded and non-general
+It works only for perfect binary trees; 
+it breaks as soon as the tree structure deviates, such as with small or uneven input.
+
+4. Proof format is non-standard
+It mixes raw values and hashes; 
+it is incompatible with proper Merkle proof formats used in real systems.
+
+5. No boundary or safety checks
+Null pointers, incomplete paths, empty input, and malformed proofs are never validated; 
+errors lead directly to crashes.
+
+6. Memory is never freed
+All nodes allocated with new are leaked; 
+acceptable in a demo but a clear flaw in implementation.
+
+*/
