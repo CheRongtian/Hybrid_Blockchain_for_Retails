@@ -417,11 +417,91 @@ class MerkleTree
     // Verify if the root' is the same as the Merkle Root
     bool Verify(string proof)
     {
-        return false;
+        string info(""), strHash(""), strTemp("");
+        int index = 0, n = proof.length();
+        // Read the first 2 characters
+        info = proof.substr(0, 2);
+        index = proof.find((info=="L:") ? "R:" : "L:", 2);
+        strTemp = proof.substr(2, (index == string::npos) ? (n - 2): (index - 2));
+        strHash = SHA256(strTemp);
+
+        while(index < n)
+        {
+            info = proof.substr(index, 2);
+            index += 2;
+            strTemp = proof.substr(index, HASHSIZE);
+            
+            if(info == "L:") strHash = SHA256(strTemp + strHash);
+            else strHash = SHA256(strHash + strTemp);
+
+            index += HASHSIZE;
+        }
+
+        if(strHash == root->hashValue) cout << "\n\n\t\t Verified" << endl << endl;
+        else cout << "\n\n\t\t Not Verified" << endl << endl;
+
+        return (strHash == root->hashValue);
     }
 };
 
+bool menu(MerkleTree &T)
+{
+    cout << endl << endl << "\tA)dd a new block" << endl;
+    cout << "\tR)equest a block" << endl;
+    cout << "\tV)erify the proof" << endl;
+    cout << "\tT)raverse the tree" << endl;
+    cout << "\tQ)uit" << endl;
+    cout << endl << "\tEnter your command: ";
+
+    string strBlock("");
+    string strResult = "";
+    int nBlock = -1;
+    char ch = ' ';
+    cin.get(ch);
+    while(ch == 10) cin.get(ch);
+    switch(ch)
+    {
+        case 'a':
+        case 'A':
+            cout << "\n\tEnter new block text: ";
+            cin >> strBlock;
+            T.Append(strBlock);
+            return true;
+        
+        case 'v':
+        case 'V':
+            T.Verify(strResult);
+            return true;
+        
+        case 't':
+        case 'T':
+            T.PrintTree();
+            return true;
+        
+        case 'r':
+        case 'R':
+            cout << "\n\tEnter block no: ";
+            cin >> nBlock;
+            while(nBlock != -1)
+            {
+                strResult = T.ProverBlock(nBlock);
+                cout << strResult << endl;
+                cout << "\n\tEnter block no: ";
+                cin >> nBlock;
+            }
+            return true;
+
+        case 'q':
+        case 'Q':
+            return false;
+    }
+    return false;
+}
+
 int main()
 {
+    MerkleTree T(70); // Give the block size (here it is 70 bytes)
+    T.Build("inp.txt"); // Give you input file name
+    while(menu(T));
     return 0;
 }
