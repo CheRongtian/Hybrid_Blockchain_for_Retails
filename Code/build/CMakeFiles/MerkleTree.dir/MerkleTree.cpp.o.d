@@ -1,5 +1,5 @@
 CMakeFiles/MerkleTree.dir/MerkleTree.cpp.o: \
-  /Users/cherongtian/Desktop/Blockchain\ Structure/5.SolutionArchitecture/MerkleTree.cpp \
+  /Users/cherongtian/Desktop/Blockchain\ Structure/Code/MerkleTree.cpp \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/iostream \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__config \
   /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1/__config_site \

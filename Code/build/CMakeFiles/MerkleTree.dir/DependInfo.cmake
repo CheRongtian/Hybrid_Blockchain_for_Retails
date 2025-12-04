@@ -8,7 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/MerkleTree.cpp" "CMakeFiles/MerkleTree.dir/MerkleTree.cpp.o" "gcc" "CMakeFiles/MerkleTree.dir/MerkleTree.cpp.o.d"
+  "/Users/cherongtian/Desktop/Blockchain Structure/Code/MerkleTree.cpp" "CMakeFiles/MerkleTree.dir/MerkleTree.cpp.o" "gcc" "CMakeFiles/MerkleTree.dir/MerkleTree.cpp.o.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

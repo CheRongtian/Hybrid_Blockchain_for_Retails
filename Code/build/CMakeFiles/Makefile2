@@ -54,10 +54,10 @@ RM = /opt/homebrew/bin/cmake -E rm -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = "/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture"
+CMAKE_SOURCE_DIR = "/Users/cherongtian/Desktop/Blockchain Structure/Code"
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = "/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/build"
+CMAKE_BINARY_DIR = "/Users/cherongtian/Desktop/Blockchain Structure/Code/build"
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -85,14 +85,14 @@ clean: CMakeFiles/MerkleTree.dir/clean
 CMakeFiles/MerkleTree.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/MerkleTree.dir/build.make CMakeFiles/MerkleTree.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/MerkleTree.dir/build.make CMakeFiles/MerkleTree.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/build/CMakeFiles" --progress-num=1,2 "Built target MerkleTree"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/Users/cherongtian/Desktop/Blockchain Structure/Code/build/CMakeFiles" --progress-num=1,2 "Built target MerkleTree"
 .PHONY : CMakeFiles/MerkleTree.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/MerkleTree.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start "/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/build/CMakeFiles" 2
+	$(CMAKE_COMMAND) -E cmake_progress_start "/Users/cherongtian/Desktop/Blockchain Structure/Code/build/CMakeFiles" 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/MerkleTree.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start "/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/build/CMakeFiles" 0
+	$(CMAKE_COMMAND) -E cmake_progress_start "/Users/cherongtian/Desktop/Blockchain Structure/Code/build/CMakeFiles" 0
 .PHONY : CMakeFiles/MerkleTree.dir/rule
 
 # Convenience name for target.
@@ -102,7 +102,7 @@ MerkleTree: CMakeFiles/MerkleTree.dir/rule
 # codegen rule for target.
 CMakeFiles/MerkleTree.dir/codegen:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/MerkleTree.dir/build.make CMakeFiles/MerkleTree.dir/codegen
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/Users/cherongtian/Desktop/Blockchain Structure/5.SolutionArchitecture/build/CMakeFiles" --progress-num=1,2 "Finished codegen for target MerkleTree"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir="/Users/cherongtian/Desktop/Blockchain Structure/Code/build/CMakeFiles" --progress-num=1,2 "Finished codegen for target MerkleTree"
 .PHONY : CMakeFiles/MerkleTree.dir/codegen
 
 # clean rule for target.
