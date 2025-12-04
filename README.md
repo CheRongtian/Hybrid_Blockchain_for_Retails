@@ -1,5 +1,21 @@
 # Hybrid-Chain Design Prototype
-## Code:
+```css
+Project/
+│
+└── Code/
+│   ├── MerkleTree.cpp
+│   ├── To be continued ......
+│   └── build/
+│       ├── MerkleTree
+│       ├── ......
+│       └──inp.txt
+└── Content/
+    ├── GeneralDesign.drawio
+    ├── OverallStructure.drawio
+    ├── PrivateChainExample.drawio
+    └── HybridChainExample.drawio
+```
+## Code
 ### Merkle Tree
 
 C++ 17 and OpenSSL to implement a foundamental Merkle Tree.
@@ -19,7 +35,7 @@ After the executable is generated:
 ./MerkleTree
 ```
 
-#### Input:
+#### Input
 During execution, the program reads:
 ```bash
 inp.txt
@@ -49,7 +65,7 @@ So you have no other choice😏, unless you change it(but what do you want to do
 
 Therefore, the file must exist in the directory where the executable is run.
 
-#### Menu:
+#### Menu
 After launching, the following menu appears:
 ```
 A)dd a new block
@@ -128,3 +144,5 @@ acceptable in a demo but a clear flaw in implementation.
 ```
 
 Optimization is on its way 🧯 (I hope so 😆)
+
+## Content
