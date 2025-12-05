@@ -29,6 +29,23 @@ class MerkleTree
         levels = 0;
         blockNo = -1;
     }
+
+    // Free the whole tree when the obj has been destroyed
+    ~MerkleTree()
+    {
+        Free(root);
+        root = nullptr;
+    }
+
+    // Recursively free memory
+    void Free(Node *t)
+    {
+        if(!t) return;
+        Free(t->left); // free left child
+        Free(t->right); // free right child
+        delete t;
+    }
+
     string SHA256(const string strIn)
     {
         uchar hash_buf[SHA256_DIGEST_LENGTH];
