@@ -136,7 +136,7 @@ it is incompatible with proper Merkle proof formats used in real systems.
 Null pointers, incomplete paths, empty input, and malformed proofs are never validated; 
 errors lead directly to crashes.
 
-6. Memory is never freed
+6. Memory is never freed (This one has done, I will use smart pointer later ƪ(˘⌣˘)ʃ )
 All nodes allocated with new are leaked; 
 acceptable in a demo but a clear flaw in implementation.
 
@@ -144,5 +144,6 @@ acceptable in a demo but a clear flaw in implementation.
 ```
 
 Optimization is on its way 🧯 (I hope so 😆)
+- ☝️🤓12.05: I found that the program is blocking on input, after entering A in the panel, not quite sure the problem, I may need to double check the logic😭
 
 ## Content

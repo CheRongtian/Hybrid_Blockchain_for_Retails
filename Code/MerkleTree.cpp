@@ -544,8 +544,4 @@ it is incompatible with proper Merkle proof formats used in real systems.
 Null pointers, incomplete paths, empty input, and malformed proofs are never validated; 
 errors lead directly to crashes.
 
-6. Memory is never freed
-All nodes allocated with new are leaked; 
-acceptable in a demo but a clear flaw in implementation.
-
 */
