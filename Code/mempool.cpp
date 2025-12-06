@@ -53,8 +53,30 @@ int main()
 }
 
 /*
-1. Preallocation:
+1. Preallocation: preallocation + enlarge dynamically have been done? ╰(⇀‸↼)╯
     Initialization, request a continuous memory from the os (size = sizeof chunk * num of chunks)
     Split it into many block_size_ small pieces, using FreeBlock to connect
     FreeBlock == empty, enlarge dynamically
+2. Memory Chunk Management:
+    Allocation: 
+        Lock if Free List not null, 
+        take the head block, 
+        Update Free List head, 
+        Unlock, 
+        Return block address
+
+    Deallocation: 
+        Lock, 
+        Set released chunk as new head, pointing to the original Free List,
+        Update Free List head,
+        Unlock
+
+3. Multithreading: 
+    Single: no mutex, free_list_ max efficiency
+    Low Concurrency: mutex to protect Allocation / Free 
+    High Concurrency: Three-Level Cache 
+        Thread Cache Lock-Free->
+        Central Cache Fine-Grained Locking->
+        Page Cache Global Locking: 
+        no lock contention.
 */

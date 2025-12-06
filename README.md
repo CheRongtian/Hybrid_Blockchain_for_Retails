@@ -4,6 +4,7 @@ Project/
 │
 └── Code/
 │   ├── MerkleTree.cpp
+│   ├── mempool.cpp
 │   ├── To be continued ......
 │   └── build/
 │       ├── MerkleTree
@@ -146,4 +147,10 @@ acceptable in a demo but a clear flaw in implementation.
 Optimization is on its way 🧯 (I hope so 😆)
 - ☝️🤓12.05: I found that the program is blocking on input, after entering A in the panel, not quite sure the problem, I may need to double check the logic😭
 
+### Memory Pool
+#### Why this one?
+- Because this one is very important for miners in Blockchain.
+- The mempool serves as the blockchain’s staging area for unconfirmed transactions. All transactions broadcast to the network enter the mempool before they are written into a block, giving miners a real-time pool of candidates to choose from. It allows miners to prioritize transactions by fee, ensures the network maintains a consistent view of pending activity, and acts as the system’s transaction buffer and scheduler.
+
+Working on now~~ 💪
 ## Content
