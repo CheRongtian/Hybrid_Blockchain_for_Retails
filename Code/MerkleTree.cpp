@@ -163,6 +163,8 @@ class MerkleTree
 
     void Traverse(const Node *tree)
     {
+        if(!tree) return;
+
         if(!tree->left)
         {
             cout << tree->blockID << "\t" <<tree->hashValue << endl;
@@ -228,7 +230,7 @@ class MerkleTree
             parentN->blockID = -1;
             parentN->left = parentN->right = nullptr;
             parentN->parent = root;
-            root->parent = parentN;
+            // root->parent = parentN;
             root->right = parentN;
 
             // Make levels number of null nodes to make a new path
@@ -266,10 +268,21 @@ class MerkleTree
                 cout << "2: blockNo: " << blockNo << endl;
                 for(int i=levels-1; i>=0; i--)
                 {
+                    if(!parentN)
+                    {
+                        cout << "Error: Tree structure mismatch: nullptr. " << endl;
+                        return false;
+                    }
+
                     if(tempN < pow(2, i)) parentN = parentN->left; // Go left
                     else
                     {
                         tempN -= pow(2, i);
+                        if (!parentN->right) 
+                        {
+                            cout << "Error: Path not found." << endl;
+                            return false;
+                        }
                         parentN = parentN->right;
                     }
                 }
@@ -434,13 +447,19 @@ class MerkleTree
     // Verify if the root' is the same as the Merkle Root
     bool Verify(string proof)
     {
+        if (proof.length() < HASHSIZE) 
+        {
+            cout << "Error: Invalid or empty proof. Please Request (R) a block first." << endl;
+            return false;
+        }
+
         string info(""), strHash(""), strTemp("");
         int index = 0, n = proof.length();
         // Read the first 2 characters
         info = proof.substr(0, 2);
         index = proof.find((info=="L:") ? "R:" : "L:", 2);
         strTemp = proof.substr(2, (index == string::npos) ? (n - 2): (index - 2));
-        strHash = SHA256(strTemp);
+        strHash = strTemp;
 
         while(index < n)
         {
@@ -470,12 +489,15 @@ bool menu(MerkleTree &T)
     cout << "\tQ)uit" << endl;
     cout << endl << "\tEnter your command: ";
 
+    static string strResult = "";
+
     string strBlock("");
-    string strResult = "";
+    // string strResult = "";
     int nBlock = -1;
     char ch = ' ';
-    cin.get(ch);
-    while(ch == 10) cin.get(ch);
+    cin >> ch;
+
+    // while(ch == 10) cin.get(ch);
     switch(ch)
     {
         case 'a':
@@ -497,14 +519,20 @@ bool menu(MerkleTree &T)
         
         case 'r':
         case 'R':
-            cout << "\n\tEnter block no: ";
-            cin >> nBlock;
-            while(nBlock != -1)
+            cout << "\n\tEnter block no: (Type 'q' or any letter to return)";
+            // cin >> nBlock;
+            while(cin >>nBlock && nBlock != -1)
             {
                 strResult = T.ProverBlock(nBlock);
                 cout << strResult << endl;
-                cout << "\n\tEnter block no: ";
-                cin >> nBlock;
+                cout << "\n\tEnter block no: (Type 'q' or any letter to return):";
+            }
+
+            if(cin.fail())
+            {
+                cin.clear();
+                string dummy;
+                cin >> dummy;
             }
             return true;
 
@@ -539,9 +567,4 @@ it breaks as soon as the tree structure deviates, such as with small or uneven i
 4. Proof format is non-standard
 It mixes raw values and hashes; 
 it is incompatible with proper Merkle proof formats used in real systems.
-
-5. No boundary or safety checks
-Null pointers, incomplete paths, empty input, and malformed proofs are never validated; 
-errors lead directly to crashes.
-
 */
