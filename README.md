@@ -5,6 +5,7 @@ Project/
 └── Code/
 │   ├── MerkleTree.cpp
 │   ├── mempool.cpp
+│   ├── SNsample.sol /* snapshot demo in Solidity */
 │   ├── To be continued ......
 │   └── build/
 │       ├── MerkleTree
@@ -116,7 +117,7 @@ Structure Overview
     - Supports printing leaf nodes
 
 #### Potential Problems
-Also list in the comment in the code😢:(1~4 seems like not that kind of terrible, so I leave them)
+Also list in the comment in the code😢:(1~4 is acceptable 4 demo version)
 ```cpp
 /*
 1. Append() assumes the tree is a complete binary tree
@@ -139,7 +140,7 @@ it is incompatible with proper Merkle proof formats used in real systems.
 Null pointers, incomplete paths, empty input, and malformed proofs are never validated; 
 errors lead directly to crashes.
 
-6. Memory is never freed (This one has done, I will use smart pointer later ƪ(˘⌣˘)ʃ )
+6. Memory is never freed (This one has done ƪ(˘⌣˘)ʃ )
 All nodes allocated with new are leaked; 
 acceptable in a demo but a clear flaw in implementation.
 
@@ -149,7 +150,7 @@ acceptable in a demo but a clear flaw in implementation.
 Optimization is on its way 🧯 (I hope so 😆) *May generate a vector/array version hhhhh*
 - ☝️🤓12.05: I found that the program is blocking on input, after entering A in the panel, not quite sure the problem, I may need to double check the logic😭
 - 12.07: 
-Conclusion(conclusion generated(translated mostly) with the help of Gemini) of what I did
+Conclusion
 
 |Bug|Causes|Fix|
 |---|---|---|
