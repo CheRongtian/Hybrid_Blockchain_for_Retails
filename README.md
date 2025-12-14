@@ -11,11 +11,14 @@ Project/
 │       ├── MerkleTree
 │       ├── ......
 │       └──inp.txt
-└── Content/
-    ├── GeneralDesign.drawio
-    ├── OverallStructure.drawio
-    ├── PrivateChainExample.drawio
-    └── HybridChainExample.drawio
+└── Architecture/
+│   ├── GeneralDesign.drawio
+│   ├── OverallStructure.drawio
+│   ├── PrivateChainExample.drawio
+│   └── HybridChainExample.drawio
+└── ROI/
+    ├── Precise Mathematical Modeling.md
+    └── Case-based Estimation.md
 ```
 ## Code
 ### Merkle Tree
