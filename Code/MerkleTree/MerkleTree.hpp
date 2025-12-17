@@ -1,4 +1,6 @@
-#pragma once
+#ifndef MERKLETREE_HPP
+#define MERKLETREE_HPP
+
 #include <vector>
 #include <openssl/sha.h>
 #include <fstream>
@@ -59,3 +61,5 @@ class MerkleTree
         bool Verify(std::string proof);
    
 };
+
+#endif
