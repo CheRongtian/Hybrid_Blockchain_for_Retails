@@ -17,6 +17,10 @@ add_executable(MerkleTree
     MerkleTree_Utils.cpp
 )
 
+
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/inp.txt
+     DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
 target_include_directories(MerkleTree PRIVATE ${OPENSSL_INCLUDE_DIR})
 
 target_link_libraries(MerkleTree PRIVATE
