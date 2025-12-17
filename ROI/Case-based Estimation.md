@@ -40,7 +40,7 @@ r = r<sub>f</sub> + π + ρ
 - ρ: Risk Premium<sup>[8]</sup>
 
 
-**Payback**  = $ \text{Payback} = \frac{(M/10000 \sim 9M/10000) - C_5}{(1+r_f + \pi + \rho)^t} \ge C_1 + C_2 + C_3 + C_4 $
+**Payback**  = $\text{Payback} = \frac{(M/10000 \sim 9M/10000) - C_5}{(1+r_f + \pi + \rho)^t} \ge C_1 + C_2 + C_3 + C_4$
 
 [1] https://pos.toasttab.com/blog/on-the-line/how-much-do-grocery-stores-make?srsltid=AfmBOooWJO1Zkku7K4zq7IwO4VB1rtaakBNJRgw3YIwRF5J12IHZ3cWt
 
