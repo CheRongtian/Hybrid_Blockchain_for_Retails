@@ -22,6 +22,7 @@ class MemoryPool
         FreeBlock *free_list_; // free block list head
         vector<void*> pools_; // record all large memory chunk in preallocation (for free)
         mutex mutex_; // Thread-safe lock
+    
     public:
         explicit MemoryPool(size_t block_size, size_t align = 8, size_t prealloc = 1024)
         : align_(align), free_list_(nullptr)
@@ -44,7 +45,15 @@ class MemoryPool
             free_list_ = block->next;
             return block;
         }
-        void Free(void *ptr); // free memory chunk
+        void Free(void *ptr) // free memory chunk
+        {
+            if(!ptr) return;
+            std::lock_guard<std::mutex>lock(mutex_); // safety for threads
+            // insert free chunk into the head of a free linked list
+            FreeBlock *block = static_cast<FreeBlock*>(ptr);
+            block->next = free_list_;
+            free_list_ = block;
+        }
 };
 
 int main()
