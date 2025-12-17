@@ -1,40 +1,99 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-contract SnapshotContract {
+import "@openzeppelin/contracts/access/Ownable.col"; // OpenZeppelin package, Ownable contract
 
-    struct Snapshot { // content for a snapshot
+/* 
+@title Hybrid Supply Chain Snapshot Anchor
+@dev Implements a secure anchor for **Hybrid Supply Chain States**.
+
+CORE FUNCTION:
+Cryptographically binds the on-chain "Verifiable Proof" (Merkle Root) 
+with the off-chain "Data Availability" (IPFS CIDs) and Business Context (Batch Range).
+ */
+
+// SnapShotContract inherit ability of Ownable
+contract SnapShotContract is Ownable {
+
+    // event: cheap for storing history snapshot
+    // emit history records, external audit, web ... can read them
+    event SnapShotAnchored(
+        uint256 indexed snapshotID,
+        bytes32 rootHash,
+        string IPFSCID,
+        string batchRange,
+        uint256 timestamp,
+        address operator
+    );
+
+    struct Snapshot {
         uint256 timestamp;
         bytes32 rootHash;
-        string ipfsCid;
-        address signature;
+        string IPFSCID;
+        string batchRange;
+        address operato;
     }
 
-    Snapshot[] public snapshots;
+    // statue var: permanent date in hard disk of blockchain
+    Snapshot public latestSnapshot; // only store the latest one
+    uint256 public snapshotCount; // count for # of records
 
-    function anchorSnapshot(bytes32 rootHash, string memory ipfsCid) public { // add one snapshot record
-        snapshots.push(Snapshot(block.timestamp, rootHash, ipfsCid, msg.sender));
-    }
+    /*
+     * @dev Constructor
+     * Initializes the contract owner to the deployer.
+     * Establishes the initial root of trust.
+     */
+    constructor() Ownable(msg.sender) {}
+
+    /*
+    @dev anchorSnapshot
+    anchors a new state root to the blockchain.
     
-    // read all content for one snapshot depending on index
-    function getSnapshot(uint256 index) 
-        public
-        view
-        returns (uint256, bytes32, string memory, address)
-    {
-        require(index < snapshots.length, "Snapshot not found");
-        Snapshot memory snap = snapshots[index];
-        return (snap.timestamp, snap.rootHash, snap.ipfsCid, snap.signature);
-    }
+    Security Mechanism:
+    - Protected by 'onlyOwner' modifier.
+    - Acts as a "Source Authentication" gatekeeper. 
+    - Ensures only data verified by the off-chain C++ engine (high Trust Coefficient) 
+    can enter the ledger, preventing trust dilution from unauthorized noise.
+    
+    Risk Management:
+    - 'batchRange' parameter allows regulators to instantly verify the scope 
+    of a recall event, minimizing the Reputational Multiplier (Phi).
+     */
+    function anchorSnapshot(
+        bytes32 rootHash,
+        string memory IPFSCID,
+        string memory batchRange
+    ) public onlyOwner {
+        // the lock
+        snapshotCount++;
 
-    // read the latest snapshot
-    function getLatestSnapshot()
-        public
-        view
-        returns (uint256, bytes32, string memory, address)
-    {
-        require(snapshots.length > 0, "No snapshots available");
-        Snapshot memory snap = snapshots[snapshots.length - 1];
-        return (snap.timestamp, snap.rootHash, snap.ipfsCid, snap.signature);
+        latestSnapshot = Snapshot(
+            // overwrite the old one
+            block.timestamp,
+            rootHash,
+            IPFSCID,
+            batchRange, 
+            msg.sender
+        );
+
+        // emit immutable audit trail
+        emit SnapShotAnchored(
+            snapshotCount,
+            rootHash,
+            IPFSCID,
+            batchRange,
+            block.timestamp,
+            msg.sender
+        );
+
+        // read
+        // Retrieves the current verifiable state root
+        function getLastestSnapshot()
+            public
+            view
+            return (Snapshot memory)
+        {
+            return latestSnapshot;
+        }
     }
 }
