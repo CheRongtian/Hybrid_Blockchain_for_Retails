@@ -1,48 +1,47 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/access/Ownable.col"; // OpenZeppelin package, Ownable contract
+import "@openzeppelin/contracts/access/Ownable.sol"; // OpenZeppelin package, Ownable contract
 
 /* 
 @title Hybrid Supply Chain Snapshot Anchor
-@dev Implements a secure anchor for **Hybrid Supply Chain States**.
+@dev Implements a secure anchor for Hybrid Supply Chain States.
 
 CORE FUNCTION:
 Cryptographically binds the on-chain "Verifiable Proof" (Merkle Root) 
-with the off-chain "Data Availability" (IPFS CIDs) and Business Context (Batch Range).
+with the small files, data, off-chain "Data Availability" (IPFS CIDs) and Business Context (Batch Range).
  */
 
 // SnapShotContract inherit ability of Ownable
 contract SnapShotContract is Ownable {
-
-    // event: cheap for storing history snapshot
-    // emit history records, external audit, web ... can read them
-    event SnapShotAnchored(
-        uint256 indexed snapshotID,
-        bytes32 rootHash,
-        string IPFSCID,
-        string batchRange,
-        uint256 timestamp,
-        address operator
-    );
-
+    
+    // define the struct of snapshot
     struct Snapshot {
+        bytes32 rootHash; // Merkle Root
+        string batchID;       
+        string smallFilesDataInfo; // save gas fees for storing small files & data 
+        string[] SelectedCIDs; // selected CIDs (big files in IPFS)
         uint256 timestamp;
-        bytes32 rootHash;
-        string IPFSCID;
-        string batchRange;
-        address operato;
     }
 
-    // statue var: permanent date in hard disk of blockchain
-    Snapshot public latestSnapshot; // only store the latest one
-    uint256 public snapshotCount; // count for # of records
+    mapping(string => Snapshot) public snapshots; // batch ID maps snapshot
+    uint256 public totalSnapshots;
+
+    // event: cheap for storing history snapshot
+    event SnapShotAnchored(
+        string indexed batchID,
+        address indexed operator,
+        bytes32 rootHash,
+        string smallFilesDataInfo,
+        string[] SelectedCIDs,
+        uint256 timestamp
+    );
 
     /*
-     * @dev Constructor
-     * Initializes the contract owner to the deployer.
-     * Establishes the initial root of trust.
-     */
+    @dev Constructor
+    Initializes the contract owner to the deployer.
+    Establishes the initial root of trust.
+    */
     constructor() Ownable(msg.sender) {}
 
     /*
@@ -58,42 +57,42 @@ contract SnapShotContract is Ownable {
     Risk Management:
     - 'batchRange' parameter allows regulators to instantly verify the scope 
     of a recall event, minimizing the Reputational Multiplier (Phi).
-     */
+    */
     function anchorSnapshot(
-        bytes32 rootHash,
-        string memory IPFSCID,
-        string memory batchRange
+        bytes32 _rootHash,
+        string memory _batchID,
+        string memory _smallFilesDataInfo,
+        string[] memory _SelectedCIDs
     ) public onlyOwner {
-        // the lock
-        snapshotCount++;
-
-        latestSnapshot = Snapshot(
-            // overwrite the old one
-            block.timestamp,
-            rootHash,
-            IPFSCID,
-            batchRange, 
-            msg.sender
+        // store state: for inquiring the latest version
+        snapshots[_batchID] = Snapshot(
+            _rootHash,
+            _batchID,
+            _smallFilesDataInfo,
+            _SelectedCIDs,
+            block.timestamp
         );
+
+        totalSnapshots++;
 
         // emit immutable audit trail
         emit SnapShotAnchored(
-            snapshotCount,
-            rootHash,
-            IPFSCID,
-            batchRange,
-            block.timestamp,
-            msg.sender
+            _batchID,
+            msg.sender,
+            _rootHash,
+            _smallFilesDataInfo,
+            _SelectedCIDs,
+            block.timestamp
         );
+    }
 
-        // read
-        // Retrieves the current verifiable state root
-        function getLastestSnapshot()
-            public
-            view
-            return (Snapshot memory)
-        {
-            return latestSnapshot;
-        }
+    // read
+    // Retrieves the current verifiable state root
+    function getLastestSnapshot(string memory _batchID)
+        public
+        view
+        return (Snapshot memory)
+    {
+        return snapshots[_batchID];
     }
 }
