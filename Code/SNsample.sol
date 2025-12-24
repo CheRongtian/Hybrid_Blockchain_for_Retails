@@ -22,6 +22,7 @@ contract SnapShotContract is Ownable {
         string smallFilesDataInfo; // save gas fees for storing small files & data 
         string[] SelectedCIDs; // selected CIDs (big files in IPFS)
         uint256 timestamp;
+        address signature;
     }
 
     mapping(string => Snapshot) public snapshots; // batch ID maps snapshot
@@ -34,7 +35,8 @@ contract SnapShotContract is Ownable {
         bytes32 rootHash,
         string smallFilesDataInfo,
         string[] SelectedCIDs,
-        uint256 timestamp
+        uint256 timestamp,
+        address signature
     );
 
     /*
@@ -62,7 +64,8 @@ contract SnapShotContract is Ownable {
         bytes32 _rootHash,
         string memory _batchID,
         string memory _smallFilesDataInfo,
-        string[] memory _SelectedCIDs
+        string[] memory _SelectedCIDs,
+        address memory _signature
     ) public onlyOwner {
         // store state: for inquiring the latest version
         snapshots[_batchID] = Snapshot(
@@ -70,7 +73,8 @@ contract SnapShotContract is Ownable {
             _batchID,
             _smallFilesDataInfo,
             _SelectedCIDs,
-            block.timestamp
+            block.timestamp,
+            _signature
         );
 
         totalSnapshots++;
@@ -82,7 +86,8 @@ contract SnapShotContract is Ownable {
             _rootHash,
             _smallFilesDataInfo,
             _SelectedCIDs,
-            block.timestamp
+            block.timestamp,
+            _signature
         );
     }
 
