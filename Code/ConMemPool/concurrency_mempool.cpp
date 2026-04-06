@@ -15,6 +15,7 @@
     #include <sys/mman.h>
     #include <unistd.h>
 #endif
+#include <cstring>
 
 // alignup to (int n)*align
 inline size_t AlignUp(size_t size, size_t align) 
@@ -37,14 +38,57 @@ struct Span
              prev(nullptr), next(nullptr), is_used(false){}
 };
 
+class SpanPool
+{
+    void* free_list_=nullptr;
+    std::mutex mutex_;
+    public:
+        static SpanPool& GetInstance()
+        {
+            static SpanPool instance;
+            return instance;
+        }
+
+        Span *New()
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!free_list_)
+            {
+                size_t alloc_size = 128 * 1024;
+                #ifdef _WIN32
+                    void* ptr = VirtualAlloc(nullptr, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                #else
+                    void* ptr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                #endif
+                char *start=(char*)ptr;
+                size_t obj_count = alloc_size / sizeof(Span);
+                for(size_t i=0; i<obj_count-1; ++i)
+                    *(void**)(start+i*sizeof(Span)) = start + (i+1)*sizeof(Span);
+                *(void**)(start + (obj_count-1)*sizeof(Span))=nullptr;
+                free_list_=start;
+            }
+            void *obj=free_list_;
+            free_list_ = *(void**)obj;
+            return new(obj) Span();
+        }
+
+        void Delete(Span *span)
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            span->~Span();
+            *(void**)span = free_list_;
+            free_list_ = span;
+        }
+};
+
 // SpanList manage the same size level Span(double linked list)
 class SpanList
 {
     public:
         SpanList()
         {
-            head_ = new Span();
-            tail_ = new Span();
+            head_ = SpanPool::GetInstance().New();
+            tail_ = SpanPool::GetInstance().New();
             head_->next=tail_;
             tail_->prev=head_;
         }
@@ -65,7 +109,7 @@ class SpanList
             while(cur)
             {
                 Span *next = cur->next;
-                delete cur;
+                SpanPool::GetInstance().Delete(cur);
                 cur = next;
             }
         }
@@ -102,6 +146,48 @@ class SpanList
 
 };
 
+template <int BITS>
+class PageMap2
+{
+    private:
+        static const int kLeafBits = 15;
+        static const int kLeafLength = 1 << kLeafBits;
+        static const int kRootBits = BITS - kLeafBits;
+        static const int kRootLength = 1 << kLeafBits;
+        Span** root_[kRootLength];
+    
+    public:
+        PageMap2()
+        {
+            memset(root_, 0, sizeof(root_));
+        }
+
+        Span* get(size_t k) const
+        {
+            size_t i1 = k >> kLeafBits;
+            size_t i2 = k & (kLeafLength - 1);
+            if(i1 >= kRootLength || !root_[i1]) return nullptr;
+            return root_[i1][i2];
+        }
+
+        void set(size_t k, Span *v)
+        {
+            size_t i1 = k >> kLeafBits;
+            size_t i2 = k & (kLeafLength - 1);
+            if(!root_[i1])
+            {
+                #ifdef _WIN32
+                    void *ptr = VirtualAlloc(nullptr, kLeafLength * sizeof(Span *), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                #else
+                    void *ptr = mmap(nullptr, kLeafLength * sizeof(Span *), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+                #endif
+                memset(ptr, 0, kLeafLength * sizeof(Span*));
+                root_[i1] = (Span**)ptr;
+            }
+            root_[i1][i2]=v;
+        }
+};
+
 class PageCache
 {
     private:
@@ -109,7 +195,8 @@ class PageCache
         SpanList span_lists_[kMaxPageCount + 1];
         std::mutex mutex_;
         size_t page_size_;
-        std::unordered_map<size_t, Span*> page_id_to_span_;
+        //std::unordered_map<size_t, Span*> page_id_to_span_;
+        PageMap2<36> page_id_to_span_;
         PageCache()
         {
             #ifdef _WIN32
@@ -138,7 +225,7 @@ class PageCache
             {
                 Span *span = span_lists_[n].PopFront();
                 for(size_t i=0; i<span->page_count; ++i)
-                    page_id_to_span_[span->page_id + i] = span;
+                    page_id_to_span_.set(span->page_id + i, span);
                 span->is_used=true;
                 return span;
             }
@@ -148,7 +235,7 @@ class PageCache
                 if(!span_lists_[i].Empty())
                 {
                     Span *big_span = span_lists_[i].PopFront();
-                    Span *small_span = new Span();
+                    Span *small_span = SpanPool::GetInstance().New();
                     small_span->page_id = big_span->page_id;
                     small_span->page_count = n;
                     small_span->is_used = true;
@@ -158,7 +245,7 @@ class PageCache
                     span_lists_[big_span->page_count].PushBack(big_span);
 
                     for(size_t j=0; j<small_span->page_count; ++j)
-                        page_id_to_span_[small_span->page_id+j] = small_span;
+                        page_id_to_span_.set(small_span->page_id+j, small_span);
                     return small_span;
                 }
             }
@@ -167,12 +254,12 @@ class PageCache
             void *ptr = SystemAllocate(n);
             if(!ptr) throw std::bad_alloc();
 
-            Span *span = new Span();
+            Span *span = SpanPool::GetInstance().New();
             span->page_id = reinterpret_cast<size_t>(ptr)/page_size_;
             span->page_count = n;
             span->is_used = true;
 
-            for(size_t i=0; i<n; ++i) page_id_to_span_[span->page_id+i]=span;
+            for(size_t i=0; i<n; ++i) page_id_to_span_.set(span->page_id+i, span);
             return span;
         }
 
@@ -193,46 +280,50 @@ class PageCache
         
         Span *FindSpanByAddr(void *addr)
         {
+            /*
             if(!addr) return nullptr;
             size_t page_id = reinterpret_cast<size_t>(addr)/page_size_;
             std::lock_guard<std::mutex>lock(mutex_);
             auto it=page_id_to_span_.find(page_id);
             return it!=page_id_to_span_.end()?it->second:nullptr;
+            */
+            if(!addr) return nullptr;
+            size_t page_id = reinterpret_cast<size_t>(addr)/page_size_;
+            return page_id_to_span_.get(page_id);
         }
 
         size_t GetPageSize()const
         {
             return page_size_;
         }
+
     private:
         void MergeSpan(Span *&span)
         {
             size_t prev_page_id = span->page_id-1;
-            auto prev_it = page_id_to_span_.find(prev_page_id);
-            if(prev_it!=page_id_to_span_.end())
+            Span *prev_span = page_id_to_span_.get(prev_page_id);
+            if(prev_span!=nullptr)
             {
-                Span *prev_span = prev_it->second;
                 if(!prev_span->is_used && span->page_count + prev_span->page_count <= kMaxPageCount&&prev_span->page_id + prev_span->page_count == span->page_id)
                 {
                     span_lists_[prev_span->page_count].RemoveSpan(prev_span);
                     prev_span->page_count += span->page_count;
-                    delete span;
+                    SpanPool::GetInstance().Delete(span);
                     span=prev_span;
-                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_[span->page_id+i] = span;
+                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_.set(span->page_id+i, span);
                 }
             }
 
             size_t next_page_id = span->page_id + span->page_count;
-            auto next_it = page_id_to_span_.find(next_page_id);
-            if(next_it!=page_id_to_span_.end())
+            Span *next_span = page_id_to_span_.get(next_page_id);
+            if(next_span!=nullptr)
             {
-                Span *next_span = next_it->second;
                 if(!next_span->is_used && next_span->page_count + span->page_count <= kMaxPageCount &&span->page_id+span->page_count==next_span->page_id)
                 {
                     span_lists_[next_span->page_count].RemoveSpan(next_span);
                     span->page_count += next_span->page_count;
-                    delete next_span;
-                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_[span->page_id+i]=span;
+                   SpanPool::GetInstance().Delete(next_span);
+                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_.set(span->page_id+i, span);
                 }
             }
         }
@@ -259,6 +350,24 @@ class PageCache
         }
 };
 
+class SpinLock
+{
+    std::atomic_flag flag_=ATOMIC_FLAG_INIT;
+    public:
+        void lock()
+        {
+            while(flag_.test_and_set(std::memory_order_acquire))
+            {
+
+            }
+        }
+
+        void unlock()
+        {
+            flag_.clear(std::memory_order_release);
+        }
+};
+
 class CentralCache
 {
     private:
@@ -266,7 +375,7 @@ class CentralCache
         static const size_t kMaxSmallObjSize = 4096;
         static const size_t kFreeListCount = kMaxSmallObjSize / kAlign;
         SpanList span_lists_[kFreeListCount];
-        std::mutex mutexes_[kFreeListCount];
+        SpinLock mutexes_[kFreeListCount];
         CentralCache()=default;
         CentralCache(const CentralCache&)=delete;
         CentralCache& operator=(const CentralCache&)=delete;
@@ -283,7 +392,7 @@ class CentralCache
             if(size==0||batch_num==0||size>kMaxSmallObjSize) return nullptr;
             size_t align_size = AlignUp(size, kAlign);
             size_t index = (align_size/kAlign)-1;
-            std::lock_guard<std::mutex> lock(mutexes_[index]);
+            std::lock_guard<SpinLock> lock(mutexes_[index]);
 
             Span *span=nullptr;
             for(Span *cur=span_lists_[index].Begin(); cur!=span_lists_[index].End(); cur=cur->next)
@@ -334,7 +443,7 @@ class CentralCache
             if(!start||size==0||count==0||size>kMaxSmallObjSize) return;
             size_t align_size = AlignUp(size, kAlign);
             size_t index = (align_size/kAlign)-1;
-            std::lock_guard<std::mutex>lock(mutexes_[index]);
+            std::lock_guard<SpinLock> lock(mutexes_[index]);
 
             Span *span=PageCache::GetInstance().FindSpanByAddr(start);
             if(!span) return;
