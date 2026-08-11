@@ -11,7 +11,7 @@
         <section class="card">
             <p class="eyebrow">SUPPLY CHAIN · MERKLE TREE</p>
             <h1>供应链信息确认</h1>
-            <p class="intro">确认后，Server 会把这条记录加入内存 Merkle Tree，并立即生成和验证 Proof。</p>
+            <p class="intro">确认后，信息会发送到控制端，生成 Merkle 节点并保存验证记录。</p>
 
             <form id="record-form">
                 <label>
@@ -53,14 +53,6 @@
                 <div>
                     <dt>Block ID</dt>
                     <dd id="block-id"></dd>
-                </div>
-                <div>
-                    <dt>Merkle Root</dt>
-                    <dd><code id="root-hash"></code></dd>
-                </div>
-                <div>
-                    <dt>Proof</dt>
-                    <dd><code id="proof"></code></dd>
                 </div>
             </dl>
         </section>

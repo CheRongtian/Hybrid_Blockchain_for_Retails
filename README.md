@@ -1,42 +1,181 @@
 # Hybrid-Chain Design Prototype
-```css
-Project/
-│
-└── Code/
-│   ├── MerkleTree/
-│   │   ├── CMakeLists.txt
-│   │   ├── Main.cpp
-│   │   ├── MerkleTree_Build.cpp
-│   │   ├── MerkleTree_Core.cpp
-│   │   ├── MerkleTree_Proof.cpp
-│   │   ├── MerkleTree_Utils.cpp
-│   │   ├── MerkleTree.hpp
-│   │   ├── README.md
-│   │   └── build/
-│   │       ├── MerkleTree
-│   │       ├── ......
-│   │       └──inp.txt
-│   ├── mempool.cpp
-│   ├── SNsample.sol /* snapshot demo in Solidity */
-│   ├── To be continued ......
-│   
-└── Architecture/
-│   ├── GeneralDesign.drawio
-│   ├── OverallStructure.drawio
-│   ├── PrivateChainExample.drawio
-│   └── HybridChainExample.drawio
-└── ROI/
-    ├── Precise Mathematical Modeling.md
-    └── Case-based Estimation.md
+
+This repository is a learning and prototype project around blockchain data
+structures, memory allocation, and supply-chain traceability.
+
+The currently runnable flow is a two-server supply-chain demo:
+
+```text
+User browser :8080
+        │  submit confirmed record
+        ▼
+user_server
+        │  POST /api/records
+        ▼
+control_server :8081
+        ├─ canonicalize the record
+        ├─ append it to the Merkle Tree
+        ├─ generate and verify a Merkle Proof
+        └─ save the record and verification snapshot in SQLite
 ```
-## Code
-### Merkle Tree
 
+The control page is served by `control_server` and reads the saved records
+through `GET /api/records`.
 
-### Memory Pool
-#### Why this one?
-- Because this one is very important for miners in Blockchain.
-- The mempool serves as the blockchain’s staging area for unconfirmed transactions. All transactions broadcast to the network enter the mempool before they are written into a block, giving miners a real-time pool of candidates to choose from. It allows miners to prioritize transactions by fee, ensures the network maintains a consistent view of pending activity, and acts as the system’s transaction buffer and scheduler.
+## Repository structure
 
-Working on now~~ 💪
-## Content
+Generated build directories are omitted from this overview.
+
+```text
+Blockchain Structure/
+├── Architecture/                 # Architecture diagrams
+├── Code/
+│   ├── CMakeLists.txt             # Top-level CMake entry
+│   ├── MerkleTree/                # Merkle Tree library and CLI
+│   ├── Server/                    # User server and control server
+│   │   ├── server.cpp             # control_server implementation
+│   │   ├── user_server.cpp        # user_server implementation
+│   │   ├── db_utils.cpp/.hpp      # SQLite persistence helpers
+│   │   ├── static/                # User-facing page
+│   │   └── control_static/        # Control page
+│   ├── Database/                  # Local runtime database location
+│   ├── MemoryPool/                # Simple memory-pool experiments
+│   ├── ConMemPool/                # Concurrent allocator experiments
+│   ├── PrCsample.sol              # Solidity sample
+│   ├── SNsample.sol               # Solidity sample
+│   └── QRCodeExample.html         # Independent HTML demo
+├── ROI/                           # Estimation documents
+└── README.md
+```
+
+`Code/Database/supply_chain.db` is created locally by the control server and
+is ignored by Git. Its `-wal` and `-shm` files are ignored as well.
+
+## Build
+
+Run CMake from the `Code` directory. This single configuration handles the
+MerkleTree and Server subdirectories.
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"
+cmake -S . -B build
+cmake --build build
+```
+
+The build produces:
+
+```text
+Code/build/Server/control_server
+Code/build/Server/user_server
+Code/build/MerkleTree/merkle_cli
+```
+
+## Run the supply-chain demo
+
+Start the control server first. Start the user server in a second terminal.
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
+./Server/control_server
+```
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
+./Server/user_server
+```
+
+Open the two pages:
+
+```text
+User page:    http://127.0.0.1:8080/
+Control page: http://127.0.0.1:8081/
+```
+
+The user page collects:
+
+- batch ID
+- product
+- origin
+- supply-chain stage
+- confirmer
+- confirmation checkbox
+
+After confirmation, the browser sends the record to the control server. A
+successful submission clears the form and returns the Block ID and verification
+status. Root and Proof are stored for the control page.
+
+## SQLite records
+
+The database table is `supply_chain_records`:
+
+```text
+id
+block_id
+batch_id
+product
+origin
+stage
+confirmed_by
+canonical_record
+root_hash
+proof
+verified
+created_at
+```
+
+The control server rebuilds its in-memory Merkle Tree from stored canonical
+records on startup. `root_hash` and `proof` are snapshots from the time the
+record was submitted; later blocks can change the current Merkle Root.
+
+SQLite stores submission time in UTC. The control page shows both the UTC time
+and the control browser's local time, with the time-zone label included.
+
+## Merkle Tree behavior
+
+The MerkleTree library uses the duplicate-last-hash rule for incomplete levels:
+
+- leaves are built from the canonical supply-chain record;
+- if a level has an odd number of nodes, the final hash is copied into a new
+  sibling node;
+- parent hashes are calculated from the left and right child hashes;
+- proofs are generated by following parent links and reading each sibling;
+- proof verification is performed by the control server.
+
+The CLI is independent of the HTTP servers:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/MerkleTree"
+./run_merkle.sh
+```
+
+An optional input file can be supplied to the CLI:
+
+```bash
+./run_merkle.sh inp.txt
+```
+
+`inp.txt` is only sample input for the standalone CLI. The supply-chain web
+flow receives records from the user form and does not depend on that file.
+
+## Memory-pool experiments
+
+`MemoryPool` and `ConMemPool` currently remain standalone experiments:
+
+- `MemoryPool` is a fixed-size, mutex-protected allocator.
+- `ConMemPool` explores thread-local, central, and page-level allocation.
+- Neither is connected to the HTTP servers or MerkleTree yet.
+- They are allocator components, not the transaction queue used by the current
+  supply-chain flow.
+
+A future integration can make `MemoryPool` an allocator for Merkle nodes. The
+concurrent allocator should be modularized and tested separately before it is
+considered for a multi-threaded control server.
+
+## Current limitations
+
+- The servers bind to loopback for local development.
+- SQLite data is local and ignored by Git.
+- The confirmation checkbox records user intent but does not provide digital
+  identity or a cryptographic signature.
+- The control server currently handles requests in a simple single-process
+  server loop.

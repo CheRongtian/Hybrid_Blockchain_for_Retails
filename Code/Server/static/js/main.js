@@ -2,6 +2,7 @@ const form = document.querySelector("#record-form");
 const statusLine = document.querySelector("#request-status");
 const resultCard = document.querySelector("#result-card");
 const verificationTitle = document.querySelector("#verification-title");
+const controlApi = "http://127.0.0.1:8081/api/records";
 
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -13,7 +14,7 @@ form.addEventListener("submit", async (event) => {
     body.set("confirmed", document.querySelector("#confirmed").checked ? "true" : "false");
 
     try {
-        const response = await fetch("/api/records", {
+        const response = await fetch(controlApi, {
             method: "POST",
             headers: {
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
@@ -29,13 +30,12 @@ form.addEventListener("submit", async (event) => {
         verificationTitle.textContent = result.verified ? "Verified ✓" : "Verification failed";
         verificationTitle.className = result.verified ? "verified" : "failed";
         document.querySelector("#block-id").textContent = result.blockID;
-        document.querySelector("#root-hash").textContent = result.rootHash;
-        document.querySelector("#proof").textContent = result.proof;
         resultCard.hidden = false;
+        form.reset();
 
         statusLine.textContent = result.verified
-            ? "记录已经加入 Merkle Tree，Proof 验证通过。"
-            : "记录已加入，但 Proof 验证失败。";
+            ? "记录已保存，Merkle Proof 验证通过。"
+            : "记录已保存，但 Merkle Proof 验证失败。";
         statusLine.className = result.verified
             ? "request-status success"
             : "request-status error";

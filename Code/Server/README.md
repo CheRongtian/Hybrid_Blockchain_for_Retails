@@ -1,19 +1,23 @@
-# Supply Chain Merkle Server
+# Supply Chain User and Control Servers
 
-This C++17 HTTP server provides a minimal in-memory supply-chain verification
-flow:
+The project builds two independent C++17 HTTP servers:
 
 ```text
-Browser confirmation form
-    -> POST /api/records
-    -> MerkleTree::Append
-    -> generate proof
-    -> verify proof
-    -> return JSON result
+User browser -> user_server :8080
+             -> POST control_server :8081/api/records
+             -> MerkleTree::Append
+             -> generate and verify proof
+             -> Code/Database/supply_chain.db
+
+Control browser -> control_server :8081
+                -> GET /api/records
+                -> read SQLite records
 ```
 
-The current stage has no SQLite, file upload, smart-contract, or IPFS support.
-All Merkle blocks are cleared when the server exits.
+`user_server` only serves the user confirmation page. `control_server` owns the
+Merkle Tree, SQLite writes, verification API, and control page. On startup, the
+control server reads records in `block_id` order and rebuilds the in-memory
+Merkle Tree.
 
 ## Build from Code
 
@@ -25,23 +29,55 @@ cmake --build build
 
 ## Run
 
+Start the control server first, then the user server in a second terminal:
+
 ```bash
-./build/Server/server
+./build/Server/control_server
+./build/Server/user_server
 ```
 
-Then open:
+Open:
 
 ```text
-http://127.0.0.1:8080/
+User page:    http://127.0.0.1:8080/
+Control page: http://127.0.0.1:8081/
 ```
 
 Optional arguments:
 
 ```text
-./server [port] [static_directory]
+./control_server [port] [static_directory] [database_path]
+./user_server [port] [static_directory]
 ```
 
+The default database path is `Code/Database/supply_chain.db`, independent of
+the terminal working directory. Files ending in `.db`, `.db-wal`, and `.db-shm`
+are ignored by Git.
+
+## Database
+
+The `supply_chain_records` table contains:
+
+- `id`
+- `block_id`
+- `batch_id`
+- `product`
+- `origin`
+- `stage`
+- `confirmed_by`
+- `canonical_record`
+- `root_hash`
+- `proof`
+- `verified`
+- `created_at`
+
+`root_hash` and `proof` are snapshots captured when each record is submitted.
+As later blocks are appended, the current Merkle root can change while these
+historical snapshots remain stored.
+
 ## API
+
+The API is provided by `control_server` on port `8081`.
 
 `POST /api/records` accepts `application/x-www-form-urlencoded` fields:
 
@@ -57,8 +93,10 @@ Successful response:
 ```json
 {
   "blockID": 0,
-  "rootHash": "...",
-  "proof": "...",
   "verified": true
 }
 ```
+
+`GET /api/records` returns all stored records for the control page, including
+the submitted fields, block ID, root hash, proof, verification status, and
+submission time.

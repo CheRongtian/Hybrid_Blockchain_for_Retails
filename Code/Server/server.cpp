@@ -11,20 +11,30 @@
 #include <sys/socket.h>
 #include <unordered_map>
 #include <unistd.h>
+#include <vector>
 
+#include "db_utils.hpp"
 #include "MerkleTree.hpp"
 #include "log_utils.hpp"
 
 namespace fs = std::filesystem;
 
-#ifndef SERVER_DEFAULT_STATIC_DIR
-#define SERVER_DEFAULT_STATIC_DIR "../static"
+#ifndef CONTROL_DEFAULT_STATIC_DIR
+#define CONTROL_DEFAULT_STATIC_DIR "../control_static"
+#endif
+
+#ifndef CONTROL_DEFAULT_DATABASE_PATH
+#define CONTROL_DEFAULT_DATABASE_PATH "../../Database/supply_chain.db"
 #endif
 
 namespace
 {
 constexpr std::size_t MAX_HEADER_SIZE = 64 * 1024;
 constexpr std::size_t MAX_BODY_SIZE = 64 * 1024;
+constexpr const char* CORS_HEADERS =
+    "Access-Control-Allow-Origin: *\r\n"
+    "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+    "Access-Control-Allow-Headers: Content-Type\r\n";
 
 struct HttpRequest
 {
@@ -286,6 +296,29 @@ std::string json_error(const std::string& message)
     return "{\"error\":\"" + json_escape(message) + "\"}";
 }
 
+std::string records_json(const std::vector<SupplyChainRecord>& records)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t i = 0; i < records.size(); ++i)
+    {
+        if(i > 0) json << ',';
+        const SupplyChainRecord& record = records[i];
+        json << "{\"blockID\":" << record.block_id
+             << ",\"batchId\":\"" << json_escape(record.batch_id)
+             << "\",\"product\":\"" << json_escape(record.product)
+             << "\",\"origin\":\"" << json_escape(record.origin)
+             << "\",\"stage\":\"" << json_escape(record.stage)
+             << "\",\"confirmedBy\":\"" << json_escape(record.confirmed_by)
+             << "\",\"rootHash\":\"" << json_escape(record.root_hash)
+             << "\",\"proof\":\"" << json_escape(record.proof)
+             << "\",\"verified\":" << (record.verified ? "true" : "false")
+             << ",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
+    }
+    json << ']';
+    return json.str();
+}
+
 bool is_inside(const fs::path& root, const fs::path& candidate)
 {
     auto root_part = root.begin();
@@ -348,7 +381,7 @@ int main(int argc, char* argv[])
 {
     std::signal(SIGPIPE, SIG_IGN);
 
-    int port = 8080;
+    int port = 8081;
     try
     {
         if(argc >= 2) port = parse_port(argv[1]);
@@ -361,7 +394,7 @@ int main(int argc, char* argv[])
 
     const fs::path requested_static = argc >= 3
         ? fs::path(argv[2])
-        : fs::path(SERVER_DEFAULT_STATIC_DIR);
+        : fs::path(CONTROL_DEFAULT_STATIC_DIR);
     const fs::path static_root = fs::weakly_canonical(fs::absolute(requested_static));
     if(!fs::is_directory(static_root))
     {
@@ -369,7 +402,32 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const fs::path requested_database = argc >= 4
+        ? fs::path(argv[3])
+        : fs::path(CONTROL_DEFAULT_DATABASE_PATH);
+    const fs::path database_path = fs::absolute(requested_database).lexically_normal();
+    if(!init_database(database_path.string()))
+        return 1;
+
+    std::vector<SupplyChainRecord> stored_records;
+    if(!load_supply_chain_records(database_path.string(), stored_records))
+        return 1;
+
     MerkleTree merkle_tree(1);
+    std::vector<std::string> canonical_records;
+    canonical_records.reserve(stored_records.size());
+    for(const SupplyChainRecord& stored_record : stored_records)
+    {
+        if(stored_record.block_id != merkle_tree.GetBlockCount() ||
+           !merkle_tree.Append(stored_record.canonical_record))
+        {
+            std::cerr << "Cannot rebuild Merkle Tree at stored block "
+                      << stored_record.block_id << '\n';
+            return 1;
+        }
+
+        canonical_records.push_back(stored_record.canonical_record);
+    }
 
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if(server_fd == -1)
@@ -401,9 +459,10 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    std::cout << "HTTP server: http://127.0.0.1:" << port << '\n'
+    std::cout << "Control server: http://127.0.0.1:" << port << '\n'
               << "Static root: " << static_root << '\n'
-              << "Merkle Tree: in-memory\n";
+              << "Database: " << database_path << '\n'
+              << "Restored Merkle blocks: " << canonical_records.size() << '\n';
 
     while(true)
     {
@@ -428,7 +487,29 @@ int main(int argc, char* argv[])
         std::string content_type = "text/plain; charset=utf-8";
         const bool is_head = request.method == "HEAD";
 
-        if(request.method == "POST" && request.target == "/api/records")
+        if(request.method == "OPTIONS" && request.target == "/api/records")
+        {
+            status = "204 No Content";
+            body.clear();
+            send_response(client_fd, status, content_type, body, false, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/records")
+        {
+            content_type = "application/json; charset=utf-8";
+            std::vector<SupplyChainRecord> records;
+            if(load_supply_chain_records(database_path.string(), records))
+            {
+                status = "200 OK";
+                body = records_json(records);
+            }
+            else
+            {
+                status = "500 Internal Server Error";
+                body = json_error("Failed to read supply-chain records");
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "POST" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
             const auto content_type_header = request.headers.find("content-type");
@@ -475,27 +556,64 @@ int main(int argc, char* argv[])
             }
             else
             {
-                const int block_id = merkle_tree.GetBlockCount();
+                const int block_id = static_cast<int>(canonical_records.size());
                 const std::string record = canonical_record(*fields);
-                if(!merkle_tree.Append(record))
+                MerkleTree candidate_tree(1);
+                bool candidate_ready = true;
+                for(const std::string& stored_record : canonical_records)
+                {
+                    if(!candidate_tree.Append(stored_record))
+                    {
+                        candidate_ready = false;
+                        break;
+                    }
+                }
+
+                if(candidate_ready) candidate_ready = candidate_tree.Append(record);
+                if(!candidate_ready)
                 {
                     status = "500 Internal Server Error";
                     body = json_error("Failed to append Merkle block");
                 }
                 else
                 {
-                    const std::string proof = merkle_tree.ProverBlock(block_id);
-                    const bool verified = merkle_tree.Verify(proof);
-                    status = "201 Created";
-                    body = "{\"blockID\":" + std::to_string(block_id) +
-                           ",\"rootHash\":\"" +
-                           json_escape(merkle_tree.GetRootHash()) +
-                           "\",\"proof\":\"" + json_escape(proof) +
-                           "\",\"verified\":" + (verified ? "true" : "false") + "}";
+                    const std::string proof = candidate_tree.ProverBlock(block_id);
+                    const bool verified = candidate_tree.Verify(proof);
+
+                    SupplyChainRecord database_record;
+                    database_record.block_id = block_id;
+                    database_record.batch_id = fields->at("batchId");
+                    database_record.product = fields->at("product");
+                    database_record.origin = fields->at("origin");
+                    database_record.stage = fields->at("stage");
+                    database_record.confirmed_by = fields->at("confirmedBy");
+                    database_record.canonical_record = record;
+                    database_record.root_hash = candidate_tree.GetRootHash();
+                    database_record.proof = proof;
+                    database_record.verified = verified;
+
+                    if(!insert_supply_chain_record(database_path.string(), database_record))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to save supply-chain record");
+                    }
+                    else if(!merkle_tree.Append(record))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Record saved, but in-memory Merkle update failed");
+                    }
+                    else
+                    {
+                        canonical_records.push_back(record);
+                        status = "201 Created";
+                        body = "{\"blockID\":" + std::to_string(block_id) +
+                               ",\"verified\":" +
+                               (verified ? "true" : "false") + "}";
+                    }
                 }
             }
 
-            send_response(client_fd, status, content_type, body, true);
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
         else if(request.method != "GET" && !is_head)
         {

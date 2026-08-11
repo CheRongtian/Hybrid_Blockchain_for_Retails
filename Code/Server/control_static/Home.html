@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supply Chain Control</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <main class="layout">
+        <header class="page-header">
+            <div>
+                <p class="eyebrow">SUPPLY CHAIN · CONTROL</p>
+                <h1>供应链验证控制端</h1>
+                <p>查看控制端已经接收、验证并保存的供应链记录。</p>
+            </div>
+            <button id="refresh-button" type="button">刷新记录</button>
+        </header>
+
+        <p id="load-status" class="status" aria-live="polite">正在读取记录…</p>
+        <section id="record-list" class="record-list" aria-label="供应链记录"></section>
+    </main>
+
+    <script src="/js/main.js" defer></script>
+</body>
+</html>
