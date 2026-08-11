@@ -75,7 +75,8 @@ label {
     font-weight: 650;
 }
 
-input {
+input,
+select {
     width: 100%;
     border: 1px solid #ffffff26;
     border-radius: 12px;
@@ -83,6 +84,70 @@ input {
     color: #f8fafc;
     background: #080d19b3;
     font: inherit;
+}
+
+input[type="file"] {
+    padding: 10px;
+}
+
+.role-section {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    padding: 20px;
+    border: 1px solid #ffffff1a;
+    border-radius: 16px;
+    background: #080d194d;
+}
+
+.section-heading {
+    grid-column: 1 / -1;
+}
+
+.section-heading h2 {
+    margin: 0 0 6px;
+    font-size: 22px;
+}
+
+.section-heading p {
+    margin: 0;
+    color: #94a3b8;
+    font-size: 14px;
+}
+
+.readonly-summary {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 18px;
+}
+
+.readonly-summary input {
+    color: #a7f3d0;
+}
+
+.ipfs-panel {
+    margin-top: 2px;
+}
+
+.attachment-list {
+    grid-column: 1 / -1;
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.attachment-item {
+    padding: 10px 12px;
+    border: 1px solid #ffffff1a;
+    border-radius: 10px;
+    color: #a7f3d0;
+    background: #050914;
+    overflow-wrap: anywhere;
+    font-size: 13px;
 }
 
 input:focus {
@@ -194,6 +259,11 @@ code {
 
 @media (max-width: 680px) {
     form {
+        grid-template-columns: 1fr;
+    }
+
+    .role-section,
+    .readonly-summary {
         grid-template-columns: 1fr;
     }
 }

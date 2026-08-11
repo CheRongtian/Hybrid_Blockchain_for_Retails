@@ -11,16 +11,21 @@
         <section id="login-card" class="card">
             <p class="eyebrow">SUPPLY CHAIN · IDENTITY</p>
             <h1>Supply Chain Login</h1>
-            <p class="intro">After login, the system uses your UID, role, and organization identity to create blocks.</p>
+            <p class="intro">
+                Your role determines the event fields available for the next
+                stage of the preset route.
+            </p>
 
             <form id="login-form">
                 <label>
                     Username
-                    <input name="username" placeholder="supplier01" autocomplete="username" required>
+                    <input name="username" placeholder="supplier01"
+                           autocomplete="username" required>
                 </label>
                 <label>
                     Password
-                    <input name="password" type="password" autocomplete="current-password" required>
+                    <input name="password" type="password"
+                           autocomplete="current-password" required>
                 </label>
                 <label class="remember-login">
                     <input id="remember-login" type="checkbox">
@@ -35,33 +40,197 @@
         <section id="record-card" class="card" hidden>
             <p class="eyebrow">SUPPLY CHAIN · MERKLE TREE</p>
             <h1>Supply Chain Record Confirmation</h1>
-            <p class="intro">After confirmation, the record is sent to the control server, which creates a Merkle node and stores the verification record.</p>
+            <p class="intro">
+                Confirm the event data for your route stage. Structured fields
+                and CID references are included in the Merkle input.
+            </p>
             <p id="identity-status" class="identity-status"></p>
 
             <form id="record-form">
-                <label>
-                    Batch ID
-                    <input name="batchId" placeholder="BATCH-001" maxlength="256" required>
-                </label>
-                <label>
-                    Product
-                    <input name="product" placeholder="Strawberries" maxlength="256" required>
-                </label>
-                <label>
-                    Origin
-                    <input name="origin" placeholder="Missouri" maxlength="256" required>
-                </label>
+                <section id="supplier-master-fields" class="role-section" hidden>
+                    <div class="section-heading">
+                        <h2>Create batch master data</h2>
+                        <p>This information is entered once for this route batch.</p>
+                    </div>
+                    <label>
+                        Batch ID
+                        <input id="batch-id-input" placeholder="BATCH-001"
+                               maxlength="256">
+                    </label>
+                    <label>
+                        Product
+                        <input id="product-input" placeholder="Pumpkins"
+                               maxlength="256">
+                    </label>
+                </section>
+
+                <section id="existing-batch-fields" class="role-section" hidden>
+                    <div class="section-heading">
+                        <h2>Continue an existing batch</h2>
+                        <p>Batch master data is inherited from the previous stage.</p>
+                    </div>
+                    <label>
+                        Batch
+                        <select id="batch-select"></select>
+                    </label>
+                    <div class="readonly-summary">
+                        <label>
+                            Product
+                            <input id="batch-product" readonly>
+                        </label>
+                        <label>
+                            Harvest Date
+                            <input id="batch-harvest-date" readonly>
+                        </label>
+                        <label>
+                            Farm Location
+                            <input id="batch-farm-location" readonly>
+                        </label>
+                    </div>
+                    <p id="batch-status" class="request-status" aria-live="polite"></p>
+                </section>
+
                 <label>
                     Current Stage
                     <input id="current-stage" readonly>
                 </label>
 
+                <section class="role-section" data-role-section="supplier" hidden>
+                    <div class="section-heading">
+                        <h2>Supplier event</h2>
+                        <p>Record harvest-level information for the new batch.</p>
+                    </div>
+                    <label>
+                        Harvest Date
+                        <input id="harvest-date" name="harvestDate"
+                               type="date" maxlength="256">
+                    </label>
+                    <label>
+                        Farm Location
+                        <input id="farm-location" name="farmLocation"
+                               placeholder="Farm location or coded ID" maxlength="256">
+                    </label>
+                    <label>
+                        Certificate ID
+                        <input id="certificate-id" name="certificateId"
+                               placeholder="CERT-001" maxlength="256">
+                    </label>
+                </section>
+
+                <section class="role-section" data-role-section="logistics" hidden>
+                    <div class="section-heading">
+                        <h2>Logistics event</h2>
+                        <p>Record the shipment facts for this route stage.</p>
+                    </div>
+                    <label>
+                        Shipment ID
+                        <input name="shipmentId" placeholder="SHIP-001" maxlength="256">
+                    </label>
+                    <label>
+                        Pickup Location
+                        <input name="pickupLocation" placeholder="Supplier dock" maxlength="256">
+                    </label>
+                    <label>
+                        Delivery Location
+                        <input name="deliveryLocation" placeholder="Warehouse A" maxlength="256">
+                    </label>
+                    <label>
+                        Departure Time
+                        <input name="departureTime" type="datetime-local" maxlength="256">
+                    </label>
+                    <label>
+                        Arrival Time
+                        <input name="arrivalTime" type="datetime-local" maxlength="256">
+                    </label>
+                    <label>
+                        Temperature / Humidity Summary
+                        <input name="temperatureHumiditySummary"
+                               placeholder="2–5 °C; 72% RH" maxlength="256">
+                    </label>
+                    <label>
+                        Vehicle / Container ID
+                        <input name="vehicleContainerId"
+                               placeholder="TRUCK-001" maxlength="256">
+                    </label>
+                </section>
+
+                <section class="role-section" data-role-section="warehouse" hidden>
+                    <div class="section-heading">
+                        <h2>Warehouse event</h2>
+                        <p>Record storage intake, conditions, and location.</p>
+                    </div>
+                    <label>
+                        Storage Lot ID
+                        <input name="storageLotId" placeholder="STORAGE-001" maxlength="256">
+                    </label>
+                    <label>
+                        Inbound Time
+                        <input name="inboundTime" type="datetime-local" maxlength="256">
+                    </label>
+                    <label>
+                        Outbound Time
+                        <input name="outboundTime" type="datetime-local" maxlength="256">
+                    </label>
+                    <label>
+                        Temperature / Humidity Summary
+                        <input name="temperatureHumiditySummary"
+                               placeholder="3 °C average; 70% RH" maxlength="256">
+                    </label>
+                    <label>
+                        Storage Zone / Rack ID
+                        <input name="storageZoneRackId"
+                               placeholder="ZONE-A / RACK-03" maxlength="256">
+                    </label>
+                </section>
+
+                <section class="role-section" data-role-section="supermarket" hidden>
+                    <div class="section-heading">
+                        <h2>Supermarket event</h2>
+                        <p>Record final shelf placement for the route batch.</p>
+                    </div>
+                    <label>
+                        Shelf Placement Date
+                        <input name="shelfPlacementDate" type="date" maxlength="256">
+                    </label>
+                    <label>
+                        Expiration / Sell-by Date
+                        <input name="expirationSellByDate" type="date" maxlength="256">
+                    </label>
+                    <label>
+                        Store Location ID
+                        <input name="storeLocationId"
+                               placeholder="STORE-001" maxlength="256">
+                    </label>
+                </section>
+
+                <section class="role-section ipfs-panel">
+                    <div class="section-heading">
+                        <h2>IPFS attachments</h2>
+                        <p>
+                            Upload a large file to the local IPFS node. The
+                            returned CID is saved with this block.
+                        </p>
+                    </div>
+                    <label>
+                        Attachment Category
+                        <select id="attachment-category"></select>
+                    </label>
+                    <label>
+                        File
+                        <input id="ipfs-files" type="file" multiple>
+                    </label>
+                    <ul id="attachment-list" class="attachment-list"></ul>
+                </section>
+
                 <label class="confirmation">
-                    <input id="confirmed" name="confirmed" type="checkbox" value="true" required>
+                    <input id="confirmed" name="confirmed" type="checkbox"
+                           value="true" required>
                     <span>I have reviewed and confirmed that the information is correct.</span>
                 </label>
 
-                <button type="submit">Confirm and Create Merkle Block</button>
+                <button id="submit-record" type="submit">
+                    Confirm and Create Merkle Block
+                </button>
             </form>
 
             <p id="request-status" class="request-status" aria-live="polite"></p>
@@ -69,12 +238,20 @@
         </section>
 
         <section id="result-card" class="card result-card" hidden>
-            <p class="eyebrow">VERIFICATION RESULT</p>
+            <p class="eyebrow">SUBMISSION RESULT</p>
             <h2 id="verification-title">Verified</h2>
             <dl>
                 <div>
                     <dt>Block ID</dt>
                     <dd id="block-id"></dd>
+                </div>
+                <div>
+                    <dt>Next Stage</dt>
+                    <dd id="next-stage"></dd>
+                </div>
+                <div>
+                    <dt>IPFS References</dt>
+                    <dd id="ipfs-count"></dd>
                 </div>
             </dl>
         </section>

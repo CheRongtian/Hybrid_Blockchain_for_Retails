@@ -3,11 +3,15 @@
 #include <cctype>
 #include <csignal>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <netdb.h>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <unordered_map>
@@ -32,7 +36,8 @@ namespace fs = std::filesystem;
 namespace
 {
 constexpr std::size_t MAX_HEADER_SIZE = 64 * 1024;
-constexpr std::size_t MAX_BODY_SIZE = 64 * 1024;
+constexpr std::size_t MAX_BODY_SIZE = 32 * 1024 * 1024;
+constexpr std::size_t MAX_IPFS_FILE_SIZE = 30 * 1024 * 1024;
 constexpr const char* CORS_HEADERS =
     "Access-Control-Allow-Origin: *\r\n"
     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
@@ -321,6 +326,402 @@ std::string json_escape(const std::string& value)
     return escaped.str();
 }
 
+struct MultipartPart
+{
+    std::string name;
+    std::string filename;
+    std::string content_type = "application/octet-stream";
+    std::string content;
+};
+
+std::optional<std::string> multipart_parameter(const std::string& value,
+                                               const std::string& name)
+{
+    const std::string quoted_name = name + "=\"";
+    const std::size_t quoted_start = value.find(quoted_name);
+    if(quoted_start != std::string::npos)
+    {
+        const std::size_t value_start = quoted_start + quoted_name.size();
+        const std::size_t value_end = value.find('"', value_start);
+        if(value_end == std::string::npos) return std::nullopt;
+        return value.substr(value_start, value_end - value_start);
+    }
+
+    const std::string plain_name = name + "=";
+    const std::size_t plain_start = value.find(plain_name);
+    if(plain_start == std::string::npos) return std::nullopt;
+    const std::size_t value_start = plain_start + plain_name.size();
+    const std::size_t value_end = value.find(';', value_start);
+    return value.substr(value_start,
+                        value_end == std::string::npos
+                            ? std::string::npos
+                            : value_end - value_start);
+}
+
+std::optional<std::vector<MultipartPart>> parse_multipart(
+    const std::string& content_type,
+    const std::string& body)
+{
+    const std::string lowered = lower(content_type);
+    const std::size_t boundary_start = lowered.find("boundary=");
+    if(lowered.find("multipart/form-data") != 0 ||
+       boundary_start == std::string::npos)
+        return std::nullopt;
+
+    std::string boundary = trim(content_type.substr(boundary_start + 9));
+    if(!boundary.empty() && boundary.front() == '"' && boundary.back() == '"')
+        boundary = boundary.substr(1, boundary.size() - 2);
+    if(boundary.empty()) return std::nullopt;
+
+    const std::string marker = "--" + boundary;
+    std::vector<MultipartPart> parts;
+    std::size_t cursor = body.find(marker);
+    while(cursor != std::string::npos)
+    {
+        const std::size_t marker_end = cursor + marker.size();
+        if(marker_end + 2 <= body.size() && body.compare(marker_end, 2, "--") == 0)
+            break;
+        if(marker_end + 2 > body.size() || body.compare(marker_end, 2, "\r\n") != 0)
+            return std::nullopt;
+
+        const std::size_t headers_start = marker_end + 2;
+        const std::size_t headers_end = body.find("\r\n\r\n", headers_start);
+        if(headers_end == std::string::npos) return std::nullopt;
+
+        std::unordered_map<std::string, std::string> headers;
+        std::size_t header_cursor = headers_start;
+        while(header_cursor < headers_end)
+        {
+            const std::size_t line_end = body.find("\r\n", header_cursor);
+            if(line_end == std::string::npos || line_end > headers_end)
+                return std::nullopt;
+            const std::string line = body.substr(header_cursor, line_end - header_cursor);
+            const std::size_t colon = line.find(':');
+            if(colon == std::string::npos) return std::nullopt;
+            headers[lower(trim(line.substr(0, colon)))] = trim(line.substr(colon + 1));
+            header_cursor = line_end + 2;
+        }
+
+        const auto disposition = headers.find("content-disposition");
+        if(disposition == headers.end()) return std::nullopt;
+        const auto name = multipart_parameter(disposition->second, "name");
+        if(!name) return std::nullopt;
+
+        const std::size_t content_start = headers_end + 4;
+        const std::size_t next_marker = body.find("\r\n" + marker, content_start);
+        if(next_marker == std::string::npos) return std::nullopt;
+
+        MultipartPart part;
+        part.name = *name;
+        part.filename = multipart_parameter(disposition->second, "filename")
+            .value_or("");
+        const auto content_type_header = headers.find("content-type");
+        if(content_type_header != headers.end() && !content_type_header->second.empty())
+            part.content_type = content_type_header->second;
+        part.content = body.substr(content_start, next_marker - content_start);
+        parts.push_back(std::move(part));
+
+        cursor = next_marker + 2;
+    }
+
+    return parts;
+}
+
+struct IpfsEndpoint
+{
+    std::string host;
+    std::string port;
+};
+
+std::optional<IpfsEndpoint> ipfs_endpoint()
+{
+    const char* configured = std::getenv("IPFS_API_URL");
+    const std::string url = configured && *configured
+        ? configured
+        : "http://127.0.0.1:5002";
+    if(url.rfind("http://", 0) != 0) return std::nullopt;
+
+    const std::string authority = url.substr(7);
+    const std::size_t path_start = authority.find('/');
+    const std::string host_port = authority.substr(0, path_start);
+    if(host_port.empty()) return std::nullopt;
+
+    const std::size_t colon = host_port.rfind(':');
+    IpfsEndpoint endpoint;
+    endpoint.host = colon == std::string::npos
+        ? host_port
+        : host_port.substr(0, colon);
+    endpoint.port = colon == std::string::npos
+        ? "5002"
+        : host_port.substr(colon + 1);
+    if(endpoint.host.empty() || endpoint.port.empty()) return std::nullopt;
+    return endpoint;
+}
+
+int connect_to_ipfs(const IpfsEndpoint& endpoint)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* addresses = nullptr;
+    if(getaddrinfo(endpoint.host.c_str(), endpoint.port.c_str(), &hints, &addresses) != 0)
+        return -1;
+
+    int socket_fd = -1;
+    for(addrinfo* address = addresses; address; address = address->ai_next)
+    {
+        socket_fd = socket(address->ai_family, address->ai_socktype,
+                           address->ai_protocol);
+        if(socket_fd == -1) continue;
+        if(connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0)
+            break;
+        close(socket_fd);
+        socket_fd = -1;
+    }
+
+    freeaddrinfo(addresses);
+    return socket_fd;
+}
+
+std::string safe_header_filename(std::string filename)
+{
+    for(char& character : filename)
+    {
+        if(character == '"' || character == '\r' || character == '\n')
+            character = '_';
+    }
+    return filename.empty() ? "upload.bin" : filename;
+}
+
+std::optional<std::string> json_string_value(const std::string& body,
+                                             const std::string& key)
+{
+    const std::string needle = "\"" + key + "\"";
+    const std::size_t key_position = body.find(needle);
+    if(key_position == std::string::npos) return std::nullopt;
+    const std::size_t colon = body.find(':', key_position + needle.size());
+    if(colon == std::string::npos) return std::nullopt;
+    const std::size_t quote_start = body.find('"', colon + 1);
+    if(quote_start == std::string::npos) return std::nullopt;
+
+    std::string value;
+    for(std::size_t cursor = quote_start + 1; cursor < body.size(); ++cursor)
+    {
+        if(body[cursor] == '"') return value;
+        if(body[cursor] == '\\' && cursor + 1 < body.size())
+        {
+            value += body[++cursor];
+            continue;
+        }
+        value += body[cursor];
+    }
+    return std::nullopt;
+}
+
+struct IpfsAddResult
+{
+    std::string cid;
+};
+
+std::optional<IpfsAddResult> add_file_to_ipfs(const MultipartPart& file)
+{
+    const auto endpoint = ipfs_endpoint();
+    if(!endpoint) return std::nullopt;
+
+    const int socket_fd = connect_to_ipfs(*endpoint);
+    if(socket_fd == -1) return std::nullopt;
+
+    const std::string boundary = "supply-chain-ipfs-" + generate_random_hex(8);
+    const std::string filename = safe_header_filename(file.filename);
+    std::ostringstream multipart;
+    multipart << "--" << boundary << "\r\n"
+              << "Content-Disposition: form-data; name=\"file\"; filename=\""
+              << filename << "\"\r\n"
+              << "Content-Type: " << file.content_type << "\r\n\r\n";
+    const std::string prefix = multipart.str();
+    const std::string suffix = "\r\n--" + boundary + "--\r\n";
+    const std::size_t body_size = prefix.size() + file.content.size() + suffix.size();
+
+    std::ostringstream request;
+    request << "POST /api/v0/add?pin=true&cid-version=1 HTTP/1.1\r\n"
+            << "Host: " << endpoint->host << ':' << endpoint->port << "\r\n"
+            << "Content-Type: multipart/form-data; boundary=" << boundary << "\r\n"
+            << "Content-Length: " << body_size << "\r\n"
+            << "Connection: close\r\n\r\n"
+            << prefix;
+    const std::string request_prefix = request.str();
+    const std::string request_suffix = suffix;
+
+    bool sent = write_all(socket_fd, request_prefix);
+    if(sent && !file.content.empty())
+        sent = write_all(socket_fd, file.content);
+    if(sent) sent = write_all(socket_fd, request_suffix);
+    if(!sent)
+    {
+        close(socket_fd);
+        return std::nullopt;
+    }
+
+    std::string response;
+    char buffer[8192];
+    while(true)
+    {
+        const ssize_t bytes_read = read(socket_fd, buffer, sizeof(buffer));
+        if(bytes_read == 0) break;
+        if(bytes_read < 0)
+        {
+            close(socket_fd);
+            return std::nullopt;
+        }
+        response.append(buffer, static_cast<std::size_t>(bytes_read));
+        if(response.size() > MAX_BODY_SIZE) break;
+    }
+    close(socket_fd);
+
+    const std::size_t status_end = response.find("\r\n");
+    if(status_end == std::string::npos) return std::nullopt;
+    std::istringstream status_line(response.substr(0, status_end));
+    std::string version;
+    int status_code = 0;
+    status_line >> version >> status_code;
+    if(status_code < 200 || status_code >= 300) return std::nullopt;
+
+    const std::size_t header_end = response.find("\r\n\r\n");
+    if(header_end == std::string::npos) return std::nullopt;
+    const std::string response_body = response.substr(header_end + 4);
+    const auto cid = json_string_value(response_body, "Hash");
+    if(!cid || cid->empty()) return std::nullopt;
+    return IpfsAddResult{*cid};
+}
+
+std::vector<std::string> role_event_fields(const std::string& role)
+{
+    if(role == "supplier")
+        return {"harvestDate", "farmLocation", "certificateId"};
+    if(role == "logistics")
+        return {"shipmentId", "pickupLocation", "deliveryLocation",
+                "departureTime", "arrivalTime", "temperatureHumiditySummary",
+                "vehicleContainerId"};
+    if(role == "warehouse")
+        return {"storageLotId", "inboundTime", "outboundTime",
+                "temperatureHumiditySummary", "storageZoneRackId"};
+    if(role == "supermarket")
+        return {"shelfPlacementDate", "expirationSellByDate", "storeLocationId"};
+    return {};
+}
+
+std::vector<std::string> role_attachment_categories(const std::string& role)
+{
+    if(role == "supplier")
+        return {"pesticideFertilizerRecords", "soilWeatherData", "harvestPhotos",
+                "inspectionReports"};
+    if(role == "logistics")
+        return {"gpsTrackLogs", "temperatureLogs", "transportDocuments",
+                "sealVerificationImages"};
+    if(role == "warehouse")
+        return {"inspectionReports", "fullTemperatureLogs", "energyUsageLogs"};
+    if(role == "supermarket")
+        return {"productPhotosLabels", "receiptTransactionRecords", "recallNotices",
+                "consumerFeedbackData"};
+    return {};
+}
+
+bool is_allowed_attachment_category(const std::string& role,
+                                    const std::string& category)
+{
+    const auto categories = role_attachment_categories(role);
+    return std::find(categories.begin(), categories.end(), category) != categories.end();
+}
+
+std::vector<std::string> split_text(const std::string& value, char separator)
+{
+    std::vector<std::string> pieces;
+    std::size_t cursor = 0;
+    while(cursor <= value.size())
+    {
+        const std::size_t next = value.find(separator, cursor);
+        pieces.push_back(value.substr(
+            cursor,
+            next == std::string::npos ? std::string::npos : next - cursor));
+        if(next == std::string::npos) break;
+        cursor = next + 1;
+    }
+    return pieces;
+}
+
+bool parse_ipfs_references(const std::string& encoded,
+                           std::vector<IpfsReference>& references,
+                           std::string& error)
+{
+    references.clear();
+    if(encoded.empty()) return true;
+    if(encoded.size() > 128 * 1024)
+    {
+        error = "IPFS reference list is too large";
+        return false;
+    }
+
+    for(const std::string& token : split_text(encoded, ','))
+    {
+        const auto pieces = split_text(token, '|');
+        if(pieces.size() != 5)
+        {
+            error = "Malformed IPFS reference";
+            return false;
+        }
+
+        const auto category = percent_decode(pieces[0]);
+        const auto cid = percent_decode(pieces[1]);
+        const auto filename = percent_decode(pieces[2]);
+        const auto content_type = percent_decode(pieces[3]);
+        if(!category || !cid || !filename || !content_type ||
+           category->empty() || cid->empty())
+        {
+            error = "Malformed IPFS reference encoding";
+            return false;
+        }
+
+        long long size = 0;
+        try
+        {
+            size = std::stoll(pieces[4]);
+        }
+        catch(const std::exception&)
+        {
+            error = "Malformed IPFS reference size";
+            return false;
+        }
+        if(size < 0 || size > static_cast<long long>(MAX_IPFS_FILE_SIZE))
+        {
+            error = "Invalid IPFS reference size";
+            return false;
+        }
+
+        references.push_back(IpfsReference{
+            *category, *cid, *filename, *content_type, size
+        });
+    }
+    return true;
+}
+
+std::string event_data_json(const std::string& role,
+                            const std::unordered_map<std::string, std::string>& fields)
+{
+    std::ostringstream json;
+    json << '{';
+    const auto names = role_event_fields(role);
+    for(std::size_t index = 0; index < names.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const auto item = fields.find(names[index]);
+        const std::string value = item == fields.end() ? "" : item->second;
+        json << '"' << json_escape(names[index]) << "\":\""
+             << json_escape(value) << '"';
+    }
+    json << '}';
+    return json.str();
+}
+
 struct WorkflowStep
 {
     const char* id;
@@ -358,24 +759,65 @@ std::string stage_for_role(const std::string& role)
     return fixed_workflow()[static_cast<std::size_t>(index)].role;
 }
 
-std::string canonical_record(const std::unordered_map<std::string, std::string>& fields,
-                             const UserAccount& account)
+void append_canonical_field(std::ostringstream& record,
+                            const std::string& name,
+                            const std::string& value)
 {
-    const char* names[] = {"batchId", "product", "origin"};
+    record << name << ':' << value.size() << ':' << value << '\n';
+}
+
+std::string canonical_record(const SupplyChainBatch& batch,
+                             const std::unordered_map<std::string, std::string>& fields,
+                             const UserAccount& account,
+                             const std::vector<IpfsReference>& references,
+                             const SupplyChainRecord* parent)
+{
     std::ostringstream record;
-    for(const char* name : names)
+    append_canonical_field(record, "batchId", batch.batch_id);
+    append_canonical_field(record, "product", batch.product);
+    append_canonical_field(record, "harvestDate", batch.harvest_date);
+    append_canonical_field(record, "farmLocation", batch.farm_location);
+    append_canonical_field(record, "certificateId", batch.certificate_id);
+    append_canonical_field(record, "stage", stage_for_role(account.role));
+
+    const std::string parent_block_id = parent
+        ? std::to_string(parent->block_id)
+        : "GENESIS";
+    const std::string parent_hash = parent
+        ? (!parent->block_hash.empty() ? parent->block_hash : parent->root_hash)
+        : "GENESIS";
+    append_canonical_field(record, "parentBlockId", parent_block_id);
+    append_canonical_field(record, "parentBlockHash", parent_hash);
+
+    for(const std::string& name : role_event_fields(account.role))
     {
-        const std::string& value = fields.at(name);
-        record << name << ':' << value.size() << ':' << value << '\n';
+        const auto item = fields.find(name);
+        append_canonical_field(record, "event." + name,
+                               item == fields.end() ? "" : item->second);
     }
-    const std::string stage = stage_for_role(account.role);
-    record << "stage:" << stage.size() << ':' << stage << '\n';
-    record << "confirmedBy:" << account.username.size() << ':'
-           << account.username << '\n';
-    record << "uid:" << account.uid.size() << ':' << account.uid << '\n';
-    record << "role:" << account.role.size() << ':' << account.role << '\n';
-    record << "organizationId:" << account.organization_id.size() << ':'
-           << account.organization_id << '\n';
+
+    std::vector<IpfsReference> sorted_references = references;
+    std::sort(sorted_references.begin(), sorted_references.end(),
+              [](const IpfsReference& left, const IpfsReference& right) {
+                  if(left.category != right.category)
+                      return left.category < right.category;
+                  return left.cid < right.cid;
+              });
+    for(std::size_t index = 0; index < sorted_references.size(); ++index)
+    {
+        const IpfsReference& reference = sorted_references[index];
+        const std::string prefix = "ipfs." + std::to_string(index) + ".";
+        append_canonical_field(record, prefix + "category", reference.category);
+        append_canonical_field(record, prefix + "cid", reference.cid);
+        append_canonical_field(record, prefix + "filename", reference.filename);
+        append_canonical_field(record, prefix + "contentType", reference.content_type);
+        append_canonical_field(record, prefix + "size", std::to_string(reference.size));
+    }
+
+    append_canonical_field(record, "confirmedBy", account.username);
+    append_canonical_field(record, "uid", account.uid);
+    append_canonical_field(record, "role", account.role);
+    append_canonical_field(record, "organizationId", account.organization_id);
     return record.str();
 }
 
@@ -393,6 +835,25 @@ std::string user_json(const UserAccount& account)
            "\"}";
 }
 
+std::string ipfs_refs_json(const std::vector<IpfsReference>& references)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t index = 0; index < references.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const IpfsReference& reference = references[index];
+        json << "{\"category\":\"" << json_escape(reference.category)
+             << "\",\"cid\":\"" << json_escape(reference.cid)
+             << "\",\"filename\":\"" << json_escape(reference.filename)
+             << "\",\"contentType\":\""
+             << json_escape(reference.content_type)
+             << "\",\"size\":" << reference.size << '}';
+    }
+    json << ']';
+    return json.str();
+}
+
 std::string records_json(const std::vector<SupplyChainRecord>& records)
 {
     std::ostringstream json;
@@ -404,19 +865,63 @@ std::string records_json(const std::vector<SupplyChainRecord>& records)
         json << "{\"blockID\":" << record.block_id
              << ",\"batchId\":\"" << json_escape(record.batch_id)
              << "\",\"product\":\"" << json_escape(record.product)
-             << "\",\"origin\":\"" << json_escape(record.origin)
+             << "\",\"locationSummary\":\""
+             << json_escape(record.location_summary)
+             << "\",\"batchHarvestDate\":\""
+             << json_escape(record.batch_harvest_date)
+             << "\",\"batchFarmLocation\":\""
+             << json_escape(record.batch_farm_location)
+             << "\",\"certificateId\":\""
+             << json_escape(record.certificate_id)
              << "\",\"stage\":\"" << json_escape(record.stage)
              << "\",\"confirmedBy\":\"" << json_escape(record.confirmed_by)
              << "\",\"uid\":\"" << json_escape(record.uid)
              << "\",\"role\":\"" << json_escape(record.role)
              << "\",\"organizationId\":\""
              << json_escape(record.organization_id)
-             << "\",\"rootHash\":\"" << json_escape(record.root_hash)
+             << "\",\"eventData\":" << (record.event_data.empty()
+                 ? "{}"
+                 : record.event_data)
+             << ",\"ipfsRefs\":" << ipfs_refs_json(record.ipfs_refs)
+             << ",\"rootHash\":\"" << json_escape(record.root_hash)
              << "\",\"proof\":\"" << json_escape(record.proof)
              << "\",\"verified\":" << (record.verified ? "true" : "false")
              << ",\"blockHash\":\"" << json_escape(record.block_hash)
              << "\",\"chainStatus\":\"" << json_escape(record.chain_status)
              << "\",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
+    }
+    json << ']';
+    return json.str();
+}
+
+std::string batches_json(const std::vector<SupplyChainBatch>& batches)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t index = 0; index < batches.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const SupplyChainBatch& batch = batches[index];
+        const int current_index = workflow_index_for_role(batch.current_stage);
+        const bool completed = batch.status == "completed" ||
+            current_index == static_cast<int>(fixed_workflow().size()) - 1;
+        const std::string next_stage = completed || current_index < 0 ||
+            current_index + 1 >= static_cast<int>(fixed_workflow().size())
+            ? ""
+            : fixed_workflow()[static_cast<std::size_t>(current_index + 1)].role;
+        json << "{\"batchId\":\"" << json_escape(batch.batch_id)
+             << "\",\"product\":\"" << json_escape(batch.product)
+             << "\",\"harvestDate\":\"" << json_escape(batch.harvest_date)
+             << "\",\"farmLocation\":\""
+             << json_escape(batch.farm_location)
+             << "\",\"certificateId\":\""
+             << json_escape(batch.certificate_id)
+             << "\",\"currentStage\":\""
+             << json_escape(batch.current_stage)
+             << "\",\"nextStage\":\"" << json_escape(next_stage)
+             << "\",\"status\":\"" << json_escape(batch.status)
+             << "\",\"createdAt\":\"" << json_escape(batch.created_at)
+             << "\"}";
     }
     json << ']';
     return json.str();
@@ -717,6 +1222,8 @@ int main(int argc, char* argv[])
             request.target == "/api/auth/logout" ||
             request.target == "/api/auth/me" ||
             request.target == "/api/records" ||
+            request.target == "/api/batches" ||
+            request.target == "/api/ipfs/files" ||
             request.target == "/api/workflow" ||
             request.target == "/api/chains";
 
@@ -842,6 +1349,31 @@ int main(int argc, char* argv[])
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
+        else if(request.method == "GET" && request.target == "/api/batches")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                std::vector<SupplyChainBatch> batches;
+                if(load_supply_chain_batches(database_path.string(), batches))
+                {
+                    status = "200 OK";
+                    body = batches_json(batches);
+                }
+                else
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error("Failed to read supply-chain batches");
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
         else if(request.method == "GET" && request.target == "/api/workflow")
         {
             content_type = "application/json; charset=utf-8";
@@ -895,6 +1427,73 @@ int main(int argc, char* argv[])
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
+        else if(request.method == "POST" && request.target == "/api/ipfs/files")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                const auto content_type_header = request.headers.find("content-type");
+                const auto parts = content_type_header == request.headers.end()
+                    ? std::nullopt
+                    : parse_multipart(content_type_header->second, request.body);
+                const MultipartPart* file_part = nullptr;
+                std::string category;
+                if(parts)
+                {
+                    for(const MultipartPart& part : *parts)
+                    {
+                        if(part.name == "category") category = part.content;
+                        if(part.name == "file" && !part.filename.empty())
+                            file_part = &part;
+                    }
+                }
+
+                std::string validation_error;
+                if(!parts)
+                    validation_error = "Content-Type must be multipart/form-data";
+                else if(!file_part)
+                    validation_error = "A file is required";
+                else if(!is_allowed_attachment_category(user->role, category))
+                    validation_error = "The attachment category is not allowed for this role";
+                else if(file_part->content.size() > MAX_IPFS_FILE_SIZE)
+                    validation_error = "The file exceeds the local demo size limit";
+
+                if(!validation_error.empty())
+                {
+                    status = "422 Unprocessable Entity";
+                    body = json_error(validation_error);
+                }
+                else
+                {
+                    const auto added = add_file_to_ipfs(*file_part);
+                    if(!added)
+                    {
+                        status = "503 Service Unavailable";
+                        body = json_error(
+                            "IPFS upload failed. Start a local IPFS API at IPFS_API_URL");
+                    }
+                    else
+                    {
+                        status = "201 Created";
+                        body = "{\"category\":\"" + json_escape(category) +
+                               "\",\"cid\":\"" + json_escape(added->cid) +
+                               "\",\"filename\":\"" +
+                               json_escape(file_part->filename) +
+                               "\",\"contentType\":\"" +
+                               json_escape(file_part->content_type) +
+                               "\",\"size\":" +
+                               std::to_string(file_part->content.size()) + "}";
+                    }
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
         else if(request.method == "POST" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
@@ -912,9 +1511,6 @@ int main(int argc, char* argv[])
                         "application/x-www-form-urlencoded") == 0;
                 const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
-                const char* required[] = {
-                    "batchId", "product", "origin"
-                };
                 std::string validation_error;
                 if(!correct_type)
                     validation_error = "Content-Type must be application/x-www-form-urlencoded";
@@ -922,25 +1518,62 @@ int main(int argc, char* argv[])
                     validation_error = "Malformed form body";
                 else
                 {
-                    for(const char* name : required)
-                    {
+                    const int current_index = workflow_index_for_role(user->role);
+                    auto required_value = [&](const std::string& name) {
                         const auto item = fields->find(name);
-                        if(item == fields->end() || trim(item->second).empty())
+                        return item != fields->end() &&
+                               !trim(item->second).empty() &&
+                               item->second.size() <= 256;
+                    };
+
+                    if(!required_value("batchId"))
+                        validation_error = "batchId is required";
+                    else if(current_index < 0)
+                        validation_error = "This account is not part of the preset workflow";
+                    else if(current_index == 0 && !required_value("product"))
+                        validation_error = "product is required for a new batch";
+                    else if(fields->find("confirmed") == fields->end() ||
+                            fields->at("confirmed") != "true")
+                        validation_error = "Information must be confirmed";
+                    else
+                    {
+                        for(const std::string& name : role_event_fields(user->role))
                         {
-                            validation_error = std::string(name) + " is required";
-                            break;
-                        }
-                        if(item->second.size() > 256)
-                        {
-                            validation_error = std::string(name) + " is too long";
-                            break;
+                            if(!required_value(name))
+                            {
+                                validation_error = name + " is required";
+                                break;
+                            }
                         }
                     }
 
-                    const auto confirmed = fields->find("confirmed");
-                    if(validation_error.empty() &&
-                       (confirmed == fields->end() || confirmed->second != "true"))
-                        validation_error = "Information must be confirmed";
+                    if(validation_error.empty())
+                    {
+                        const auto references_field = fields->find("ipfsRefs");
+                        std::vector<IpfsReference> references;
+                        if(!parse_ipfs_references(
+                               references_field == fields->end()
+                                   ? ""
+                                   : references_field->second,
+                               references,
+                               validation_error))
+                        {
+                            // The parser supplies the validation message.
+                        }
+                        else
+                        {
+                            for(const IpfsReference& reference : references)
+                            {
+                                if(!is_allowed_attachment_category(
+                                       user->role, reference.category))
+                                {
+                                    validation_error =
+                                        "The attachment category is not allowed for this role";
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if(!validation_error.empty())
@@ -955,15 +1588,26 @@ int main(int argc, char* argv[])
                         latest_batch_record(stored_records, batch_id);
                     const auto& workflow = fixed_workflow();
                     const int current_index = workflow_index_for_role(user->role);
+                    const auto stored_batch =
+                        find_supply_chain_batch(database_path.string(), batch_id);
                     std::string workflow_error;
+                    SupplyChainBatch batch;
 
                     if(current_index < 0)
                     {
                         workflow_error = "This account is not part of the preset workflow";
                     }
-                    else if(!parent && current_index != 0)
+                    else if(current_index == 0 && (parent || stored_batch))
                     {
-                        workflow_error = "A new batch must start at the Supplier stage";
+                        workflow_error = "This batch ID is already in use";
+                    }
+                    else if(current_index != 0 && !stored_batch)
+                    {
+                        workflow_error = "Select an existing batch created by the Supplier stage";
+                    }
+                    else if(current_index != 0 && !parent)
+                    {
+                        workflow_error = "The selected batch has no previous block";
                     }
                     else if(parent)
                     {
@@ -985,6 +1629,27 @@ int main(int argc, char* argv[])
                         }
                     }
 
+                    if(workflow_error.empty())
+                    {
+                        if(current_index == 0)
+                        {
+                            batch.batch_id = batch_id;
+                            batch.product = fields->at("product");
+                            batch.harvest_date = fields->at("harvestDate");
+                            batch.farm_location = fields->at("farmLocation");
+                            batch.certificate_id = fields->at("certificateId");
+                            batch.created_by_uid = user->uid;
+                            batch.current_stage = stage_for_role(user->role);
+                            batch.status = current_index == static_cast<int>(workflow.size()) - 1
+                                ? "completed"
+                                : "in_progress";
+                        }
+                        else
+                        {
+                            batch = *stored_batch;
+                        }
+                    }
+
                     if(!workflow_error.empty())
                     {
                         status = "409 Conflict";
@@ -992,8 +1657,27 @@ int main(int argc, char* argv[])
                     }
                     else
                     {
+                        const auto references_field = fields->find("ipfsRefs");
+                        std::vector<IpfsReference> references;
+                        std::string references_error;
+                        if(!parse_ipfs_references(
+                               references_field == fields->end()
+                                   ? ""
+                                   : references_field->second,
+                               references,
+                               references_error))
+                        {
+                            status = "422 Unprocessable Entity";
+                            body = json_error(references_error);
+                            send_response(
+                                client_fd, status, content_type, body, true, CORS_HEADERS);
+                            close(client_fd);
+                            continue;
+                        }
+
                         const int block_id = static_cast<int>(canonical_records.size());
-                        const std::string record = canonical_record(*fields, *user);
+                        const std::string record = canonical_record(
+                            batch, *fields, *user, references, parent);
                         MerkleTree candidate_tree(1);
                         bool candidate_ready = true;
                         for(const std::string& stored_record : canonical_records)
@@ -1019,13 +1703,29 @@ int main(int argc, char* argv[])
                             SupplyChainRecord database_record;
                             database_record.block_id = block_id;
                             database_record.batch_id = batch_id;
-                            database_record.product = fields->at("product");
-                            database_record.origin = fields->at("origin");
+                            database_record.product = batch.product;
+                            if(user->role == "supplier")
+                                database_record.location_summary = fields->at("farmLocation");
+                            else if(user->role == "logistics")
+                                database_record.location_summary =
+                                    fields->at("pickupLocation") + " -> " +
+                                    fields->at("deliveryLocation");
+                            else if(user->role == "warehouse")
+                                database_record.location_summary =
+                                    fields->at("storageZoneRackId");
+                            else
+                                database_record.location_summary =
+                                    fields->at("storeLocationId");
+                            database_record.batch_harvest_date = batch.harvest_date;
+                            database_record.batch_farm_location = batch.farm_location;
+                            database_record.certificate_id = batch.certificate_id;
                             database_record.stage = stage_for_role(user->role);
                             database_record.confirmed_by = user->username;
                             database_record.uid = user->uid;
                             database_record.role = user->role;
                             database_record.organization_id = user->organization_id;
+                            database_record.event_data = event_data_json(user->role, *fields);
+                            database_record.ipfs_refs = references;
                             database_record.canonical_record = record;
                             database_record.root_hash = candidate_tree.GetRootHash();
                             database_record.proof = proof;
@@ -1073,7 +1773,16 @@ int main(int argc, char* argv[])
                                        ",\"chainStatus\":\"" +
                                        json_escape(database_record.chain_status) +
                                        "\",\"stage\":\"" +
-                                       json_escape(database_record.stage) + "\"}";
+                                       json_escape(database_record.stage) +
+                                       "\",\"batchId\":\"" +
+                                       json_escape(database_record.batch_id) +
+                                       "\",\"nextStage\":\"" +
+                                       json_escape(
+                                           current_index + 1 < static_cast<int>(workflow.size())
+                                               ? workflow[static_cast<std::size_t>(current_index + 1)].role
+                                               : "") +
+                                       "\",\"ipfsCount\":" +
+                                       std::to_string(references.size()) + "}";
                             }
                         }
                     }

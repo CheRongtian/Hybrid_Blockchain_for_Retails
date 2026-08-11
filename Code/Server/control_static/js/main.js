@@ -134,7 +134,19 @@ function renderChainNode(record) {
     appendNodeLine(node, "Organization", record.organizationId);
     appendNodeLine(node, "Stage", record.stage);
     appendNodeLine(node, "Product", record.product);
-    appendNodeLine(node, "Origin", record.origin);
+    appendNodeLine(node, "Harvest Date", record.batchHarvestDate);
+    appendNodeLine(node, "Farm Location", record.batchFarmLocation);
+    appendNodeLine(node, "Location Summary", record.locationSummary);
+
+    const eventData = document.createElement("pre");
+    eventData.className = "event-data";
+    eventData.textContent = JSON.stringify(record.eventData || {}, null, 2);
+    node.append(eventData);
+
+    const cidText = record.ipfsRefs?.length
+        ? record.ipfsRefs.map((reference) => `${reference.category}: ${reference.cid}`).join("\n")
+        : "None";
+    appendNodeLine(node, "CID References", cidText);
     return node;
 }
 

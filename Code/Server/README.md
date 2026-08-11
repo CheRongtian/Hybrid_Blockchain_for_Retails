@@ -1,25 +1,26 @@
 # Supply Chain User and Control Servers
 
-The project builds two independent C++17 HTTP servers:
+The Server directory contains two independent C++17 HTTP servers:
 
-```text
-User browser -> login control_server :8081/api/auth/login
-             -> POST control_server :8081/api/records
-             -> MerkleTree::Append
-             -> generate and verify proof
-             -> save block and chain edge in Code/Database/supply_chain.db
+```
+User browser -> user_server :8080
+             -> control_server :8081/api/auth/login
+             -> control_server :8081/api/records
+             -> MerkleTree append and proof verification
+             -> SQLite block, batch, attachment, and edge records
 
 Control browser -> control_server :8081
-                -> GET /api/chains
-                -> read SQLite workflow graph
+                -> preset workflow Canvas
+                -> saved batch chains and CID references
 ```
 
-`user_server` only serves the user confirmation page. `control_server` owns the
-Merkle Tree, authentication, SQLite writes, verification API, and control page.
-On startup, the control server reads records in `block_id` order and rebuilds
-the in-memory Merkle Tree.
+user_server serves the user-facing static page. control_server owns
+authentication, the in-memory Merkle Tree, SQLite, IPFS forwarding, block
+creation, and the control page.
 
-## Build from Code
+## Build
+
+The project is configured from the Code directory:
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"
@@ -29,131 +30,230 @@ cmake --build build
 
 ## Run
 
-Start the control server first, then the user server in a second terminal:
+Start each server in its own terminal:
 
 ```bash
-./build/Server/control_server
-./build/Server/user_server
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
+./Server/control_server
+```
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
+./Server/user_server
 ```
 
 Open:
 
-```text
+```
 User page:    http://127.0.0.1:8080/
 Control page: http://127.0.0.1:8081/
 ```
 
-Optional arguments:
+The default database path is:
 
-```text
-./control_server [port] [static_directory] [database_path]
-./user_server [port] [static_directory]
+```
+Code/Database/supply_chain.db
 ```
 
-The default database path is `Code/Database/supply_chain.db`, independent of
-the terminal working directory. Files ending in `.db`, `.db-wal`, and `.db-shm`
-are ignored by Git.
+The control server also accepts:
 
-## Database
+```
+./control_server [port] [static_directory] [database_path]
+```
 
-The `supply_chain_records` table contains:
+## Fixed workflow
 
-- `id`
-- `block_id`
-- `batch_id`
-- `product`
-- `origin`
-- `stage`
-- `confirmed_by`
-- `uid`
-- `role`
-- `organization_id`
-- `canonical_record`
-- `root_hash`
-- `proof`
-- `verified`
-- `block_hash`
-- `chain_status`
-- `created_at`
+The current route is fixed:
 
-`root_hash` and `proof` are snapshots captured when each record is submitted.
-As later blocks are appended, the current Merkle root can change while these
-historical snapshots remain stored.
-
-The `block_edges` table stores the connections between blocks:
-
-- `from_block_id`
-- `to_block_id`
-- `batch_id`
-- `relation`
-
-The current preset route is:
-
-```text
+```
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The server accepts a new block only when the authenticated account matches the
-next stage in this route. A new batch must start at Supplier, and Supermarket is
-the terminal stage. Each accepted block after the first one is connected to the
-previous block for the same batch through `block_edges`.
+The server accepts a new block only when the authenticated role is the next
+stage for that batch. Supplier creates the batch master data. Later stages
+select an existing batch and inherit its product, harvest date, farm location,
+and certificate ID. Supermarket completes the route.
 
-The control page receives this route from `GET /api/workflow` and draws it on a
-Canvas. Route editing, branching, and merging are reserved for a later
-workflow editor.
+The route topology is separate from transport event facts. Logistics records
+pickup and delivery locations inside its own event data; those fields do not
+change the preset route.
+
+## Role-specific event fields
+
+The current user page presents fields for the authenticated role:
+
+| Role | Fields |
+| --- | --- |
+| Supplier | Harvest Date, Farm Location, Certificate ID |
+| Logistics | Shipment ID, Pickup Location, Delivery Location, Departure/Arrival Time, Temperature/Humidity Summary, Vehicle/Container ID |
+| Warehouse | Storage Lot ID, Inbound/Outbound Time, Temperature/Humidity Summary, Storage Zone/Rack ID |
+| Supermarket | Shelf Placement Date, Expiration/Sell-by Date, Store Location ID |
+
+The active four-stage route does not yet add the Inspection Agency role from
+the appendix.
+
+## IPFS API
+
+The server uses an existing local IPFS/Kubo node and writes the integration
+layer in server.cpp. It does not implement the IPFS protocol.
+
+The default local API endpoint is:
+
+```
+http://127.0.0.1:5002
+```
+
+Configure Kubo once on macOS so it uses port 5002 and runs as a background
+service:
+
+```bash
+ipfs config Addresses.API /ip4/127.0.0.1/tcp/5002
+brew services start kubo
+```
+
+After that setup, the control server only needs:
+
+```bash
+./Server/control_server
+```
+
+Use `IPFS_API_URL` only when a deployment uses a different IPFS host or port.
+
+The user page uploads a selected file to POST /api/ipfs/files. The control
+server forwards the file to the IPFS /api/v0/add API and returns the CID.
+The following record submission sends the CID reference with the structured
+event:
+
+```
+POST /api/records
+Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer <token>
+```
+
+The file body is held by IPFS. SQLite stores the CID and file metadata. The
+current local demo accepts files up to 30 MB per upload.
+
+The IPFS daemon must be started separately. This project does not run or test
+an external IPFS service automatically.
 
 ## API
 
-The API is provided by `control_server` on port `8081`.
+All API endpoints below are provided by control_server on port 8081.
 
 ### Authentication
 
-`POST /api/auth/login` accepts:
+POST /api/auth/login accepts username and password and returns a temporary
+Bearer token with the authenticated UID, role, and organization.
 
-- `username`
-- `password`
+GET /api/auth/me validates a token.
 
-The response contains a temporary Bearer token and the authenticated user's
-UID, role, and organization. Tokens expire after eight hours and are held in
-the control server's memory.
+POST /api/auth/logout invalidates a token.
 
-`POST /api/auth/logout` invalidates the current Bearer token. Both the user and
-control pages expose a logout button. Both login forms include an unchecked
-remember-me option; the browser stores the session persistently only when the
-option is selected.
+### Batch selection
 
-The local demo accounts and credentials are documented in the repository-level
-README. These credentials are for local development only. Passwords are stored
-as salted PBKDF2 hashes in SQLite.
+GET /api/batches returns batch master data and the next required route stage.
+The user page uses this endpoint for Logistics, Warehouse, and Supermarket
+selection.
 
-`POST /api/records` accepts `application/x-www-form-urlencoded` fields:
+### File upload
 
-- `batchId`
-- `product`
-- `origin`
-- `confirmed=true`
+POST /api/ipfs/files accepts a multipart form with:
 
-It also requires an `Authorization: Bearer <token>` header. The server obtains
-the confirmer, UID, role, organization, and stage from the authenticated
-session. The browser cannot choose the stage.
+- category
+- file
 
-Successful response:
+The response contains:
 
 ```json
 {
-  "blockID": 0,
-  "verified": true,
-  "chainStatus": "in_progress",
-  "stage": "supplier"
+  "category": "harvestPhotos",
+  "cid": "bafy...",
+  "filename": "harvest.jpg",
+  "contentType": "image/jpeg",
+  "size": 12345
 }
 ```
 
-`GET /api/records` requires an admin token and returns all stored records for
-the control page, including the submitted fields, identity information, block
-ID, root hash, proof, verification status, and submission time.
+### Record submission
 
-`GET /api/chains` requires an admin token and returns the same block records
-together with the `block_edges` connections used by the control workflow view.
+POST /api/records requires:
 
-`GET /api/workflow` requires an admin token and returns the preset route nodes
-and edges used by the Canvas view.
+- batchId;
+- the role-specific event fields;
+- confirmed=true;
+- optional ipfsRefs;
+- an Authorization Bearer token.
+
+The server derives the stage, UID, confirmer, and organization from the
+authenticated session. The browser cannot choose the stage.
+
+The response includes the new block ID, verification status, batch ID, next
+stage, and CID count.
+
+### Control endpoints
+
+GET /api/workflow returns the fixed route for the Canvas.
+
+GET /api/chains returns saved records and block edges for the administrator
+control page.
+
+GET /api/records returns saved verification records for the administrator.
+
+## SQLite schema
+
+The control server creates:
+
+```
+batches
+    batch_id
+    product
+    harvest_date
+    farm_location
+    certificate_id
+    created_by_uid
+    current_stage
+    status
+
+supply_chain_records
+    inherited batch data
+    event_data
+    canonical_record
+    root_hash
+    proof
+    verified
+    block_hash
+    chain_status
+    created_at
+
+record_attachments
+    block_id
+    category
+    cid
+    filename
+    content_type
+    size
+
+block_edges
+    from_block_id
+    to_block_id
+    batch_id
+    relation
+```
+
+The canonical Merkle record covers batch master data, role event data, sorted
+CID references, the parent block ID/hash, and authenticated identity fields.
+
+## Authentication
+
+The five local demonstration accounts are documented in the repository-level
+README. Passwords are stored as salted PBKDF2 hashes. Both pages provide
+logout and an unchecked remember-me option.
+
+## Scope limits
+
+- The active route is fixed to four stages.
+- Inspection Agency, digital signatures, and third-party verification are
+  deferred.
+- Public-chain, private-chain, cross-chain, and external gateway work is
+  outside this stage.
+- MerkleTree is used as an existing library and remains unchanged.

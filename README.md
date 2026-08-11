@@ -1,46 +1,55 @@
-# Hybrid-Chain Design Prototype
+# Hybrid-Chain Supply Chain Prototype
 
-This repository is a learning and prototype project around blockchain data
-structures, memory allocation, and supply-chain traceability.
+This repository contains a local supply-chain verification prototype built
+around a C++ Merkle Tree, two HTTP servers, SQLite, and IPFS CID references.
 
-The currently runnable flow is a two-server supply-chain demo:
+The current runnable route is:
 
-```text
-User browser :8080
-        │  submit confirmed record
-        ▼
-user_server
-        │  POST /api/records
-        ▼
-control_server :8081
-        ├─ canonicalize the record
-        ├─ append it to the Merkle Tree
-        ├─ generate and verify a Merkle Proof
-        └─ save the block, chain edge, and verification snapshot in SQLite
+```
+Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The control page is served by `control_server` and reads the saved workflow
-graph through `GET /api/chains`. It also receives the preset route through
-`GET /api/workflow`.
+The route is fixed by the control server. A browser user submits data only for
+the authenticated stage. The control server validates the stage order, creates
+the next Merkle block, stores the local verification snapshot, and links the
+block to the previous block for the same batch.
+
+## Data flow
+
+```
+User browser :8080
+        |
+        | stage event and CID references
+        v
+control_server :8081
+        |
+        +-- batch master data and event data -> SQLite
+        +-- large file upload -> local IPFS -> CID
+        +-- batch data, event data, CID references, and parent link -> MerkleTree
+        +-- control workflow and chain view
+```
+
+Large files are uploaded to IPFS first. The application stores the returned
+CID and file metadata in SQLite. The file body does not enter the SQLite
+record or the Merkle input.
 
 ## Repository structure
 
-Generated build directories are omitted from this overview.
-
-```text
+```
 Blockchain Structure/
 ├── Architecture/                 # Architecture diagrams
 ├── Code/
 │   ├── CMakeLists.txt             # Top-level CMake entry
-│   ├── MerkleTree/                # Merkle Tree library and CLI
-│   ├── Server/                    # User server and control server
-│   │   ├── server.cpp             # control_server implementation
-│   │   ├── user_server.cpp        # user_server implementation
-│   │   ├── db_utils.cpp/.hpp      # SQLite persistence helpers
-│   │   ├── static/                # User-facing page
+│   ├── MerkleTree/                # Merkle Tree library and standalone CLI
+│   ├── Server/                    # User server, control server, and pages
+│   │   ├── server.cpp             # Control server, API, IPFS adapter
+│   │   ├── user_server.cpp        # User-facing static file server
+│   │   ├── auth_utils.cpp/.hpp    # Password hashing and tokens
+│   │   ├── db_utils.cpp/.hpp      # SQLite persistence
+│   │   ├── static/                # User page
 │   │   └── control_static/        # Control page
-│   ├── Database/                  # Local runtime database location
-│   ├── MemoryPool/                # Simple memory-pool experiments
+│   ├── Database/                  # Local SQLite database location
+│   ├── MemoryPool/                # Memory-pool experiments
 │   ├── ConMemPool/                # Concurrent allocator experiments
 │   ├── PrCsample.sol              # Solidity sample
 │   ├── SNsample.sol               # Solidity sample
@@ -49,13 +58,17 @@ Blockchain Structure/
 └── README.md
 ```
 
-`Code/Database/supply_chain.db` is created locally by the control server and
-is ignored by Git. Its `-wal` and `-shm` files are ignored as well.
+The database files are ignored by Git:
+
+```
+Code/Database/supply_chain.db
+Code/Database/supply_chain.db-wal
+Code/Database/supply_chain.db-shm
+```
 
 ## Build
 
-Run CMake from the `Code` directory. This single configuration handles the
-MerkleTree and Server subdirectories.
+Run CMake from the Code directory:
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"
@@ -65,15 +78,15 @@ cmake --build build
 
 The build produces:
 
-```text
+```
 Code/build/Server/control_server
 Code/build/Server/user_server
 Code/build/MerkleTree/merkle_cli
 ```
 
-## Run the supply-chain demo
+## Run the servers
 
-Start the control server first. Start the user server in a second terminal.
+Start the control server and user server in separate terminals:
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
@@ -85,142 +98,149 @@ cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
 ./Server/user_server
 ```
 
-Open the two pages:
+Open:
 
-```text
+```
 User page:    http://127.0.0.1:8080/
 Control page: http://127.0.0.1:8081/
 ```
 
-The user page collects:
+The control server owns authentication, SQLite, the in-memory Merkle Tree,
+IPFS upload forwarding, block creation, and the control page. The user server
+serves the user page and does not own the database.
 
-- batch ID
-- product
-- origin
-- confirmer
-- confirmation checkbox
+## Batch and stage behavior
 
-After confirmation, the browser sends the record to the control server. A
-successful submission clears the form, creates one block, and returns the Block
-ID, stage, and verification status. The current stage is supplied by the
-authenticated account and cannot be chosen in the browser. The control page
-renders the preset route and the saved blocks with their connections. Root and
-Proof remain stored for later control-side verification work.
+Batch master data is created once for one route batch by the Supplier:
 
-## SQLite records
-
-The database table is `supply_chain_records`:
-
-```text
-id
-block_id
-batch_id
-product
-origin
-stage
-confirmed_by
-canonical_record
-root_hash
-proof
-verified
-block_hash
-chain_status
-created_at
+```
+Batch ID
+Product
+Harvest Date
+Farm Location
+Certificate ID
 ```
 
-The `block_edges` table stores workflow connections:
+The later stages select an existing batch. Product, harvest date, farm
+location, and certificate ID are loaded by the server and shown as inherited
+read-only data. The browser does not submit a new product definition for those
+stages.
 
-```text
-from_block_id
-to_block_id
-batch_id
-relation
+The active role-specific event fields follow the project appendix:
+
+| Role | Structured event data |
+| --- | --- |
+| Supplier | Harvest Date, Farm Location, Certificate ID |
+| Logistics | Shipment ID, Pickup Location, Delivery Location, Departure/Arrival Time, Temperature/Humidity Summary, Vehicle/Container ID |
+| Warehouse | Storage Lot ID, Inbound/Outbound Time, Temperature/Humidity Summary, Storage Zone/Rack ID |
+| Supermarket | Shelf Placement Date, Expiration/Sell-by Date, Store Location ID |
+
+The route topology remains server-controlled. Pickup and delivery fields are
+transport event facts and do not edit the route.
+
+## IPFS and CID flow
+
+The server uses an existing local IPFS/Kubo node. It does not implement the
+IPFS protocol:
+
+```
+Browser file
+    -> POST /api/ipfs/files
+    -> control_server calls local IPFS HTTP API
+    -> IPFS returns CID
+    -> browser submits the CID with the stage event
+    -> SQLite stores the CID and metadata
 ```
 
-The current preset route is:
+The default IPFS API endpoint is:
 
-```text
-Supplier -> Logistics -> Warehouse -> Supermarket
+```
+http://127.0.0.1:5002
 ```
 
-The server accepts a new block only when the authenticated account matches the
-next stage in this route. A new batch must start at Supplier, and Supermarket is
-the terminal stage. Each accepted block after the first one is connected to the
-previous block for the same batch through `block_edges`.
-
-The control page draws this preset route on a Canvas. Route editing, branching,
-and merging are reserved for a later workflow editor.
-
-The control server rebuilds its in-memory Merkle Tree from stored canonical
-records on startup. `root_hash` and `proof` are snapshots from the time the
-record was submitted; later blocks can change the current Merkle Root.
-
-SQLite stores submission time in UTC. The control page shows both the UTC time
-and the control browser's local time, with the time-zone label included.
-
-## Merkle Tree behavior
-
-The MerkleTree library uses the duplicate-last-hash rule for incomplete levels:
-
-- leaves are built from the canonical supply-chain record;
-- if a level has an odd number of nodes, the final hash is copied into a new
-  sibling node;
-- parent hashes are calculated from the left and right child hashes;
-- proofs are generated by following parent links and reading each sibling;
-- proof verification is performed by the control server.
-
-The CLI is independent of the HTTP servers:
+Configure Kubo once on macOS so it uses port 5002 and runs as a background
+service:
 
 ```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/MerkleTree"
-./run_merkle.sh
+ipfs config Addresses.API /ip4/127.0.0.1/tcp/5002
+brew services start kubo
 ```
 
-An optional input file can be supplied to the CLI:
+After that setup, the control server only needs:
 
 ```bash
-./run_merkle.sh inp.txt
+./Server/control_server
 ```
 
-`inp.txt` is only sample input for the standalone CLI. The supply-chain web
-flow receives records from the user form and does not depend on that file.
+Set `IPFS_API_URL` only when a deployment uses a different IPFS host or port.
 
-## Memory-pool experiments
+The current local demo accepts files up to 30 MB per upload. The IPFS daemon
+must be started separately by the user.
 
-`MemoryPool` and `ConMemPool` currently remain standalone experiments:
+## SQLite tables
 
-- `MemoryPool` is a fixed-size, mutex-protected allocator.
-- `ConMemPool` explores thread-local, central, and page-level allocation.
-- Neither is connected to the HTTP servers or MerkleTree yet.
-- They are allocator components, not the transaction queue used by the current
-  supply-chain flow.
+The control server creates these tables in Code/Database/supply_chain.db:
 
-A future integration can make `MemoryPool` an allocator for Merkle nodes. The
-concurrent allocator should be modularized and tested separately before it is
-considered for a multi-threaded control server.
+```
+batches
+    batch_id
+    product
+    harvest_date
+    farm_location
+    certificate_id
+    created_by_uid
+    current_stage
+    status
 
-## Current limitations
+supply_chain_records
+    block_id
+    batch_id
+    inherited batch fields
+    event_data
+    canonical_record
+    root_hash
+    proof
+    verified
+    block_hash
+    chain_status
+    created_at
 
-- The servers bind to loopback for local development.
-- SQLite data is local and ignored by Git.
-- The confirmation checkbox records user intent but does not provide digital
-  identity or a cryptographic signature.
-- The control server currently handles requests in a simple single-process
-  server loop.
+record_attachments
+    block_id
+    category
+    cid
+    filename
+    content_type
+    size
 
-## Authentication and demo accounts
+block_edges
+    from_block_id
+    to_block_id
+    batch_id
+    relation
+```
 
-The user page requires an authenticated supply-chain account before it can
-submit a record. The control page requires the administrator account to read
-the saved records.
+The canonical Merkle input contains the batch master data, role-specific event
+data, sorted CID references, the parent block ID/hash, and authenticated
+identity fields. The existing Code/MerkleTree library is used without
+modification.
 
-Both pages provide a logout action. The logout request invalidates the current
-server-side token. Each page also provides an unchecked `Remember me on this
-device` option: checked sessions use browser persistent storage, while the
-default session is cleared when the browser session ends.
+## Control page
 
-The local demo accounts are seeded by `control_server` when the database is
-initialized:
+The control page has:
+
+- administrator login;
+- a Canvas view of the fixed route;
+- a block flow for each batch;
+- role, organization, inherited batch data, event data, and CID references;
+- stored verification status and block connections.
+
+Root and Proof remain server-side verification snapshots. A detailed click-open
+verification dialog and red error path are reserved for a later UI iteration.
+
+## Authentication
+
+The local demonstration accounts are:
 
 | Username | Password | Role |
 | --- | --- | --- |
@@ -230,5 +250,28 @@ initialized:
 | `supermarket01` | `supermarket123` | supermarket |
 | `admin01` | `admin123` | admin |
 
-These credentials are for local development only. SQLite stores salted PBKDF2
-password hashes, along with each account's UID, role, and organization ID.
+Both pages provide logout and an unchecked `Remember me on this device`
+option. The control server stores salted PBKDF2 password hashes and keeps
+Bearer sessions in memory.
+
+## Standalone Merkle CLI
+
+The Merkle Tree CLI remains independent of the HTTP servers:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/MerkleTree"
+./run_merkle.sh
+```
+
+An optional `inp.txt` argument belongs only to the standalone CLI. The web
+flow receives records from the user page and does not depend on that file.
+
+## Current scope limits
+
+- The active route has four stages and is fixed in the control server.
+- Inspection Agency fields from the appendix are reserved for a later route
+  extension.
+- Digital signatures and third-party verification are deferred.
+- Public-chain, private-chain, cross-chain, and external gateway work is
+  outside this prototype stage.
+- `MemoryPool` and `ConMemPool` remain standalone experiments.

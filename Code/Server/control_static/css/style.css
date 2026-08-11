@@ -219,6 +219,19 @@ dt {
     color: #dce7f5;
 }
 
+.event-data {
+    max-height: 9rem;
+    margin: 0.8rem 0 0;
+    padding: 0.7rem;
+    border: 1px solid #26364c;
+    border-radius: 0.6rem;
+    color: #9ce7d0;
+    background: #080f1c;
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    overflow: auto;
+}
+
 .chain-arrow {
     align-self: center;
     color: #73cef4;
