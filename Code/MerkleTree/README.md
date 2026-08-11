@@ -1,55 +1,30 @@
 # Merkle Tree
 C++ 17 and OpenSSL to implement a foundamental Merkle Tree.
-## Build Instructions:
-Run the following commands in the directory containing ```CMakeLists.txt``` and ```MerkleTree.hpp```, ```Main.cpp```, ```MerkleTree_Build.cpp```, ```MerkleTree_Core.cpp```, ```MerkleTree_Proof.cpp```, ```MerkleTree_Utils.cpp```:
+## Run the CLI
+
+From any working directory, run:
+
 ```bash
-mkdir build
-cd build
-cmake ..
-make
-```
-(I have done this stpe in the repo ˃ʍ˂ )
-
-After the executable is generated:
-
-``` bash
-./MerkleTree
+./run_merkle.sh
 ```
 
-## Input
-During execution, the program reads:
+The script configures and builds `merkle_cli`, then passes the absolute path of
+`inp.txt` to it. A different input file can be supplied explicitly:
+
 ```bash
-inp.txt
+./run_merkle.sh /absolute/path/to/input.txt
 ```
-from the current working directory.
 
-Since running the executable inside the ```build/``` directory, ```inp.txt``` must be placed inside the build directory (I also did this in the repo ✌︎( ᐛ )✌︎).
+## Build without the script
 
-Example directory structure:
-```css
-Merkle/
-│
-├── CMakeLists.txt
-├── Main.cpp
-├── MerkleTree_Build.cpp
-├── MerkleTree_Core.cpp
-├── MerkleTree_Proof.cpp
-├── MerkleTree_Utils.cpp
-├── MerkleTree.hpp
-├── README.md
-└── build/
-    ├── MerkleTree    ← Executable
-    └── inp.txt       ← Input file must be here :)
+```bash
+cmake -S . -B build-cli
+cmake --build build-cli --target merkle_cli
+./build-cli/merkle_cli ./inp.txt
 ```
-### Why?🤔
 
-Because what I did in the ```cpp``` file is:
-```cpp
-T.Build("inp.txt");
-```
-So you have no other choice😏, unless you change it(but what do you want to do🙀)
-
-Therefore, the file must exist in the directory where the executable is run.
+The CMake target `merkle_tree` contains the reusable implementation. The
+`merkle_cli` target contains `Main.cpp`; Server links only the library target.
 
 ## Menu
 After launching, the following menu appears:

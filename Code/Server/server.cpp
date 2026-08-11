@@ -1,4 +1,6 @@
 #include <arpa/inet.h>
+#include <algorithm>
+#include <cctype>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
@@ -7,9 +9,10 @@
 #include <sstream>
 #include <string>
 #include <sys/socket.h>
+#include <unordered_map>
 #include <unistd.h>
 
-#include "db_utils.hpp"
+#include "MerkleTree.hpp"
 #include "log_utils.hpp"
 
 namespace fs = std::filesystem;
@@ -21,13 +24,36 @@ namespace fs = std::filesystem;
 namespace
 {
 constexpr std::size_t MAX_HEADER_SIZE = 64 * 1024;
+constexpr std::size_t MAX_BODY_SIZE = 64 * 1024;
 
 struct HttpRequest
 {
     std::string method;
     std::string target;
     std::string version;
+    std::unordered_map<std::string, std::string> headers;
+    std::string body;
 };
+
+std::string trim(std::string value)
+{
+    const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch);
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
+        return std::isspace(ch);
+    }).base();
+    if(first >= last) return "";
+    return std::string(first, last);
+}
+
+std::string lower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
 
 bool ends_with(const std::string& value, const std::string& suffix)
 {
@@ -65,11 +91,53 @@ bool read_request(int client_fd, HttpRequest& request)
         if(raw.size() > MAX_HEADER_SIZE) return false;
     }
 
+    const std::size_t header_end = raw.find("\r\n\r\n");
     const std::size_t line_end = raw.find("\r\n");
-    if(line_end == std::string::npos) return false;
+    if(header_end == std::string::npos || line_end == std::string::npos) return false;
 
     std::istringstream line(raw.substr(0, line_end));
-    return static_cast<bool>(line >> request.method >> request.target >> request.version);
+    if(!(line >> request.method >> request.target >> request.version)) return false;
+
+    std::size_t cursor = line_end + 2;
+    while(cursor < header_end)
+    {
+        const std::size_t next = raw.find("\r\n", cursor);
+        if(next == std::string::npos || next > header_end) return false;
+
+        const std::string header_line = raw.substr(cursor, next - cursor);
+        const std::size_t colon = header_line.find(':');
+        if(colon == std::string::npos) return false;
+
+        request.headers[lower(trim(header_line.substr(0, colon)))] =
+            trim(header_line.substr(colon + 1));
+        cursor = next + 2;
+    }
+
+    std::size_t content_length = 0;
+    const auto length_header = request.headers.find("content-length");
+    if(length_header != request.headers.end())
+    {
+        try
+        {
+            content_length = std::stoull(length_header->second);
+        }
+        catch(const std::exception&)
+        {
+            return false;
+        }
+    }
+    if(content_length > MAX_BODY_SIZE) return false;
+
+    const std::size_t body_start = header_end + 4;
+    while(raw.size() - body_start < content_length)
+    {
+        const ssize_t bytes_read = read(client_fd, buffer, sizeof(buffer));
+        if(bytes_read <= 0) return false;
+        raw.append(buffer, static_cast<std::size_t>(bytes_read));
+    }
+
+    request.body = raw.substr(body_start, content_length);
+    return true;
 }
 
 bool write_all(int client_fd, const std::string& data)
@@ -136,6 +204,86 @@ std::optional<std::string> percent_decode(const std::string& value)
         i += 2;
     }
     return decoded;
+}
+
+std::optional<std::string> form_decode(std::string value)
+{
+    std::replace(value.begin(), value.end(), '+', ' ');
+    return percent_decode(value);
+}
+
+std::optional<std::unordered_map<std::string, std::string>> parse_form(
+    const std::string& body)
+{
+    std::unordered_map<std::string, std::string> fields;
+    std::size_t cursor = 0;
+
+    while(cursor <= body.size())
+    {
+        const std::size_t ampersand = body.find('&', cursor);
+        const std::string pair = body.substr(
+            cursor,
+            ampersand == std::string::npos ? std::string::npos : ampersand - cursor);
+        const std::size_t equals = pair.find('=');
+        if(equals == std::string::npos) return std::nullopt;
+
+        const auto key = form_decode(pair.substr(0, equals));
+        const auto value = form_decode(pair.substr(equals + 1));
+        if(!key || !value || key->empty()) return std::nullopt;
+        fields[*key] = *value;
+
+        if(ampersand == std::string::npos) break;
+        cursor = ampersand + 1;
+    }
+
+    return fields;
+}
+
+std::string json_escape(const std::string& value)
+{
+    std::ostringstream escaped;
+    for(const unsigned char ch : value)
+    {
+        switch(ch)
+        {
+            case '"': escaped << "\\\""; break;
+            case '\\': escaped << "\\\\"; break;
+            case '\b': escaped << "\\b"; break;
+            case '\f': escaped << "\\f"; break;
+            case '\n': escaped << "\\n"; break;
+            case '\r': escaped << "\\r"; break;
+            case '\t': escaped << "\\t"; break;
+            default:
+                if(ch < 0x20)
+                {
+                    escaped << "\\u00";
+                    const char* digits = "0123456789abcdef";
+                    escaped << digits[(ch >> 4) & 0x0f] << digits[ch & 0x0f];
+                }
+                else
+                {
+                    escaped << static_cast<char>(ch);
+                }
+        }
+    }
+    return escaped.str();
+}
+
+std::string canonical_record(const std::unordered_map<std::string, std::string>& fields)
+{
+    const char* names[] = {"batchId", "product", "origin", "stage", "confirmedBy"};
+    std::ostringstream record;
+    for(const char* name : names)
+    {
+        const std::string& value = fields.at(name);
+        record << name << ':' << value.size() << ':' << value << '\n';
+    }
+    return record.str();
+}
+
+std::string json_error(const std::string& message)
+{
+    return "{\"error\":\"" + json_escape(message) + "\"}";
 }
 
 bool is_inside(const fs::path& root, const fs::path& candidate)
@@ -215,19 +363,13 @@ int main(int argc, char* argv[])
         ? fs::path(argv[2])
         : fs::path(SERVER_DEFAULT_STATIC_DIR);
     const fs::path static_root = fs::weakly_canonical(fs::absolute(requested_static));
-    const std::string database_path = argc >= 4 ? argv[3] : "message.db";
-
     if(!fs::is_directory(static_root))
     {
         std::cerr << "Static directory not found: " << static_root << '\n';
         return 1;
     }
 
-    if(!init_database(database_path))
-    {
-        std::cerr << "Database initialization failed: " << database_path << '\n';
-        return 1;
-    }
+    MerkleTree merkle_tree(1);
 
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if(server_fd == -1)
@@ -261,7 +403,7 @@ int main(int argc, char* argv[])
 
     std::cout << "HTTP server: http://127.0.0.1:" << port << '\n'
               << "Static root: " << static_root << '\n'
-              << "Database: " << database_path << '\n';
+              << "Merkle Tree: in-memory\n";
 
     while(true)
     {
@@ -286,7 +428,76 @@ int main(int argc, char* argv[])
         std::string content_type = "text/plain; charset=utf-8";
         const bool is_head = request.method == "HEAD";
 
-        if(request.method != "GET" && !is_head)
+        if(request.method == "POST" && request.target == "/api/records")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto content_type_header = request.headers.find("content-type");
+            const bool correct_type = content_type_header != request.headers.end() &&
+                lower(content_type_header->second).find(
+                    "application/x-www-form-urlencoded") == 0;
+            const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
+
+            const char* required[] = {
+                "batchId", "product", "origin", "stage", "confirmedBy"
+            };
+            std::string validation_error;
+            if(!correct_type)
+                validation_error = "Content-Type must be application/x-www-form-urlencoded";
+            else if(!fields)
+                validation_error = "Malformed form body";
+            else
+            {
+                for(const char* name : required)
+                {
+                    const auto item = fields->find(name);
+                    if(item == fields->end() || trim(item->second).empty())
+                    {
+                        validation_error = std::string(name) + " is required";
+                        break;
+                    }
+                    if(item->second.size() > 256)
+                    {
+                        validation_error = std::string(name) + " is too long";
+                        break;
+                    }
+                }
+
+                const auto confirmed = fields->find("confirmed");
+                if(validation_error.empty() &&
+                   (confirmed == fields->end() || confirmed->second != "true"))
+                    validation_error = "Information must be confirmed";
+            }
+
+            if(!validation_error.empty())
+            {
+                status = "422 Unprocessable Entity";
+                body = json_error(validation_error);
+            }
+            else
+            {
+                const int block_id = merkle_tree.GetBlockCount();
+                const std::string record = canonical_record(*fields);
+                if(!merkle_tree.Append(record))
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error("Failed to append Merkle block");
+                }
+                else
+                {
+                    const std::string proof = merkle_tree.ProverBlock(block_id);
+                    const bool verified = merkle_tree.Verify(proof);
+                    status = "201 Created";
+                    body = "{\"blockID\":" + std::to_string(block_id) +
+                           ",\"rootHash\":\"" +
+                           json_escape(merkle_tree.GetRootHash()) +
+                           "\",\"proof\":\"" + json_escape(proof) +
+                           "\",\"verified\":" + (verified ? "true" : "false") + "}";
+                }
+            }
+
+            send_response(client_fd, status, content_type, body, true);
+        }
+        else if(request.method != "GET" && !is_head)
         {
             status = "405 Method Not Allowed";
             body = "Method Not Allowed\n";

@@ -65,10 +65,15 @@ bool menu(MerkleTree &T)
     return false;
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+    const char* inputFile = argc >= 2 ? argv[1] : "inp.txt";
     MerkleTree T(70); // Give the block size (here it is 70 bytes)
-    T.Build("inp.txt"); // Give you input file name
+    if(!T.Build(inputFile))
+    {
+        std::cerr << "Failed to build Merkle Tree from: " << inputFile << std::endl;
+        return 1;
+    }
     while(menu(T));
     return 0;
 }

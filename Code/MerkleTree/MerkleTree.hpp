@@ -43,6 +43,9 @@ class MerkleTree
 
         bool Build(const char* fileName);
 
+        std::string GetRootHash() const;
+        int GetBlockCount() const;
+
         // Print the leaf values for test purposes
         void PrintTree();
 

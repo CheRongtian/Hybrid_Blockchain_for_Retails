@@ -11,6 +11,16 @@ MerkleTree::~MerkleTree()
     root = nullptr;
 }
 
+std::string MerkleTree::GetRootHash() const
+{
+    return root ? root->hashValue : "";
+}
+
+int MerkleTree::GetBlockCount() const
+{
+    return static_cast<int>(blocks.size());
+}
+
 // Recursively free memory
 void MerkleTree::Free(Node *t)
 {
