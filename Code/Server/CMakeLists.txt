@@ -3,6 +3,7 @@ project(StandaloneHttpServer LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
 
@@ -20,6 +21,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(
     control_server
     server.cpp
+    auth_utils.cpp
     db_utils.cpp
     log_utils.cpp
 )
@@ -40,14 +42,6 @@ target_compile_definitions(
     CONTROL_DEFAULT_DATABASE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../Database/supply_chain.db"
 )
 
-add_custom_command(
-    TARGET control_server
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/control_static
-            ${CMAKE_CURRENT_BINARY_DIR}/control_static
-)
-
 add_executable(user_server user_server.cpp)
 
 target_compile_definitions(
@@ -55,12 +49,35 @@ target_compile_definitions(
     PRIVATE USER_DEFAULT_STATIC_DIR="${CMAKE_CURRENT_BINARY_DIR}/user_static"
 )
 
-add_custom_command(
-    TARGET user_server
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/static
-            ${CMAKE_CURRENT_BINARY_DIR}/user_static
+# Static resources are build targets so source changes and deleted files are
+# synchronized whenever the corresponding server target is built.
+function(add_static_sync sync_target consumer_target source_dir output_dir description)
+    add_custom_target(
+        ${sync_target}
+        ALL
+        COMMAND ${CMAKE_COMMAND} -E remove_directory "${output_dir}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${output_dir}"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${source_dir}" "${output_dir}"
+        COMMENT "Synchronizing ${description} static resources"
+        VERBATIM
+    )
+    add_dependencies(${consumer_target} ${sync_target})
+endfunction()
+
+add_static_sync(
+    sync_control_static
+    control_server
+    "${CMAKE_CURRENT_SOURCE_DIR}/control_static"
+    "${CMAKE_CURRENT_BINARY_DIR}/control_static"
+    "control server"
+)
+
+add_static_sync(
+    sync_user_static
+    user_server
+    "${CMAKE_CURRENT_SOURCE_DIR}/static"
+    "${CMAKE_CURRENT_BINARY_DIR}/user_static"
+    "user server"
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

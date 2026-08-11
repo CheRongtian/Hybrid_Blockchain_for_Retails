@@ -1,6 +1,7 @@
 #include "db_utils.hpp"
 #include <sqlite3.h>
 #include <iostream>
+#include <utility>
 
 namespace
 {
@@ -14,6 +15,25 @@ bool bind_text(sqlite3_stmt* statement, int index, const std::string& value)
 {
     return sqlite3_bind_text(statement, index, value.c_str(), -1,
                              SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
+bool add_column_if_missing(sqlite3* db, const char* column_definition)
+{
+    const std::string sql =
+        "ALTER TABLE supply_chain_records ADD COLUMN " +
+        std::string(column_definition) + ";";
+    char* error = nullptr;
+    const int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &error);
+    if(result == SQLITE_OK)
+        return true;
+
+    const std::string message = error ? error : "";
+    sqlite3_free(error);
+    if(message.find("duplicate column name") != std::string::npos)
+        return true;
+
+    std::cerr << "Add database column failed: " << message << '\n';
+    return false;
 }
 }
 
@@ -38,6 +58,9 @@ bool init_database(const std::string& db_path)
         "origin TEXT NOT NULL,"
         "stage TEXT NOT NULL,"
         "confirmed_by TEXT NOT NULL,"
+        "uid TEXT NOT NULL DEFAULT '',"
+        "role TEXT NOT NULL DEFAULT '',"
+        "organization_id TEXT NOT NULL DEFAULT '',"
         "canonical_record TEXT NOT NULL,"
         "root_hash TEXT NOT NULL,"
         "proof TEXT NOT NULL,"
@@ -52,8 +75,121 @@ bool init_database(const std::string& db_path)
         sqlite3_close(db);
         return false;
     }
+
+    const char* users_sql =
+        "CREATE TABLE IF NOT EXISTS users ("
+        "uid TEXT PRIMARY KEY,"
+        "username TEXT NOT NULL UNIQUE,"
+        "password_salt TEXT NOT NULL,"
+        "password_hash TEXT NOT NULL,"
+        "role TEXT NOT NULL,"
+        "organization_id TEXT NOT NULL,"
+        "active INTEGER NOT NULL DEFAULT 1,"
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");";
+
+    if(sqlite3_exec(db, users_sql, nullptr, nullptr, &err_msg) != SQLITE_OK)
+    {
+        std::cerr << "Create users table failed: " << err_msg << '\n';
+        sqlite3_free(err_msg);
+        sqlite3_close(db);
+        return false;
+    }
+
+    if(!add_column_if_missing(db, "uid TEXT NOT NULL DEFAULT ''") ||
+       !add_column_if_missing(db, "role TEXT NOT NULL DEFAULT ''") ||
+       !add_column_if_missing(db, "organization_id TEXT NOT NULL DEFAULT ''"))
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
     sqlite3_close(db);
     return true;
+}
+
+bool insert_user_account(const std::string& db_path,
+                         const UserAccount& account)
+{
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    const char* sql =
+        "INSERT OR IGNORE INTO users ("
+        "uid, username, password_salt, password_hash, role, organization_id, active"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?);";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare user insert failed: " << sqlite3_errmsg(db) << '\n';
+        sqlite3_close(db);
+        return false;
+    }
+
+    const bool bound =
+        bind_text(statement, 1, account.uid) &&
+        bind_text(statement, 2, account.username) &&
+        bind_text(statement, 3, account.password_salt) &&
+        bind_text(statement, 4, account.password_hash) &&
+        bind_text(statement, 5, account.role) &&
+        bind_text(statement, 6, account.organization_id) &&
+        sqlite3_bind_int(statement, 7, account.active ? 1 : 0) == SQLITE_OK;
+
+    const bool succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+    if(!succeeded)
+        std::cerr << "Insert user failed: " << sqlite3_errmsg(db) << '\n';
+
+    sqlite3_finalize(statement);
+    sqlite3_close(db);
+    return succeeded;
+}
+
+std::optional<UserAccount> find_user_account(const std::string& db_path,
+                                             const std::string& username)
+{
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return std::nullopt;
+    }
+
+    const char* sql =
+        "SELECT uid, username, password_salt, password_hash, role, "
+        "organization_id, active FROM users WHERE username = ? LIMIT 1;";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare user query failed: " << sqlite3_errmsg(db) << '\n';
+        sqlite3_close(db);
+        return std::nullopt;
+    }
+
+    if(!bind_text(statement, 1, username) || sqlite3_step(statement) != SQLITE_ROW)
+    {
+        sqlite3_finalize(statement);
+        sqlite3_close(db);
+        return std::nullopt;
+    }
+
+    UserAccount account;
+    account.uid = column_text(statement, 0);
+    account.username = column_text(statement, 1);
+    account.password_salt = column_text(statement, 2);
+    account.password_hash = column_text(statement, 3);
+    account.role = column_text(statement, 4);
+    account.organization_id = column_text(statement, 5);
+    account.active = sqlite3_column_int(statement, 6) != 0;
+
+    sqlite3_finalize(statement);
+    sqlite3_close(db);
+    return account;
 }
 
 bool insert_supply_chain_record(const std::string& db_path,
@@ -70,8 +206,8 @@ bool insert_supply_chain_record(const std::string& db_path,
     const char* sql =
         "INSERT INTO supply_chain_records ("
         "block_id, batch_id, product, origin, stage, confirmed_by, "
-        "canonical_record, root_hash, proof, verified"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "uid, role, organization_id, canonical_record, root_hash, proof, verified"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* statement = nullptr;
 
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
@@ -88,10 +224,13 @@ bool insert_supply_chain_record(const std::string& db_path,
         bind_text(statement, 4, record.origin) &&
         bind_text(statement, 5, record.stage) &&
         bind_text(statement, 6, record.confirmed_by) &&
-        bind_text(statement, 7, record.canonical_record) &&
-        bind_text(statement, 8, record.root_hash) &&
-        bind_text(statement, 9, record.proof) &&
-        sqlite3_bind_int(statement, 10, record.verified ? 1 : 0) == SQLITE_OK;
+        bind_text(statement, 7, record.uid) &&
+        bind_text(statement, 8, record.role) &&
+        bind_text(statement, 9, record.organization_id) &&
+        bind_text(statement, 10, record.canonical_record) &&
+        bind_text(statement, 11, record.root_hash) &&
+        bind_text(statement, 12, record.proof) &&
+        sqlite3_bind_int(statement, 13, record.verified ? 1 : 0) == SQLITE_OK;
 
     if(!bound || sqlite3_step(statement) != SQLITE_DONE)
     {
@@ -121,7 +260,8 @@ bool load_supply_chain_records(const std::string& db_path,
 
     const char* sql =
         "SELECT block_id, batch_id, product, origin, stage, confirmed_by, "
-        "canonical_record, root_hash, proof, verified, created_at "
+        "uid, role, organization_id, canonical_record, root_hash, proof, "
+        "verified, created_at "
         "FROM supply_chain_records ORDER BY block_id ASC;";
     sqlite3_stmt* statement = nullptr;
 
@@ -142,11 +282,14 @@ bool load_supply_chain_records(const std::string& db_path,
         record.origin = column_text(statement, 3);
         record.stage = column_text(statement, 4);
         record.confirmed_by = column_text(statement, 5);
-        record.canonical_record = column_text(statement, 6);
-        record.root_hash = column_text(statement, 7);
-        record.proof = column_text(statement, 8);
-        record.verified = sqlite3_column_int(statement, 9) != 0;
-        record.created_at = column_text(statement, 10);
+        record.uid = column_text(statement, 6);
+        record.role = column_text(statement, 7);
+        record.organization_id = column_text(statement, 8);
+        record.canonical_record = column_text(statement, 9);
+        record.root_hash = column_text(statement, 10);
+        record.proof = column_text(statement, 11);
+        record.verified = sqlite3_column_int(statement, 12) != 0;
+        record.created_at = column_text(statement, 13);
         records.push_back(std::move(record));
     }
 

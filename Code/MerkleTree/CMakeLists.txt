@@ -41,8 +41,16 @@ if(MERKLE_TREE_BUILD_CLI)
     add_executable(merkle_cli Main.cpp)
     target_link_libraries(merkle_cli PRIVATE MerkleTree::merkle_tree)
 
-    file(
-        COPY ${CMAKE_CURRENT_SOURCE_DIR}/inp.txt
-        DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
+    set(MERKLE_INPUT_COPY "${CMAKE_CURRENT_BINARY_DIR}/inp.txt")
+    add_custom_command(
+        OUTPUT "${MERKLE_INPUT_COPY}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/inp.txt"
+                "${MERKLE_INPUT_COPY}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/inp.txt"
+        COMMENT "Synchronizing MerkleTree CLI input"
+        VERBATIM
     )
+    add_custom_target(merkle_cli_input DEPENDS "${MERKLE_INPUT_COPY}")
+    add_dependencies(merkle_cli merkle_cli_input)
 endif()

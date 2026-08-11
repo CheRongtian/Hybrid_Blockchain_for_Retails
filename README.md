@@ -179,3 +179,23 @@ considered for a multi-threaded control server.
   identity or a cryptographic signature.
 - The control server currently handles requests in a simple single-process
   server loop.
+
+## Authentication and demo accounts
+
+The user page requires an authenticated supply-chain account before it can
+submit a record. The control page requires the administrator account to read
+the saved records.
+
+The local demo accounts are seeded by `control_server` when the database is
+initialized:
+
+| Username | Password | Role |
+| --- | --- | --- |
+| `supplier01` | `supplier123` | supplier |
+| `logistics01` | `logistics123` | logistics |
+| `warehouse01` | `warehouse123` | warehouse |
+| `supermarket01` | `supermarket123` | supermarket |
+| `admin01` | `admin123` | admin |
+
+These credentials are for local development only. SQLite stores salted PBKDF2
+password hashes, along with each account's UID, role, and organization ID.

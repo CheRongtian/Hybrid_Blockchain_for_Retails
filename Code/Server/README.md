@@ -3,7 +3,7 @@
 The project builds two independent C++17 HTTP servers:
 
 ```text
-User browser -> user_server :8080
+User browser -> login control_server :8081/api/auth/login
              -> POST control_server :8081/api/records
              -> MerkleTree::Append
              -> generate and verify proof
@@ -15,9 +15,9 @@ Control browser -> control_server :8081
 ```
 
 `user_server` only serves the user confirmation page. `control_server` owns the
-Merkle Tree, SQLite writes, verification API, and control page. On startup, the
-control server reads records in `block_id` order and rebuilds the in-memory
-Merkle Tree.
+Merkle Tree, authentication, SQLite writes, verification API, and control page.
+On startup, the control server reads records in `block_id` order and rebuilds
+the in-memory Merkle Tree.
 
 ## Build from Code
 
@@ -65,6 +65,9 @@ The `supply_chain_records` table contains:
 - `origin`
 - `stage`
 - `confirmed_by`
+- `uid`
+- `role`
+- `organization_id`
 - `canonical_record`
 - `root_hash`
 - `proof`
@@ -79,14 +82,31 @@ historical snapshots remain stored.
 
 The API is provided by `control_server` on port `8081`.
 
+### Authentication
+
+`POST /api/auth/login` accepts:
+
+- `username`
+- `password`
+
+The response contains a temporary Bearer token and the authenticated user's
+UID, role, and organization. Tokens expire after eight hours and are held in
+the control server's memory.
+
+The local demo accounts and credentials are documented in the repository-level
+README. These credentials are for local development only. Passwords are stored
+as salted PBKDF2 hashes in SQLite.
+
 `POST /api/records` accepts `application/x-www-form-urlencoded` fields:
 
 - `batchId`
 - `product`
 - `origin`
 - `stage`
-- `confirmedBy`
 - `confirmed=true`
+
+It also requires an `Authorization: Bearer <token>` header. The server obtains
+the confirmer, UID, role, and organization from the authenticated session.
 
 Successful response:
 
@@ -97,6 +117,6 @@ Successful response:
 }
 ```
 
-`GET /api/records` returns all stored records for the control page, including
-the submitted fields, block ID, root hash, proof, verification status, and
-submission time.
+`GET /api/records` requires an admin token and returns all stored records for
+the control page, including the submitted fields, identity information, block
+ID, root hash, proof, verification status, and submission time.

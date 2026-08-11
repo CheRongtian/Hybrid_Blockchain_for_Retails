@@ -31,6 +31,41 @@ button:disabled {
     opacity: 0.6;
 }
 
+.auth-card {
+    width: min(32rem, 100%);
+    margin: 8rem auto 0;
+    padding: 2rem;
+    border: 1px solid #26364c;
+    border-radius: 1rem;
+    background: rgba(13, 24, 42, 0.92);
+}
+
+.auth-card form {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1.5rem;
+}
+
+.auth-card label {
+    display: grid;
+    gap: 0.4rem;
+    color: #91a2b9;
+}
+
+.auth-card input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #26364c;
+    border-radius: 0.6rem;
+    background: #080f1c;
+    color: #e5edf8;
+    font: inherit;
+}
+
+.auth-card button {
+    width: 100%;
+}
+
 .layout {
     width: min(72rem, calc(100% - 2rem));
     margin: 0 auto;
@@ -43,6 +78,12 @@ button:disabled {
     justify-content: space-between;
     gap: 2rem;
     margin-bottom: 2rem;
+}
+
+.header-actions {
+    display: flex;
+    gap: 0.7rem;
+    flex-wrap: wrap;
 }
 
 .eyebrow {
@@ -68,6 +109,18 @@ h1 {
 .status,
 dt {
     color: #91a2b9;
+}
+
+.status.error {
+    color: #ff8f9c;
+}
+
+.status.success {
+    color: #6ce8bf;
+}
+
+.status.pending {
+    color: #fde68a;
 }
 
 .record-list {

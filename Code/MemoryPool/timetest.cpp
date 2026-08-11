@@ -43,7 +43,7 @@ int main()
     auto end_normal = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> normal_time = end_normal - start_normal;
 
-    // 输出结果
+    // Output results
     std::cout << "-----------------------------------" << std::endl;
     std::cout << "Allocate and free " << NUM_ALLOCS << " tests:" << std::endl;
     std::cout << "1. Mempool time: " << pool_time.count() << " ms" << std::endl;

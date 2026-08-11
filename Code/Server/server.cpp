@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <csignal>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -13,6 +14,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "auth_utils.hpp"
 #include "db_utils.hpp"
 #include "MerkleTree.hpp"
 #include "log_utils.hpp"
@@ -34,7 +36,7 @@ constexpr std::size_t MAX_BODY_SIZE = 64 * 1024;
 constexpr const char* CORS_HEADERS =
     "Access-Control-Allow-Origin: *\r\n"
     "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-    "Access-Control-Allow-Headers: Content-Type\r\n";
+    "Access-Control-Allow-Headers: Content-Type, Authorization\r\n";
 
 struct HttpRequest
 {
@@ -44,6 +46,14 @@ struct HttpRequest
     std::unordered_map<std::string, std::string> headers;
     std::string body;
 };
+
+struct Session
+{
+    UserAccount account;
+    std::chrono::steady_clock::time_point expires_at;
+};
+
+using SessionStore = std::unordered_map<std::string, Session>;
 
 std::string trim(std::string value)
 {
@@ -63,6 +73,29 @@ std::string lower(std::string value)
         return static_cast<char>(std::tolower(ch));
     });
     return value;
+}
+
+std::optional<UserAccount> authenticated_user(const HttpRequest& request,
+                                              SessionStore& sessions)
+{
+    const auto authorization = request.headers.find("authorization");
+    if(authorization == request.headers.end()) return std::nullopt;
+
+    const std::string header = authorization->second;
+    if(header.size() < 7 || lower(header.substr(0, 7)) != "bearer ")
+        return std::nullopt;
+
+    const std::string token = trim(header.substr(7));
+    const auto session = sessions.find(token);
+    if(session == sessions.end()) return std::nullopt;
+
+    if(session->second.expires_at <= std::chrono::steady_clock::now())
+    {
+        sessions.erase(session);
+        return std::nullopt;
+    }
+
+    return session->second.account;
 }
 
 bool ends_with(const std::string& value, const std::string& suffix)
@@ -279,21 +312,37 @@ std::string json_escape(const std::string& value)
     return escaped.str();
 }
 
-std::string canonical_record(const std::unordered_map<std::string, std::string>& fields)
+std::string canonical_record(const std::unordered_map<std::string, std::string>& fields,
+                             const UserAccount& account)
 {
-    const char* names[] = {"batchId", "product", "origin", "stage", "confirmedBy"};
+    const char* names[] = {"batchId", "product", "origin", "stage"};
     std::ostringstream record;
     for(const char* name : names)
     {
         const std::string& value = fields.at(name);
         record << name << ':' << value.size() << ':' << value << '\n';
     }
+    record << "confirmedBy:" << account.username.size() << ':'
+           << account.username << '\n';
+    record << "uid:" << account.uid.size() << ':' << account.uid << '\n';
+    record << "role:" << account.role.size() << ':' << account.role << '\n';
+    record << "organizationId:" << account.organization_id.size() << ':'
+           << account.organization_id << '\n';
     return record.str();
 }
 
 std::string json_error(const std::string& message)
 {
     return "{\"error\":\"" + json_escape(message) + "\"}";
+}
+
+std::string user_json(const UserAccount& account)
+{
+    return "{\"uid\":\"" + json_escape(account.uid) +
+           "\",\"username\":\"" + json_escape(account.username) +
+           "\",\"role\":\"" + json_escape(account.role) +
+           "\",\"organizationId\":\"" + json_escape(account.organization_id) +
+           "\"}";
 }
 
 std::string records_json(const std::vector<SupplyChainRecord>& records)
@@ -310,6 +359,10 @@ std::string records_json(const std::vector<SupplyChainRecord>& records)
              << "\",\"origin\":\"" << json_escape(record.origin)
              << "\",\"stage\":\"" << json_escape(record.stage)
              << "\",\"confirmedBy\":\"" << json_escape(record.confirmed_by)
+             << "\",\"uid\":\"" << json_escape(record.uid)
+             << "\",\"role\":\"" << json_escape(record.role)
+             << "\",\"organizationId\":\""
+             << json_escape(record.organization_id)
              << "\",\"rootHash\":\"" << json_escape(record.root_hash)
              << "\",\"proof\":\"" << json_escape(record.proof)
              << "\",\"verified\":" << (record.verified ? "true" : "false")
@@ -375,6 +428,23 @@ int parse_port(const char* value)
         throw std::invalid_argument("port must be an integer from 1 to 65535");
     }
 }
+
+UserAccount make_demo_account(const std::string& uid,
+                              const std::string& username,
+                              const std::string& password,
+                              const std::string& role,
+                              const std::string& organization_id)
+{
+    UserAccount account;
+    account.uid = uid;
+    account.username = username;
+    account.password_salt = generate_random_hex(16);
+    account.password_hash = hash_password(password, account.password_salt);
+    account.role = role;
+    account.organization_id = organization_id;
+    account.active = true;
+    return account;
+}
 }
 
 int main(int argc, char* argv[])
@@ -409,6 +479,24 @@ int main(int argc, char* argv[])
     if(!init_database(database_path.string()))
         return 1;
 
+    const std::vector<UserAccount> demo_accounts = {
+        make_demo_account("uid-supplier-001", "supplier01", "supplier123",
+                          "supplier", "supplier-demo"),
+        make_demo_account("uid-logistics-001", "logistics01", "logistics123",
+                          "logistics", "logistics-demo"),
+        make_demo_account("uid-warehouse-001", "warehouse01", "warehouse123",
+                          "warehouse", "warehouse-demo"),
+        make_demo_account("uid-supermarket-001", "supermarket01", "supermarket123",
+                          "supermarket", "supermarket-demo"),
+        make_demo_account("uid-admin-001", "admin01", "admin123",
+                          "admin", "control-demo")
+    };
+    for(const UserAccount& account : demo_accounts)
+    {
+        if(!insert_user_account(database_path.string(), account))
+            return 1;
+    }
+
     std::vector<SupplyChainRecord> stored_records;
     if(!load_supply_chain_records(database_path.string(), stored_records))
         return 1;
@@ -428,6 +516,8 @@ int main(int argc, char* argv[])
 
         canonical_records.push_back(stored_record.canonical_record);
     }
+
+    SessionStore sessions;
 
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if(server_fd == -1)
@@ -487,29 +577,18 @@ int main(int argc, char* argv[])
         std::string content_type = "text/plain; charset=utf-8";
         const bool is_head = request.method == "HEAD";
 
-        if(request.method == "OPTIONS" && request.target == "/api/records")
+        const bool is_api_target =
+            request.target == "/api/auth/login" ||
+            request.target == "/api/auth/me" ||
+            request.target == "/api/records";
+
+        if(request.method == "OPTIONS" && is_api_target)
         {
             status = "204 No Content";
             body.clear();
             send_response(client_fd, status, content_type, body, false, CORS_HEADERS);
         }
-        else if(request.method == "GET" && request.target == "/api/records")
-        {
-            content_type = "application/json; charset=utf-8";
-            std::vector<SupplyChainRecord> records;
-            if(load_supply_chain_records(database_path.string(), records))
-            {
-                status = "200 OK";
-                body = records_json(records);
-            }
-            else
-            {
-                status = "500 Internal Server Error";
-                body = json_error("Failed to read supply-chain records");
-            }
-            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
-        }
-        else if(request.method == "POST" && request.target == "/api/records")
+        else if(request.method == "POST" && request.target == "/api/auth/login")
         {
             content_type = "application/json; charset=utf-8";
             const auto content_type_header = request.headers.find("content-type");
@@ -518,97 +597,209 @@ int main(int argc, char* argv[])
                     "application/x-www-form-urlencoded") == 0;
             const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
-            const char* required[] = {
-                "batchId", "product", "origin", "stage", "confirmedBy"
-            };
-            std::string validation_error;
-            if(!correct_type)
-                validation_error = "Content-Type must be application/x-www-form-urlencoded";
-            else if(!fields)
-                validation_error = "Malformed form body";
-            else
-            {
-                for(const char* name : required)
-                {
-                    const auto item = fields->find(name);
-                    if(item == fields->end() || trim(item->second).empty())
-                    {
-                        validation_error = std::string(name) + " is required";
-                        break;
-                    }
-                    if(item->second.size() > 256)
-                    {
-                        validation_error = std::string(name) + " is too long";
-                        break;
-                    }
-                }
+            const auto username = fields
+                ? fields->find("username")
+                : std::unordered_map<std::string, std::string>::const_iterator{};
+            const auto password = fields
+                ? fields->find("password")
+                : std::unordered_map<std::string, std::string>::const_iterator{};
 
-                const auto confirmed = fields->find("confirmed");
-                if(validation_error.empty() &&
-                   (confirmed == fields->end() || confirmed->second != "true"))
-                    validation_error = "Information must be confirmed";
-            }
-
-            if(!validation_error.empty())
+            if(!correct_type || !fields ||
+               username == fields->end() || password == fields->end() ||
+               username->second.empty() || password->second.empty() ||
+               username->second.size() > 128 || password->second.size() > 256)
             {
                 status = "422 Unprocessable Entity";
-                body = json_error(validation_error);
+                body = json_error("Username and password are required");
             }
             else
             {
-                const int block_id = static_cast<int>(canonical_records.size());
-                const std::string record = canonical_record(*fields);
-                MerkleTree candidate_tree(1);
-                bool candidate_ready = true;
-                for(const std::string& stored_record : canonical_records)
-                {
-                    if(!candidate_tree.Append(stored_record))
-                    {
-                        candidate_ready = false;
-                        break;
-                    }
-                }
+                const auto account = find_user_account(
+                    database_path.string(), username->second);
+                const bool password_matches = account &&
+                    account->active &&
+                    secure_string_equal(
+                        hash_password(password->second, account->password_salt),
+                        account->password_hash);
 
-                if(candidate_ready) candidate_ready = candidate_tree.Append(record);
-                if(!candidate_ready)
+                if(!password_matches)
                 {
-                    status = "500 Internal Server Error";
-                    body = json_error("Failed to append Merkle block");
+                    status = "401 Unauthorized";
+                    body = json_error("Invalid username or password");
                 }
                 else
                 {
-                    const std::string proof = candidate_tree.ProverBlock(block_id);
-                    const bool verified = candidate_tree.Verify(proof);
+                    const std::string token = generate_random_hex(32);
+                    sessions[token] = Session{
+                        *account,
+                        std::chrono::steady_clock::now() + std::chrono::hours(8)
+                    };
+                    status = "200 OK";
+                    body = "{\"token\":\"" + json_escape(token) +
+                           "\",\"user\":" + user_json(*account) + "}";
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/auth/me")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                status = "200 OK";
+                body = user_json(*user);
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/records")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                std::vector<SupplyChainRecord> records;
+                if(load_supply_chain_records(database_path.string(), records))
+                {
+                    status = "200 OK";
+                    body = records_json(records);
+                }
+                else
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error("Failed to read supply-chain records");
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "POST" && request.target == "/api/records")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                const auto content_type_header = request.headers.find("content-type");
+                const bool correct_type = content_type_header != request.headers.end() &&
+                    lower(content_type_header->second).find(
+                        "application/x-www-form-urlencoded") == 0;
+                const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
-                    SupplyChainRecord database_record;
-                    database_record.block_id = block_id;
-                    database_record.batch_id = fields->at("batchId");
-                    database_record.product = fields->at("product");
-                    database_record.origin = fields->at("origin");
-                    database_record.stage = fields->at("stage");
-                    database_record.confirmed_by = fields->at("confirmedBy");
-                    database_record.canonical_record = record;
-                    database_record.root_hash = candidate_tree.GetRootHash();
-                    database_record.proof = proof;
-                    database_record.verified = verified;
-
-                    if(!insert_supply_chain_record(database_path.string(), database_record))
+                const char* required[] = {
+                    "batchId", "product", "origin", "stage"
+                };
+                std::string validation_error;
+                if(!correct_type)
+                    validation_error = "Content-Type must be application/x-www-form-urlencoded";
+                else if(!fields)
+                    validation_error = "Malformed form body";
+                else
+                {
+                    for(const char* name : required)
                     {
-                        status = "500 Internal Server Error";
-                        body = json_error("Failed to save supply-chain record");
+                        const auto item = fields->find(name);
+                        if(item == fields->end() || trim(item->second).empty())
+                        {
+                            validation_error = std::string(name) + " is required";
+                            break;
+                        }
+                        if(item->second.size() > 256)
+                        {
+                            validation_error = std::string(name) + " is too long";
+                            break;
+                        }
                     }
-                    else if(!merkle_tree.Append(record))
+
+                    const auto confirmed = fields->find("confirmed");
+                    if(validation_error.empty() &&
+                       (confirmed == fields->end() || confirmed->second != "true"))
+                        validation_error = "Information must be confirmed";
+                }
+
+                if(!validation_error.empty())
+                {
+                    status = "422 Unprocessable Entity";
+                    body = json_error(validation_error);
+                }
+                else
+                {
+                    const int block_id = static_cast<int>(canonical_records.size());
+                    const std::string record = canonical_record(*fields, *user);
+                    MerkleTree candidate_tree(1);
+                    bool candidate_ready = true;
+                    for(const std::string& stored_record : canonical_records)
+                    {
+                        if(!candidate_tree.Append(stored_record))
+                        {
+                            candidate_ready = false;
+                            break;
+                        }
+                    }
+
+                    if(candidate_ready) candidate_ready = candidate_tree.Append(record);
+                    if(!candidate_ready)
                     {
                         status = "500 Internal Server Error";
-                        body = json_error("Record saved, but in-memory Merkle update failed");
+                        body = json_error("Failed to append Merkle block");
                     }
                     else
                     {
-                        canonical_records.push_back(record);
-                        status = "201 Created";
-                        body = "{\"blockID\":" + std::to_string(block_id) +
-                               ",\"verified\":" +
-                               (verified ? "true" : "false") + "}";
+                        const std::string proof = candidate_tree.ProverBlock(block_id);
+                        const bool verified = candidate_tree.Verify(proof);
+
+                        SupplyChainRecord database_record;
+                        database_record.block_id = block_id;
+                        database_record.batch_id = fields->at("batchId");
+                        database_record.product = fields->at("product");
+                        database_record.origin = fields->at("origin");
+                        database_record.stage = fields->at("stage");
+                        database_record.confirmed_by = user->username;
+                        database_record.uid = user->uid;
+                        database_record.role = user->role;
+                        database_record.organization_id = user->organization_id;
+                        database_record.canonical_record = record;
+                        database_record.root_hash = candidate_tree.GetRootHash();
+                        database_record.proof = proof;
+                        database_record.verified = verified;
+
+                        if(!insert_supply_chain_record(database_path.string(), database_record))
+                        {
+                            status = "500 Internal Server Error";
+                            body = json_error("Failed to save supply-chain record");
+                        }
+                        else if(!merkle_tree.Append(record))
+                        {
+                            status = "500 Internal Server Error";
+                            body = json_error(
+                                "Record saved, but in-memory Merkle update failed");
+                        }
+                        else
+                        {
+                            canonical_records.push_back(record);
+                            status = "201 Created";
+                            body = "{\"blockID\":" + std::to_string(block_id) +
+                                   ",\"verified\":" +
+                                   (verified ? "true" : "false") + "}";
+                        }
                     }
                 }
             }

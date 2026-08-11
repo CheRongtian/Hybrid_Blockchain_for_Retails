@@ -123,6 +123,11 @@ button:hover {
     margin: 20px 0 0;
 }
 
+.identity-status {
+    margin: 0 0 18px;
+    color: #a7f3d0;
+}
+
 .pending {
     color: #fde68a;
 }

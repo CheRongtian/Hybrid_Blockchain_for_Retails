@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,42 +8,60 @@
 </head>
 <body>
     <main class="layout">
-        <section class="card">
+        <section id="login-card" class="card">
+            <p class="eyebrow">SUPPLY CHAIN · IDENTITY</p>
+            <h1>Supply Chain Login</h1>
+            <p class="intro">After login, the system uses your UID, role, and organization identity to create blocks.</p>
+
+            <form id="login-form">
+                <label>
+                    Username
+                    <input name="username" placeholder="supplier01" autocomplete="username" required>
+                </label>
+                <label>
+                    Password
+                    <input name="password" type="password" autocomplete="current-password" required>
+                </label>
+                <button type="submit">Log In</button>
+            </form>
+
+            <p id="login-status" class="request-status" aria-live="polite"></p>
+        </section>
+
+        <section id="record-card" class="card" hidden>
             <p class="eyebrow">SUPPLY CHAIN · MERKLE TREE</p>
-            <h1>供应链信息确认</h1>
-            <p class="intro">确认后，信息会发送到控制端，生成 Merkle 节点并保存验证记录。</p>
+            <h1>Supply Chain Record Confirmation</h1>
+            <p class="intro">After confirmation, the record is sent to the control server, which creates a Merkle node and stores the verification record.</p>
+            <p id="identity-status" class="identity-status"></p>
 
             <form id="record-form">
                 <label>
-                    批次号
+                    Batch ID
                     <input name="batchId" placeholder="BATCH-001" maxlength="256" required>
                 </label>
                 <label>
-                    产品名称
+                    Product
                     <input name="product" placeholder="Strawberries" maxlength="256" required>
                 </label>
                 <label>
-                    产地
+                    Origin
                     <input name="origin" placeholder="Missouri" maxlength="256" required>
                 </label>
                 <label>
-                    当前阶段
+                    Current Stage
                     <input name="stage" placeholder="Received" maxlength="256" required>
-                </label>
-                <label>
-                    确认人
-                    <input name="confirmedBy" placeholder="Alice" maxlength="256" required>
                 </label>
 
                 <label class="confirmation">
                     <input id="confirmed" name="confirmed" type="checkbox" value="true" required>
-                    <span>我已检查并确认以上信息无误</span>
+                    <span>I have reviewed and confirmed that the information is correct.</span>
                 </label>
 
-                <button type="submit">确认并生成 Merkle Block</button>
+                <button type="submit">Confirm and Create Merkle Block</button>
             </form>
 
             <p id="request-status" class="request-status" aria-live="polite"></p>
+            <button id="logout-button" type="button">Log Out</button>
         </section>
 
         <section id="result-card" class="card result-card" hidden>
