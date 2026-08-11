@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
+find_package(Threads REQUIRED)
 
 if(NOT TARGET merkle_tree)
     set(MERKLE_TREE_BUILD_CLI OFF)
@@ -21,9 +22,12 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(
     control_server
     server.cpp
+    thread_pool.cpp
     auth_utils.cpp
     db_utils.cpp
     log_utils.cpp
+    ../MemoryPool/mempool.cpp
+    ../ConMemPool/concurrency_mempool.cpp
 )
 
 target_link_libraries(
@@ -31,6 +35,7 @@ target_link_libraries(
     PRIVATE
     MerkleTree::merkle_tree
     ${SQLite3_LIBRARIES}
+    Threads::Threads
 )
 
 target_include_directories(control_server PRIVATE ${SQLite3_INCLUDE_DIRS})

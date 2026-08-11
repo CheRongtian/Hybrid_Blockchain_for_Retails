@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <netdb.h>
 #include <optional>
 #include <sstream>
@@ -22,6 +23,7 @@
 #include "db_utils.hpp"
 #include "MerkleTree.hpp"
 #include "log_utils.hpp"
+#include "thread_pool.hpp"
 
 namespace fs = std::filesystem;
 
@@ -95,11 +97,13 @@ std::optional<std::string> authorization_token(const HttpRequest& request)
 }
 
 std::optional<UserAccount> authenticated_user(const HttpRequest& request,
-                                              SessionStore& sessions)
+                                              SessionStore& sessions,
+                                              std::mutex& sessions_mutex)
 {
     const auto token = authorization_token(request);
     if(!token) return std::nullopt;
 
+    std::lock_guard<std::mutex> lock(sessions_mutex);
     const auto session = sessions.find(*token);
     if(session == sessions.end()) return std::nullopt;
 
@@ -1158,6 +1162,8 @@ int main(int argc, char* argv[])
     }
 
     SessionStore sessions;
+    std::mutex sessions_mutex;
+    std::mutex chain_mutex;
 
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if(server_fd == -1)
@@ -1189,10 +1195,12 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    ThreadPool thread_pool;
     std::cout << "Control server: http://127.0.0.1:" << port << '\n'
               << "Static root: " << static_root << '\n'
               << "Database: " << database_path << '\n'
-              << "Restored Merkle blocks: " << canonical_records.size() << '\n';
+              << "Restored Merkle blocks: " << canonical_records.size() << '\n'
+              << "Worker threads: " << thread_pool.worker_count() << '\n';
 
     while(true)
     {
@@ -1203,13 +1211,14 @@ int main(int argc, char* argv[])
             continue;
         }
 
+        if(!thread_pool.submit([&, client_fd]() {
         HttpRequest request;
         if(!read_request(client_fd, request))
         {
             send_response(client_fd, "400 Bad Request", "text/plain; charset=utf-8",
                           "Bad Request\n", true);
             close(client_fd);
-            continue;
+            return;
         }
 
         std::string status;
@@ -1275,10 +1284,13 @@ int main(int argc, char* argv[])
                 else
                 {
                     const std::string token = generate_random_hex(32);
-                    sessions[token] = Session{
-                        *account,
-                        std::chrono::steady_clock::now() + std::chrono::hours(8)
-                    };
+                    {
+                        std::lock_guard<std::mutex> lock(sessions_mutex);
+                        sessions[token] = Session{
+                            *account,
+                            std::chrono::steady_clock::now() + std::chrono::hours(8)
+                        };
+                    }
                     status = "200 OK";
                     body = "{\"token\":\"" + json_escape(token) +
                            "\",\"user\":" + user_json(*account) + "}";
@@ -1290,7 +1302,13 @@ int main(int argc, char* argv[])
         {
             content_type = "application/json; charset=utf-8";
             const auto token = authorization_token(request);
-            if(!token || sessions.erase(*token) == 0)
+            bool erased = false;
+            if(token)
+            {
+                std::lock_guard<std::mutex> lock(sessions_mutex);
+                erased = sessions.erase(*token) != 0;
+            }
+            if(!token || !erased)
             {
                 status = "401 Unauthorized";
                 body = json_error("Authentication required");
@@ -1306,7 +1324,7 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/auth/me")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1322,7 +1340,7 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1352,7 +1370,7 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/batches")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1377,7 +1395,7 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/workflow")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1398,7 +1416,7 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/chains")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1430,7 +1448,7 @@ int main(int argc, char* argv[])
         else if(request.method == "POST" && request.target == "/api/ipfs/files")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1497,7 +1515,7 @@ int main(int argc, char* argv[])
         else if(request.method == "POST" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions);
+            const auto user = authenticated_user(request, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1583,6 +1601,7 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
+                    std::lock_guard<std::mutex> chain_lock(chain_mutex);
                     const std::string batch_id = fields->at("batchId");
                     const SupplyChainRecord* parent =
                         latest_batch_record(stored_records, batch_id);
@@ -1672,7 +1691,7 @@ int main(int argc, char* argv[])
                             send_response(
                                 client_fd, status, content_type, body, true, CORS_HEADERS);
                             close(client_fd);
-                            continue;
+                            return;
                         }
 
                         const int block_id = static_cast<int>(canonical_records.size());
@@ -1831,5 +1850,12 @@ int main(int argc, char* argv[])
         std::cout << log_line;
         log_to_file(log_line);
         close(client_fd);
+        }))
+        {
+            send_response(client_fd, "503 Service Unavailable",
+                          "text/plain; charset=utf-8",
+                          "Server is busy. Please retry the request.\n", true);
+            close(client_fd);
+        }
     }
 }

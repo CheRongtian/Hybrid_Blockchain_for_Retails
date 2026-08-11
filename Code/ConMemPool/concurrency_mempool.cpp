@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <stdexcept>
+#include <new>
 #ifdef _WIN32
     #include <windows.h>
 #else
@@ -16,6 +17,8 @@
     #include <unistd.h>
 #endif
 #include <cstring>
+
+#include "conmem_pool.hpp"
 
 // alignup to (int n)*align
 inline size_t AlignUp(size_t size, size_t align) 
@@ -250,7 +253,6 @@ class PageCache
                 }
             }
 
-            size_t total_size = n * page_size_;
             void *ptr = SystemAllocate(n);
             if(!ptr) throw std::bad_alloc();
 
@@ -625,6 +627,20 @@ void PoolDeallocate(void* ptr, size_t size)
     tls_thread_cache.Free(ptr, size);
 }
 
+namespace conmem
+{
+void* allocate(std::size_t size) noexcept
+{
+    return PoolAllocate(size);
+}
+
+void deallocate(void* ptr, std::size_t size) noexcept
+{
+    PoolDeallocate(ptr, size);
+}
+}
+
+#ifdef CONMEMPOOL_STANDALONE_TEST
 // test
 struct TestObj 
 {
@@ -702,3 +718,4 @@ int main()
     }
     return 0;
 }
+#endif

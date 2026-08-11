@@ -6,6 +6,7 @@ The Server directory contains two independent C++17 HTTP servers:
 User browser -> user_server :8080
              -> control_server :8081/api/auth/login
              -> control_server :8081/api/records
+             -> control_server worker pool
              -> MerkleTree append and proof verification
              -> SQLite block, batch, attachment, and edge records
 
@@ -16,7 +17,7 @@ Control browser -> control_server :8081
 
 user_server serves the user-facing static page. control_server owns
 authentication, the in-memory Merkle Tree, SQLite, IPFS forwarding, block
-creation, and the control page.
+creation, the worker pool, and the control page.
 
 ## Build
 
@@ -60,6 +61,33 @@ The control server also accepts:
 ```
 ./control_server [port] [static_directory] [database_path]
 ```
+
+## Worker pool and allocators
+
+The control server accepts sockets on its main thread and dispatches request
+handling to a bounded worker pool. The selected allocator components are used
+at separate layers:
+
+```
+socket -> ThreadPool queue -> MemoryPool task node
+                             -> ConMemPool callable storage
+                             -> serialized SQLite and Merkle commit
+```
+
+The Merkle append, block numbering, parent selection, and database write path
+remain serialized. Static requests and independent IPFS requests can use
+different workers. Large file bodies continue through the normal IPFS upload
+path.
+
+The control-server build must include:
+
+```
+Server/thread_pool.cpp
+MemoryPool/mempool.cpp
+ConMemPool/concurrency_mempool.cpp
+```
+
+The standalone allocator tests remain outside the control-server target.
 
 ## Fixed workflow
 

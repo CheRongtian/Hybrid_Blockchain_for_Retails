@@ -23,6 +23,8 @@ User browser :8080
         v
 control_server :8081
         |
+        +-- bounded worker ThreadPool
+        |
         +-- batch master data and event data -> SQLite
         +-- large file upload -> local IPFS -> CID
         +-- batch data, event data, CID references, and parent link -> MerkleTree
@@ -44,13 +46,14 @@ Blockchain Structure/
 │   ├── Server/                    # User server, control server, and pages
 │   │   ├── server.cpp             # Control server, API, IPFS adapter
 │   │   ├── user_server.cpp        # User-facing static file server
+│   │   ├── thread_pool.cpp/.hpp   # Control-server worker queue
 │   │   ├── auth_utils.cpp/.hpp    # Password hashing and tokens
 │   │   ├── db_utils.cpp/.hpp      # SQLite persistence
 │   │   ├── static/                # User page
 │   │   └── control_static/        # Control page
 │   ├── Database/                  # Local SQLite database location
-│   ├── MemoryPool/                # Memory-pool experiments
-│   ├── ConMemPool/                # Concurrent allocator experiments
+│   ├── MemoryPool/                # Fixed-block allocator and experiments
+│   ├── ConMemPool/                # Concurrent allocator and experiments
 │   ├── PrCsample.sol              # Solidity sample
 │   ├── SNsample.sol               # Solidity sample
 │   └── QRCodeExample.html         # Independent HTML demo
@@ -106,8 +109,77 @@ Control page: http://127.0.0.1:8081/
 ```
 
 The control server owns authentication, SQLite, the in-memory Merkle Tree,
-IPFS upload forwarding, block creation, and the control page. The user server
-serves the user page and does not own the database.
+IPFS upload forwarding, block creation, the worker pool, and the control page.
+The user server serves the user page and does not own the database.
+
+## Server concurrency and memory allocation
+
+The control server accepts connections on the main thread and dispatches
+request handling to a bounded worker pool. The current integration uses the
+two allocator projects at different layers:
+
+```
+accepted socket
+    -> ThreadPool task queue
+    -> MemoryPool fixed task node
+    -> worker executes callable stored through ConMemPool
+    -> serialized SQLite and Merkle commit
+```
+
+`MemoryPool` handles fixed-size queue nodes. `ConMemPool` provides the
+concurrent small-object allocation interface used by worker tasks. Large file
+bodies remain in the normal request/IPFS path and are not routed through
+either allocator.
+
+Block numbering, parent selection, SQLite writes, and in-memory Merkle
+updates use a serialized commit section. This preserves the order of the
+preset route while allowing independent HTTP requests and IPFS operations to
+run on different workers.
+
+The user server remains a small static-file server and does not use the
+control-server worker pool.
+
+## Allocator benchmark
+
+The root-level `server_concurrency_test.py` script measures allocator
+throughput without starting either HTTP server. It compiles a temporary C++
+benchmark and compares:
+
+```
+new/delete  vs  MemoryPool
+malloc/free vs  ConMemPool
+```
+
+Run it from the repository root:
+
+```bash
+python3 server_concurrency_test.py \
+    --threads 1 8 16 \
+    --allocations 100000 \
+    --repeat 3
+```
+
+The benchmark uses the same call boundary for all four allocators, prevents
+dead-code elimination of the memory access, and reports the median throughput
+across repeated runs. A representative local run produced:
+
+| Threads | MemoryPool vs new/delete | ConMemPool vs malloc/free |
+| ---: | ---: | ---: |
+| 1 | 2.05x | 1.06x |
+| 8 | 0.20x | 3.96x |
+| 16 | 0.28x | 3.65x |
+
+The sample indicates that the fixed-block `MemoryPool` is effective with low
+contention but is limited by its shared mutex at higher concurrency.
+`ConMemPool` has a smaller single-thread advantage and scales better for
+concurrent small-object allocation.
+
+This is an allocator microbenchmark rather than an end-to-end server test.
+Each benchmark worker allocates and releases on the same thread. In the
+control server, a callable is allocated on the accept thread and released by a
+worker thread, while a `WorkItem` follows the same queue handoff. Queue
+locking, SQLite writes, Merkle commits, HTTP processing, and IPFS operations
+are outside the benchmark and can dominate complete request latency.
 
 ## Batch and stage behavior
 
@@ -176,6 +248,21 @@ Set `IPFS_API_URL` only when a deployment uses a different IPFS host or port.
 
 The current local demo accepts files up to 30 MB per upload. The IPFS daemon
 must be started separately by the user.
+
+## Additional control-server sources
+
+The control-server target must include these sources when its build files are
+updated:
+
+```
+Server/thread_pool.cpp
+MemoryPool/mempool.cpp
+ConMemPool/concurrency_mempool.cpp
+```
+
+`ConMemPool/concurrency_mempool.cpp` provides the allocator implementation for
+the server build. Its standalone benchmark entry point is enabled only for
+the separate allocator test build.
 
 ## SQLite tables
 
@@ -274,4 +361,6 @@ flow receives records from the user page and does not depend on that file.
 - Digital signatures and third-party verification are deferred.
 - Public-chain, private-chain, cross-chain, and external gateway work is
   outside this prototype stage.
-- `MemoryPool` and `ConMemPool` remain standalone experiments.
+- `MemoryPool` and `ConMemPool` retain their standalone experiment entry
+  points, and their allocator interfaces are also used by the control-server
+  ThreadPool.

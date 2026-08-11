@@ -7,8 +7,15 @@
 #include <unistd.h>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+
+namespace
+{
+std::mutex log_mutex;
+}
 
 void log_to_file(const std::string& log_line) {
+    std::lock_guard<std::mutex> lock(log_mutex);
     std::ofstream log_file("server.log", std::ios::app);
     if (log_file.is_open()) {
         log_file << log_line;
@@ -22,8 +29,10 @@ void log_to_file(const std::string& log_line) {
 std::string current_timestamp()
 {
     time_t now = time(nullptr);
+    tm local_time{};
+    localtime_r(&now, &local_time);
     char buf[100];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &local_time);
     return std::string(buf);
 }
 
