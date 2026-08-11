@@ -1,7 +1,6 @@
 #include "MerkleTree.hpp"
-MerkleTree::MerkleTree(int Tsize) : blockSize(Tsize)
+MerkleTree::MerkleTree(int Tsize) : root(nullptr), blockSize(Tsize)
 {
-    levels = 0;
     blockNo = -1;
 }
 

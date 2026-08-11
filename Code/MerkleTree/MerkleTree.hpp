@@ -4,6 +4,7 @@
 #include <vector>
 #include <openssl/sha.h>
 #include <fstream>
+#include <string>
 
 using uchar = unsigned char;
 
@@ -17,8 +18,13 @@ struct Node
 class MerkleTree
 {
     Node *root;
-    int blockSize, blockNo, levels;
+    int blockSize, blockNo;
+    std::vector<std::string> blocks;
     const int HASHSIZE = 2 * SHA256_DIGEST_LENGTH;
+
+    Node* BuildFromBlocks(const std::vector<std::string>& source);
+    Node* CloneHashNode(const Node* source);
+    Node* FindLeaf(Node* tree, int n) const;
 
     public:
         MerkleTree(int Tsize);

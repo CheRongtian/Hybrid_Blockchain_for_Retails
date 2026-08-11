@@ -30,9 +30,10 @@ void MerkleTree::Traverse(const Node *tree)
 {
     if(!tree) return;
 
-    if(!tree->left)
+    if(!tree->left && !tree->right)
     {
-        std::cout << tree->blockID << "\t" <<tree->hashValue << std::endl;
+        if(tree->blockID >= 0)
+            std::cout << tree->blockID << "\t" << tree->hashValue << std::endl;
         return;
     }
     Traverse(tree->left);
