@@ -66,6 +66,18 @@ button:disabled {
     width: 100%;
 }
 
+.remember-login {
+    display: flex !important;
+    grid-template-columns: none !important;
+    align-items: center;
+    gap: 0.5rem !important;
+}
+
+.remember-login input {
+    width: 1rem;
+    height: 1rem;
+}
+
 .layout {
     width: min(72rem, calc(100% - 2rem));
     margin: 0 auto;
@@ -146,6 +158,80 @@ dt {
     margin-bottom: 0;
 }
 
+.workflow-card {
+    margin-bottom: 1rem;
+}
+
+#workflow-canvas {
+    display: block;
+    width: 100%;
+    min-height: 15rem;
+    margin-top: 1.5rem;
+    border: 1px solid #26364c;
+    border-radius: 0.85rem;
+    background: #080f1c;
+}
+
+.workflow-card .status {
+    margin: 0.8rem 0 0;
+}
+
+.chain-card {
+    overflow: hidden;
+}
+
+.chain-flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding: 0.25rem 0.1rem 0.75rem;
+    overflow-x: auto;
+}
+
+.chain-node {
+    min-width: 14rem;
+    padding: 1rem;
+    border: 1px solid #2d4960;
+    border-radius: 0.85rem;
+    background: #0b1727;
+}
+
+.chain-node-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.8rem;
+}
+
+.chain-node-header strong {
+    color: #e5edf8;
+}
+
+.chain-node p {
+    margin: 0.35rem 0;
+    color: #91a2b9;
+    font-size: 0.88rem;
+}
+
+.chain-node p strong {
+    color: #dce7f5;
+}
+
+.chain-arrow {
+    align-self: center;
+    color: #73cef4;
+    font-size: 1.5rem;
+    font-weight: 800;
+}
+
+.chain-links {
+    margin: 1rem 0 0;
+    color: #91a2b9;
+    font-size: 0.85rem;
+}
+
 .badge {
     border-radius: 999px;
     padding: 0.35rem 0.7rem;
@@ -156,6 +242,11 @@ dt {
 .badge.verified {
     background: rgba(85, 214, 176, 0.16);
     color: #6ce8bf;
+}
+
+.badge.pending {
+    background: rgba(253, 230, 138, 0.14);
+    color: #fde68a;
 }
 
 .badge.failed,

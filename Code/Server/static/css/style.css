@@ -90,6 +90,18 @@ input:focus {
     outline-offset: 2px;
 }
 
+.remember-login {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.remember-login input {
+    width: 18px;
+    height: 18px;
+}
+
 .confirmation {
     grid-column: 1 / -1;
     display: flex;

@@ -1,10 +1,12 @@
 const loginCard = document.querySelector("#login-card");
 const loginForm = document.querySelector("#login-form");
 const loginStatus = document.querySelector("#login-status");
+const rememberLogin = document.querySelector("#remember-login");
 const recordCard = document.querySelector("#record-card");
 const identityStatus = document.querySelector("#identity-status");
 const logoutButton = document.querySelector("#logout-button");
 const form = document.querySelector("#record-form");
+const currentStage = document.querySelector("#current-stage");
 const statusLine = document.querySelector("#request-status");
 const resultCard = document.querySelector("#result-card");
 const verificationTitle = document.querySelector("#verification-title");
@@ -12,20 +14,65 @@ const controlApiBase = "http://127.0.0.1:8081/api";
 const sessionKey = "supply-chain-user-session";
 let session = null;
 
-function setSession(result) {
+const stageLabels = {
+    supplier: "Supplier",
+    logistics: "Logistics",
+    warehouse: "Warehouse",
+    supermarket: "Supermarket"
+};
+
+function setCurrentStage(role) {
+    currentStage.value = stageLabels[role] || role;
+}
+
+function showSession(result) {
     session = result;
-    sessionStorage.setItem(sessionKey, JSON.stringify(result));
     loginCard.hidden = true;
     recordCard.hidden = false;
     identityStatus.textContent =
         `Logged in: ${result.user.username} · ${result.user.role} · ${result.user.organizationId}`;
+    setCurrentStage(result.user.role);
+}
+
+function saveSession(result, remember) {
+    const serialized = JSON.stringify(result);
+    sessionStorage.removeItem(sessionKey);
+    localStorage.removeItem(sessionKey);
+    (remember ? localStorage : sessionStorage).setItem(sessionKey, serialized);
+}
+
+function readSavedSession() {
+    const remembered = localStorage.getItem(sessionKey);
+    if (remembered) return remembered;
+    return sessionStorage.getItem(sessionKey);
 }
 
 function clearSession() {
     session = null;
     sessionStorage.removeItem(sessionKey);
+    localStorage.removeItem(sessionKey);
     loginCard.hidden = false;
     recordCard.hidden = true;
+    resultCard.hidden = true;
+}
+
+async function logout() {
+    const token = session?.token;
+    if(token)
+    {
+        try
+        {
+            await fetch(`${controlApiBase}/auth/logout`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` }
+            });
+        }
+        catch
+        {
+            // Local logout still clears the stored session if the server is unavailable.
+        }
+    }
+    clearSession();
 }
 
 async function login(event) {
@@ -44,8 +91,9 @@ async function login(event) {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || `Login failed: ${response.status}`);
 
+        saveSession(result, rememberLogin.checked);
         loginForm.reset();
-        setSession(result);
+        showSession(result);
         loginStatus.textContent = "Identity verified.";
     } catch (error) {
         loginStatus.textContent = error.message;
@@ -54,7 +102,7 @@ async function login(event) {
 }
 
 async function restoreSession() {
-    const saved = sessionStorage.getItem(sessionKey);
+    const saved = readSavedSession();
     if (!saved) return;
 
     try {
@@ -63,14 +111,14 @@ async function restoreSession() {
             headers: { Authorization: `Bearer ${stored.token}` }
         });
         if (!response.ok) throw new Error("Session expired");
-        setSession({ token: stored.token, user: await response.json() });
+        showSession({ token: stored.token, user: await response.json() });
     } catch {
         clearSession();
     }
 }
 
 loginForm.addEventListener("submit", login);
-logoutButton.addEventListener("click", clearSession);
+logoutButton.addEventListener("click", logout);
 
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -106,6 +154,7 @@ form.addEventListener("submit", async (event) => {
         document.querySelector("#block-id").textContent = result.blockID;
         resultCard.hidden = false;
         form.reset();
+        setCurrentStage(session.user.role);
 
         statusLine.textContent = result.verified
             ? "Record saved. Merkle proof verified."

@@ -75,8 +75,7 @@ std::string lower(std::string value)
     return value;
 }
 
-std::optional<UserAccount> authenticated_user(const HttpRequest& request,
-                                              SessionStore& sessions)
+std::optional<std::string> authorization_token(const HttpRequest& request)
 {
     const auto authorization = request.headers.find("authorization");
     if(authorization == request.headers.end()) return std::nullopt;
@@ -86,7 +85,17 @@ std::optional<UserAccount> authenticated_user(const HttpRequest& request,
         return std::nullopt;
 
     const std::string token = trim(header.substr(7));
-    const auto session = sessions.find(token);
+    if(token.empty()) return std::nullopt;
+    return token;
+}
+
+std::optional<UserAccount> authenticated_user(const HttpRequest& request,
+                                              SessionStore& sessions)
+{
+    const auto token = authorization_token(request);
+    if(!token) return std::nullopt;
+
+    const auto session = sessions.find(*token);
     if(session == sessions.end()) return std::nullopt;
 
     if(session->second.expires_at <= std::chrono::steady_clock::now())
@@ -312,16 +321,55 @@ std::string json_escape(const std::string& value)
     return escaped.str();
 }
 
+struct WorkflowStep
+{
+    const char* id;
+    const char* label;
+    const char* role;
+    const char* username;
+};
+
+const std::vector<WorkflowStep>& fixed_workflow()
+{
+    static const std::vector<WorkflowStep> workflow = {
+        {"supplier", "Supplier", "supplier", "supplier01"},
+        {"logistics", "Logistics", "logistics", "logistics01"},
+        {"warehouse", "Warehouse", "warehouse", "warehouse01"},
+        {"supermarket", "Supermarket", "supermarket", "supermarket01"}
+    };
+    return workflow;
+}
+
+int workflow_index_for_role(const std::string& role)
+{
+    const auto& workflow = fixed_workflow();
+    for(std::size_t i = 0; i < workflow.size(); ++i)
+    {
+        if(role == workflow[i].role)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::string stage_for_role(const std::string& role)
+{
+    const int index = workflow_index_for_role(role);
+    if(index < 0) return role;
+    return fixed_workflow()[static_cast<std::size_t>(index)].role;
+}
+
 std::string canonical_record(const std::unordered_map<std::string, std::string>& fields,
                              const UserAccount& account)
 {
-    const char* names[] = {"batchId", "product", "origin", "stage"};
+    const char* names[] = {"batchId", "product", "origin"};
     std::ostringstream record;
     for(const char* name : names)
     {
         const std::string& value = fields.at(name);
         record << name << ':' << value.size() << ':' << value << '\n';
     }
+    const std::string stage = stage_for_role(account.role);
+    record << "stage:" << stage.size() << ':' << stage << '\n';
     record << "confirmedBy:" << account.username.size() << ':'
            << account.username << '\n';
     record << "uid:" << account.uid.size() << ':' << account.uid << '\n';
@@ -366,10 +414,93 @@ std::string records_json(const std::vector<SupplyChainRecord>& records)
              << "\",\"rootHash\":\"" << json_escape(record.root_hash)
              << "\",\"proof\":\"" << json_escape(record.proof)
              << "\",\"verified\":" << (record.verified ? "true" : "false")
-             << ",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
+             << ",\"blockHash\":\"" << json_escape(record.block_hash)
+             << "\",\"chainStatus\":\"" << json_escape(record.chain_status)
+             << "\",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
     }
     json << ']';
     return json.str();
+}
+
+std::string edges_json(const std::vector<BlockEdge>& edges)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t i = 0; i < edges.size(); ++i)
+    {
+        if(i > 0) json << ',';
+        const BlockEdge& edge = edges[i];
+        json << "{\"from\":" << edge.from_block_id
+             << ",\"to\":" << edge.to_block_id
+             << ",\"batchId\":\"" << json_escape(edge.batch_id)
+             << "\",\"relation\":\"" << json_escape(edge.relation)
+             << "\"}";
+    }
+    json << ']';
+    return json.str();
+}
+
+std::string chain_json(const std::vector<SupplyChainRecord>& records,
+                       const std::vector<BlockEdge>& edges)
+{
+    return "{\"nodes\":" + records_json(records) +
+           ",\"edges\":" + edges_json(edges) + "}";
+}
+
+std::string workflow_json()
+{
+    const auto& workflow = fixed_workflow();
+    std::ostringstream json;
+    json << "{\"nodes\":[";
+    for(std::size_t i = 0; i < workflow.size(); ++i)
+    {
+        if(i > 0) json << ',';
+        const WorkflowStep& step = workflow[i];
+        json << "{\"id\":\"" << json_escape(step.id)
+             << "\",\"label\":\"" << json_escape(step.label)
+             << "\",\"role\":\"" << json_escape(step.role)
+             << "\",\"username\":\"" << json_escape(step.username)
+             << "\"}";
+    }
+    json << "],\"edges\":[";
+    for(std::size_t i = 1; i < workflow.size(); ++i)
+    {
+        if(i > 1) json << ',';
+        json << "{\"from\":\"" << json_escape(workflow[i - 1].id)
+             << "\",\"to\":\"" << json_escape(workflow[i].id)
+             << "\"}";
+    }
+    json << "]}";
+    return json.str();
+}
+
+const SupplyChainRecord* latest_batch_record(
+    const std::vector<SupplyChainRecord>& records,
+    const std::string& batch_id)
+{
+    const SupplyChainRecord* latest = nullptr;
+    for(const SupplyChainRecord& record : records)
+    {
+        if(record.batch_id != batch_id) continue;
+        if(!latest || record.block_id > latest->block_id)
+            latest = &record;
+    }
+    return latest;
+}
+
+std::string calculate_block_hash(MerkleTree& tree,
+                                 const SupplyChainRecord& record,
+                                 const SupplyChainRecord* parent)
+{
+    const std::string parent_hash = parent
+        ? (!parent->block_hash.empty() ? parent->block_hash : parent->root_hash)
+        : "GENESIS";
+    std::ostringstream input;
+    input << "blockId:" << record.block_id << '\n'
+          << "parentHash:" << parent_hash << '\n'
+          << "merkleRoot:" << tree.GetRootHash() << '\n'
+          << "canonical:" << record.canonical_record;
+    return tree.SHA256(input.str());
 }
 
 bool is_inside(const fs::path& root, const fs::path& candidate)
@@ -501,6 +632,10 @@ int main(int argc, char* argv[])
     if(!load_supply_chain_records(database_path.string(), stored_records))
         return 1;
 
+    std::vector<BlockEdge> chain_edges;
+    if(!load_block_edges(database_path.string(), chain_edges))
+        return 1;
+
     MerkleTree merkle_tree(1);
     std::vector<std::string> canonical_records;
     canonical_records.reserve(stored_records.size());
@@ -579,8 +714,11 @@ int main(int argc, char* argv[])
 
         const bool is_api_target =
             request.target == "/api/auth/login" ||
+            request.target == "/api/auth/logout" ||
             request.target == "/api/auth/me" ||
-            request.target == "/api/records";
+            request.target == "/api/records" ||
+            request.target == "/api/workflow" ||
+            request.target == "/api/chains";
 
         if(request.method == "OPTIONS" && is_api_target)
         {
@@ -641,6 +779,23 @@ int main(int argc, char* argv[])
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
+        else if(request.method == "POST" && request.target == "/api/auth/logout")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto token = authorization_token(request);
+            if(!token || sessions.erase(*token) == 0)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+                send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+            }
+            else
+            {
+                status = "204 No Content";
+                body.clear();
+                send_response(client_fd, status, content_type, body, false, CORS_HEADERS);
+            }
+        }
         else if(request.method == "GET" && request.target == "/api/auth/me")
         {
             content_type = "application/json; charset=utf-8";
@@ -687,6 +842,59 @@ int main(int argc, char* argv[])
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
+        else if(request.method == "GET" && request.target == "/api/workflow")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                status = "200 OK";
+                body = workflow_json();
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/chains")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(request, sessions);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                std::vector<SupplyChainRecord> records;
+                std::vector<BlockEdge> edges;
+                if(load_supply_chain_records(database_path.string(), records) &&
+                   load_block_edges(database_path.string(), edges))
+                {
+                    status = "200 OK";
+                    body = chain_json(records, edges);
+                }
+                else
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error("Failed to read supply-chain graph");
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
         else if(request.method == "POST" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
@@ -705,7 +913,7 @@ int main(int argc, char* argv[])
                 const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
                 const char* required[] = {
-                    "batchId", "product", "origin", "stage"
+                    "batchId", "product", "origin"
                 };
                 std::string validation_error;
                 if(!correct_type)
@@ -742,63 +950,131 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
-                    const int block_id = static_cast<int>(canonical_records.size());
-                    const std::string record = canonical_record(*fields, *user);
-                    MerkleTree candidate_tree(1);
-                    bool candidate_ready = true;
-                    for(const std::string& stored_record : canonical_records)
+                    const std::string batch_id = fields->at("batchId");
+                    const SupplyChainRecord* parent =
+                        latest_batch_record(stored_records, batch_id);
+                    const auto& workflow = fixed_workflow();
+                    const int current_index = workflow_index_for_role(user->role);
+                    std::string workflow_error;
+
+                    if(current_index < 0)
                     {
-                        if(!candidate_tree.Append(stored_record))
+                        workflow_error = "This account is not part of the preset workflow";
+                    }
+                    else if(!parent && current_index != 0)
+                    {
+                        workflow_error = "A new batch must start at the Supplier stage";
+                    }
+                    else if(parent)
+                    {
+                        const int parent_index = workflow_index_for_role(parent->role);
+                        if(parent->chain_status == "completed" ||
+                           parent_index == static_cast<int>(workflow.size()) - 1)
                         {
-                            candidate_ready = false;
-                            break;
+                            workflow_error =
+                                "This batch has already reached the Supermarket stage";
+                        }
+                        else if(parent_index < 0)
+                        {
+                            workflow_error = "The previous block has an unknown workflow stage";
+                        }
+                        else if(current_index != parent_index + 1)
+                        {
+                            workflow_error = "The next required stage is " +
+                                std::string(workflow[static_cast<std::size_t>(parent_index + 1)].label);
                         }
                     }
 
-                    if(candidate_ready) candidate_ready = candidate_tree.Append(record);
-                    if(!candidate_ready)
+                    if(!workflow_error.empty())
                     {
-                        status = "500 Internal Server Error";
-                        body = json_error("Failed to append Merkle block");
+                        status = "409 Conflict";
+                        body = json_error(workflow_error);
                     }
                     else
                     {
-                        const std::string proof = candidate_tree.ProverBlock(block_id);
-                        const bool verified = candidate_tree.Verify(proof);
-
-                        SupplyChainRecord database_record;
-                        database_record.block_id = block_id;
-                        database_record.batch_id = fields->at("batchId");
-                        database_record.product = fields->at("product");
-                        database_record.origin = fields->at("origin");
-                        database_record.stage = fields->at("stage");
-                        database_record.confirmed_by = user->username;
-                        database_record.uid = user->uid;
-                        database_record.role = user->role;
-                        database_record.organization_id = user->organization_id;
-                        database_record.canonical_record = record;
-                        database_record.root_hash = candidate_tree.GetRootHash();
-                        database_record.proof = proof;
-                        database_record.verified = verified;
-
-                        if(!insert_supply_chain_record(database_path.string(), database_record))
+                        const int block_id = static_cast<int>(canonical_records.size());
+                        const std::string record = canonical_record(*fields, *user);
+                        MerkleTree candidate_tree(1);
+                        bool candidate_ready = true;
+                        for(const std::string& stored_record : canonical_records)
                         {
-                            status = "500 Internal Server Error";
-                            body = json_error("Failed to save supply-chain record");
+                            if(!candidate_tree.Append(stored_record))
+                            {
+                                candidate_ready = false;
+                                break;
+                            }
                         }
-                        else if(!merkle_tree.Append(record))
+
+                        if(candidate_ready) candidate_ready = candidate_tree.Append(record);
+                        if(!candidate_ready)
                         {
                             status = "500 Internal Server Error";
-                            body = json_error(
-                                "Record saved, but in-memory Merkle update failed");
+                            body = json_error("Failed to append Merkle block");
                         }
                         else
                         {
-                            canonical_records.push_back(record);
-                            status = "201 Created";
-                            body = "{\"blockID\":" + std::to_string(block_id) +
-                                   ",\"verified\":" +
-                                   (verified ? "true" : "false") + "}";
+                            const std::string proof = candidate_tree.ProverBlock(block_id);
+                            const bool verified = candidate_tree.Verify(proof);
+
+                            SupplyChainRecord database_record;
+                            database_record.block_id = block_id;
+                            database_record.batch_id = batch_id;
+                            database_record.product = fields->at("product");
+                            database_record.origin = fields->at("origin");
+                            database_record.stage = stage_for_role(user->role);
+                            database_record.confirmed_by = user->username;
+                            database_record.uid = user->uid;
+                            database_record.role = user->role;
+                            database_record.organization_id = user->organization_id;
+                            database_record.canonical_record = record;
+                            database_record.root_hash = candidate_tree.GetRootHash();
+                            database_record.proof = proof;
+                            database_record.verified = verified;
+                            database_record.chain_status =
+                                current_index == static_cast<int>(workflow.size()) - 1
+                                    ? "completed"
+                                    : "in_progress";
+                            database_record.block_hash = calculate_block_hash(
+                                candidate_tree, database_record, parent);
+
+                            std::vector<BlockEdge> new_edges;
+                            if(parent)
+                            {
+                                new_edges.push_back(BlockEdge{
+                                    parent->block_id,
+                                    block_id,
+                                    batch_id,
+                                    "continues"
+                                });
+                            }
+
+                            if(!insert_supply_chain_block(
+                                   database_path.string(), database_record, new_edges))
+                            {
+                                status = "500 Internal Server Error";
+                                body = json_error("Failed to save supply-chain block");
+                            }
+                            else if(!merkle_tree.Append(record))
+                            {
+                                status = "500 Internal Server Error";
+                                body = json_error(
+                                    "Block saved, but in-memory Merkle update failed");
+                            }
+                            else
+                            {
+                                canonical_records.push_back(record);
+                                stored_records.push_back(database_record);
+                                chain_edges.insert(
+                                    chain_edges.end(), new_edges.begin(), new_edges.end());
+                                status = "201 Created";
+                                body = "{\"blockID\":" + std::to_string(block_id) +
+                                       ",\"verified\":" +
+                                       (verified ? "true" : "false") +
+                                       ",\"chainStatus\":\"" +
+                                       json_escape(database_record.chain_status) +
+                                       "\",\"stage\":\"" +
+                                       json_escape(database_record.stage) + "\"}";
+                            }
                         }
                     }
                 }

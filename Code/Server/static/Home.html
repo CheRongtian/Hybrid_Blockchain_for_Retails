@@ -22,6 +22,10 @@
                     Password
                     <input name="password" type="password" autocomplete="current-password" required>
                 </label>
+                <label class="remember-login">
+                    <input id="remember-login" type="checkbox">
+                    <span>Remember me on this device</span>
+                </label>
                 <button type="submit">Log In</button>
             </form>
 
@@ -49,7 +53,7 @@
                 </label>
                 <label>
                     Current Stage
-                    <input name="stage" placeholder="Received" maxlength="256" required>
+                    <input id="current-stage" readonly>
                 </label>
 
                 <label class="confirmation">

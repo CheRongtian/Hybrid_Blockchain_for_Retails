@@ -16,11 +16,12 @@ control_server :8081
         ├─ canonicalize the record
         ├─ append it to the Merkle Tree
         ├─ generate and verify a Merkle Proof
-        └─ save the record and verification snapshot in SQLite
+        └─ save the block, chain edge, and verification snapshot in SQLite
 ```
 
-The control page is served by `control_server` and reads the saved records
-through `GET /api/records`.
+The control page is served by `control_server` and reads the saved workflow
+graph through `GET /api/chains`. It also receives the preset route through
+`GET /api/workflow`.
 
 ## Repository structure
 
@@ -96,13 +97,15 @@ The user page collects:
 - batch ID
 - product
 - origin
-- supply-chain stage
 - confirmer
 - confirmation checkbox
 
 After confirmation, the browser sends the record to the control server. A
-successful submission clears the form and returns the Block ID and verification
-status. Root and Proof are stored for the control page.
+successful submission clears the form, creates one block, and returns the Block
+ID, stage, and verification status. The current stage is supplied by the
+authenticated account and cannot be chosen in the browser. The control page
+renders the preset route and the saved blocks with their connections. Root and
+Proof remain stored for later control-side verification work.
 
 ## SQLite records
 
@@ -120,8 +123,33 @@ canonical_record
 root_hash
 proof
 verified
+block_hash
+chain_status
 created_at
 ```
+
+The `block_edges` table stores workflow connections:
+
+```text
+from_block_id
+to_block_id
+batch_id
+relation
+```
+
+The current preset route is:
+
+```text
+Supplier -> Logistics -> Warehouse -> Supermarket
+```
+
+The server accepts a new block only when the authenticated account matches the
+next stage in this route. A new batch must start at Supplier, and Supermarket is
+the terminal stage. Each accepted block after the first one is connected to the
+previous block for the same batch through `block_edges`.
+
+The control page draws this preset route on a Canvas. Route editing, branching,
+and merging are reserved for a later workflow editor.
 
 The control server rebuilds its in-memory Merkle Tree from stored canonical
 records on startup. `root_hash` and `proof` are snapshots from the time the
@@ -185,6 +213,11 @@ considered for a multi-threaded control server.
 The user page requires an authenticated supply-chain account before it can
 submit a record. The control page requires the administrator account to read
 the saved records.
+
+Both pages provide a logout action. The logout request invalidates the current
+server-side token. Each page also provides an unchecked `Remember me on this
+device` option: checked sessions use browser persistent storage, while the
+default session is cleared when the browser session ends.
 
 The local demo accounts are seeded by `control_server` when the database is
 initialized:

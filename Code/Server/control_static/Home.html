@@ -21,6 +21,10 @@
                     Password
                     <input name="password" type="password" autocomplete="current-password" required>
                 </label>
+                <label class="remember-login">
+                    <input id="remember-login" type="checkbox">
+                    <span>Remember me on this device</span>
+                </label>
                 <button type="submit">Log In to Control Panel</button>
             </form>
             <p id="login-status" class="status" aria-live="polite"></p>
@@ -39,7 +43,19 @@
                 </div>
             </header>
 
-            <p id="load-status" class="status" aria-live="polite">Loading records…</p>
+            <section class="record-card workflow-card" aria-labelledby="workflow-title">
+                <header>
+                    <div>
+                        <p class="eyebrow">PRESET WORKFLOW</p>
+                        <h2 id="workflow-title">Supply Chain Route</h2>
+                    </div>
+                    <span class="badge pending">Fixed route</span>
+                </header>
+                <canvas id="workflow-canvas" aria-label="Preset supply chain route"></canvas>
+                <p id="workflow-status" class="status" aria-live="polite">Loading preset route...</p>
+            </section>
+
+            <p id="load-status" class="status" aria-live="polite">Loading supply-chain workflow...</p>
             <section id="record-list" class="record-list" aria-label="Supply-chain records"></section>
         </section>
     </main>
