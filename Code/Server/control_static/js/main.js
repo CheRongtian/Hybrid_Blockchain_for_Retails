@@ -116,6 +116,204 @@ function appendNodeLine(node, label, value) {
     node.append(line);
 }
 
+function shortHash(hash) {
+    if (!hash) return "Unknown hash";
+    if (hash.length <= 18) return hash;
+    return `${hash.slice(0, 10)}…${hash.slice(-8)}`;
+}
+
+function merkleNodeLabel(node, depth = 0) {
+    if (node.kind === "root") return "Root";
+    if (node.kind === "internal") return `Branch · Level ${depth}`;
+    if (node.kind === "duplicate") return "Duplicate Hash";
+    return node.fieldName ? `Leaf ${node.leafIndex}: ${node.fieldName}` : `Leaf ${node.leafIndex}`;
+}
+
+function appendMerkleNodeDetails(container, node) {
+    const type = document.createElement("p");
+    type.textContent = `Type: ${node.kind}`;
+    container.append(type);
+
+    const hash = document.createElement("code");
+    hash.textContent = `Hash: ${node.hash || "Unknown"}`;
+    container.append(hash);
+
+    if (node.kind === "leaf") {
+        const value = document.createElement("p");
+        value.textContent = `Value: ${node.value || "Empty"}`;
+        container.append(value);
+
+        const proof = document.createElement("code");
+        proof.textContent = `Proof: ${node.proof || "None"}`;
+        container.append(proof);
+    }
+
+    if (node.kind === "duplicate") {
+        const note = document.createElement("p");
+        note.textContent = "This node repeats the last hash to complete the level.";
+        container.append(note);
+    }
+
+    const verification = document.createElement("p");
+    verification.textContent = `Verification: ${node.verified ? "Verified" : "Failed"}`;
+    verification.className = node.verified ? "status success" : "status error";
+    container.append(verification);
+}
+
+function showMerkleNodeDetails(container, node, depth = 0) {
+    container.replaceChildren();
+
+    const title = document.createElement("h3");
+    title.textContent = merkleNodeLabel(node, depth);
+    container.append(title);
+
+    appendMerkleNodeDetails(container, node);
+}
+
+function renderMerkleNode(node, detailsPanel, depth = 0) {
+    const item = document.createElement("div");
+    item.className = `merkle-tree-item merkle-${node.kind}`;
+
+    const row = document.createElement("div");
+    const stateClass = node.kind === "duplicate"
+        ? "duplicate-state"
+        : node.verified ? "verified-state" : "failed-state";
+    row.className = `merkle-tree-row ${stateClass}`;
+    row.style.setProperty("--tree-depth", depth);
+
+    const hasChildren = Boolean(node.children?.length);
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "merkle-tree-toggle";
+    toggle.textContent = hasChildren ? "+" : "";
+    toggle.disabled = !hasChildren;
+    toggle.setAttribute("aria-label", hasChildren ? "Expand node" : "Leaf node");
+
+    const nodeButton = document.createElement("button");
+    nodeButton.type = "button";
+    nodeButton.className = `merkle-tree-node-button ${stateClass}`;
+    nodeButton.addEventListener("click", () => showMerkleNodeDetails(detailsPanel, node, depth));
+    const label = document.createElement("span");
+    label.textContent = merkleNodeLabel(node, depth);
+    nodeButton.append(label);
+
+    const state = document.createElement("span");
+    state.className = `merkle-state ${stateClass}`;
+    state.title = node.kind === "duplicate"
+        ? "Duplicated hash"
+        : node.verified ? "Verified" : "Failed";
+    nodeButton.append(state);
+    row.append(toggle, nodeButton);
+    item.append(row);
+
+    if (hasChildren) {
+        const children = document.createElement("div");
+        children.className = "merkle-tree-children";
+        children.hidden = true;
+        for (const child of node.children) {
+            children.append(renderMerkleNode(child, detailsPanel, depth + 1));
+        }
+        toggle.addEventListener("click", () => {
+            children.hidden = !children.hidden;
+            toggle.textContent = children.hidden ? "+" : "−";
+            toggle.setAttribute("aria-label", children.hidden ? "Expand node" : "Collapse node");
+        });
+        item.append(children);
+    }
+
+    return item;
+}
+
+function appendMerkleTree(record) {
+    const section = document.createElement("section");
+    section.className = "merkle-tree-panel";
+
+    const summaryHeader = document.createElement("div");
+    summaryHeader.className = "merkle-tree-summary-header";
+    const summaryTitle = document.createElement("strong");
+    summaryTitle.textContent = `Merkle Tree ${record.blockID}`;
+    const summaryCount = document.createElement("span");
+    summaryCount.textContent = `${record.merkleTree?.leafCount || 0} leaves`;
+    summaryHeader.append(summaryTitle, summaryCount);
+    section.append(summaryHeader);
+
+    const rootSummary = document.createElement("div");
+    rootSummary.className = record.merkleTree?.consistent
+        ? "merkle-tree-summary-root verified-node"
+        : "merkle-tree-summary-root failed-node";
+    rootSummary.textContent = "Root available";
+    section.append(rootSummary);
+
+    const explanation = document.createElement("p");
+    explanation.className = "merkle-tree-label";
+    explanation.textContent = "Open the tree to inspect the root-to-leaf hierarchy.";
+    section.append(explanation);
+
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.className = "merkle-open-button";
+    openButton.textContent = "Open Merkle Tree";
+    section.append(openButton);
+
+    const dialog = document.createElement("dialog");
+    dialog.className = "merkle-tree-dialog";
+    const dialogShell = document.createElement("div");
+    dialogShell.className = "merkle-dialog-shell";
+
+    const dialogHeader = document.createElement("header");
+    dialogHeader.className = "merkle-dialog-header";
+    const dialogTitle = document.createElement("div");
+    const dialogHeading = document.createElement("h2");
+    dialogHeading.textContent = `Block ${record.blockID} · Merkle Tree`;
+    const dialogRoot = document.createElement("p");
+    dialogRoot.textContent = "Select a node to inspect its details.";
+    dialogTitle.append(dialogHeading, dialogRoot);
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "merkle-dialog-close";
+    closeButton.textContent = "Close";
+    closeButton.addEventListener("click", () => dialog.close());
+    dialogHeader.append(dialogTitle, closeButton);
+    dialogShell.append(dialogHeader);
+
+    const dialogContent = document.createElement("div");
+    dialogContent.className = "merkle-dialog-content";
+    const treeViewport = document.createElement("div");
+    treeViewport.className = "merkle-tree-viewport";
+    const detailsPanel = document.createElement("aside");
+    detailsPanel.className = "merkle-node-details";
+    const legend = document.createElement("p");
+    legend.className = "merkle-tree-legend";
+    legend.textContent = "Green: verified · Red: failed · Yellow: duplicated hash";
+    treeViewport.append(legend);
+    dialogContent.append(treeViewport, detailsPanel);
+
+    if (record.merkleTree?.root) {
+        treeViewport.append(renderMerkleNode(record.merkleTree.root, detailsPanel));
+        const hint = document.createElement("p");
+        hint.className = "merkle-node-details-hint";
+        hint.textContent = "Select a node to view its details.";
+        detailsPanel.append(hint);
+    } else {
+        const empty = document.createElement("p");
+        empty.className = "status pending";
+        empty.textContent = "No Merkle tree structure is available for this block.";
+        treeViewport.append(empty);
+    }
+    dialogShell.append(dialogContent);
+    dialog.append(dialogShell);
+    section.append(dialog);
+
+    openButton.addEventListener("click", () => {
+        if (!dialog.open) dialog.showModal();
+    });
+    dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+    });
+
+    return section;
+}
+
 function renderChainNode(record) {
     const node = document.createElement("div");
     node.className = "chain-node";
@@ -147,6 +345,11 @@ function renderChainNode(record) {
         ? record.ipfsRefs.map((reference) => `${reference.category}: ${reference.cid}`).join("\n")
         : "None";
     appendNodeLine(node, "CID References", cidText);
+    appendNodeLine(node, "Parent Block", record.parentBlockId >= 0
+        ? `Block ${record.parentBlockId}`
+        : "Genesis");
+    appendNodeLine(node, "Parent Hash", record.parentBlockHash || "GENESIS");
+    node.append(appendMerkleTree(record));
     return node;
 }
 
@@ -162,6 +365,10 @@ function renderChain(batchId, nodes, edges) {
     badge.className = completed ? "badge verified" : "badge pending";
     badge.textContent = completed ? "Completed" : "In Progress";
     header.append(title, badge);
+
+    const chainLabel = document.createElement("p");
+    chainLabel.className = "chain-structure-label";
+    chainLabel.textContent = "Linked Block Chain · each block contains an independent Merkle Tree";
 
     const flow = document.createElement("div");
     flow.className = "chain-flow";
@@ -185,7 +392,7 @@ function renderChain(batchId, nodes, edges) {
         ? `Connections: ${edges.map((edge) => `Block ${edge.from} → Block ${edge.to}`).join(" · ")}`
         : "Genesis block";
 
-    card.append(header, flow, links);
+    card.append(header, chainLabel, flow, links);
     return card;
 }
 

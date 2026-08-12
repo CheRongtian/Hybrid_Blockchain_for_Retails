@@ -24,6 +24,7 @@ add_executable(
     server.cpp
     thread_pool.cpp
     auth_utils.cpp
+    block_merkle.cpp
     db_utils.cpp
     log_utils.cpp
     ../MemoryPool/mempool.cpp

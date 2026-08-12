@@ -2,6 +2,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 
 #include <algorithm>
 #include <iomanip>
@@ -32,6 +33,14 @@ std::string generate_random_hex(std::size_t byte_count)
         throw std::runtime_error("Secure random generation failed");
     return bytes_to_hex(reinterpret_cast<const unsigned char*>(bytes.data()),
                         bytes.size());
+}
+
+std::string hash_session_token(const std::string& token)
+{
+    unsigned char digest[SHA256_DIGEST_LENGTH]{};
+    SHA256(reinterpret_cast<const unsigned char*>(token.data()),
+           token.size(), digest);
+    return bytes_to_hex(digest, SHA256_DIGEST_LENGTH);
 }
 
 std::string hash_password(const std::string& password,

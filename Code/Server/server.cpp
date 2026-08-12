@@ -3,6 +3,7 @@
 #include <cctype>
 #include <csignal>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -20,8 +21,8 @@
 #include <vector>
 
 #include "auth_utils.hpp"
+#include "block_merkle.hpp"
 #include "db_utils.hpp"
-#include "MerkleTree.hpp"
 #include "log_utils.hpp"
 #include "thread_pool.hpp"
 
@@ -62,6 +63,15 @@ struct Session
 
 using SessionStore = std::unordered_map<std::string, Session>;
 
+constexpr auto TEMPORARY_SESSION_LIFETIME = std::chrono::hours(8);
+constexpr auto PERSISTENT_SESSION_LIFETIME = std::chrono::hours(24 * 30);
+
+std::int64_t unix_time_now()
+{
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 std::string trim(std::string value)
 {
     const auto first = std::find_if_not(value.begin(), value.end(), [](unsigned char ch) {
@@ -96,24 +106,35 @@ std::optional<std::string> authorization_token(const HttpRequest& request)
     return token;
 }
 
-std::optional<UserAccount> authenticated_user(const HttpRequest& request,
-                                              SessionStore& sessions,
-                                              std::mutex& sessions_mutex)
+std::optional<UserAccount> authenticated_user(
+    const HttpRequest& request,
+    const fs::path& database_path,
+    SessionStore& sessions,
+    std::mutex& sessions_mutex)
 {
     const auto token = authorization_token(request);
     if(!token) return std::nullopt;
 
-    std::lock_guard<std::mutex> lock(sessions_mutex);
-    const auto session = sessions.find(*token);
-    if(session == sessions.end()) return std::nullopt;
-
-    if(session->second.expires_at <= std::chrono::steady_clock::now())
     {
-        sessions.erase(session);
-        return std::nullopt;
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        const auto session = sessions.find(*token);
+        if(session != sessions.end())
+        {
+            if(session->second.expires_at <= std::chrono::steady_clock::now())
+            {
+                sessions.erase(session);
+            }
+            else
+            {
+                return session->second.account;
+            }
+        }
     }
 
-    return session->second.account;
+    const auto persistent = find_persistent_auth_session(
+        database_path.string(), hash_session_token(*token), unix_time_now());
+    if(!persistent) return std::nullopt;
+    return persistent->account;
 }
 
 bool ends_with(const std::string& value, const std::string& suffix)
@@ -763,41 +784,33 @@ std::string stage_for_role(const std::string& role)
     return fixed_workflow()[static_cast<std::size_t>(index)].role;
 }
 
-void append_canonical_field(std::ostringstream& record,
-                            const std::string& name,
-                            const std::string& value)
+std::vector<MerkleField> block_merkle_fields(
+    int block_id,
+    const SupplyChainBatch& batch,
+    const std::unordered_map<std::string, std::string>& fields,
+    const UserAccount& account,
+    const std::vector<IpfsReference>& references,
+    const SupplyChainRecord* parent)
 {
-    record << name << ':' << value.size() << ':' << value << '\n';
-}
+    std::vector<MerkleField> merkle_fields;
+    auto add_field = [&](const std::string& name, const std::string& value) {
+        merkle_fields.push_back(MerkleField{name, value});
+    };
 
-std::string canonical_record(const SupplyChainBatch& batch,
-                             const std::unordered_map<std::string, std::string>& fields,
-                             const UserAccount& account,
-                             const std::vector<IpfsReference>& references,
-                             const SupplyChainRecord* parent)
-{
-    std::ostringstream record;
-    append_canonical_field(record, "batchId", batch.batch_id);
-    append_canonical_field(record, "product", batch.product);
-    append_canonical_field(record, "harvestDate", batch.harvest_date);
-    append_canonical_field(record, "farmLocation", batch.farm_location);
-    append_canonical_field(record, "certificateId", batch.certificate_id);
-    append_canonical_field(record, "stage", stage_for_role(account.role));
-
-    const std::string parent_block_id = parent
-        ? std::to_string(parent->block_id)
-        : "GENESIS";
-    const std::string parent_hash = parent
-        ? (!parent->block_hash.empty() ? parent->block_hash : parent->root_hash)
-        : "GENESIS";
-    append_canonical_field(record, "parentBlockId", parent_block_id);
-    append_canonical_field(record, "parentBlockHash", parent_hash);
+    add_field("blockId", std::to_string(block_id));
+    add_field("batchId", batch.batch_id);
+    add_field("product", batch.product);
+    add_field("harvestDate", batch.harvest_date);
+    add_field("farmLocation", batch.farm_location);
+    add_field("certificateId", batch.certificate_id);
+    add_field("stage", stage_for_role(account.role));
+    add_field("parentBlockId", parent ? std::to_string(parent->block_id) : "GENESIS");
+    add_field("parentBlockHash", parent ? parent->block_hash : "GENESIS");
 
     for(const std::string& name : role_event_fields(account.role))
     {
         const auto item = fields.find(name);
-        append_canonical_field(record, "event." + name,
-                               item == fields.end() ? "" : item->second);
+        add_field("event." + name, item == fields.end() ? "" : item->second);
     }
 
     std::vector<IpfsReference> sorted_references = references;
@@ -811,18 +824,18 @@ std::string canonical_record(const SupplyChainBatch& batch,
     {
         const IpfsReference& reference = sorted_references[index];
         const std::string prefix = "ipfs." + std::to_string(index) + ".";
-        append_canonical_field(record, prefix + "category", reference.category);
-        append_canonical_field(record, prefix + "cid", reference.cid);
-        append_canonical_field(record, prefix + "filename", reference.filename);
-        append_canonical_field(record, prefix + "contentType", reference.content_type);
-        append_canonical_field(record, prefix + "size", std::to_string(reference.size));
+        add_field(prefix + "category", reference.category);
+        add_field(prefix + "cid", reference.cid);
+        add_field(prefix + "filename", reference.filename);
+        add_field(prefix + "contentType", reference.content_type);
+        add_field(prefix + "size", std::to_string(reference.size));
     }
 
-    append_canonical_field(record, "confirmedBy", account.username);
-    append_canonical_field(record, "uid", account.uid);
-    append_canonical_field(record, "role", account.role);
-    append_canonical_field(record, "organizationId", account.organization_id);
-    return record.str();
+    add_field("confirmedBy", account.username);
+    add_field("uid", account.uid);
+    add_field("role", account.role);
+    add_field("organizationId", account.organization_id);
+    return merkle_fields;
 }
 
 std::string json_error(const std::string& message)
@@ -858,6 +871,136 @@ std::string ipfs_refs_json(const std::vector<IpfsReference>& references)
     return json.str();
 }
 
+std::string merkle_leaves_json(const std::vector<MerkleLeafRecord>& leaves)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t index = 0; index < leaves.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const MerkleLeafRecord& leaf = leaves[index];
+        json << "{\"index\":" << leaf.leaf_index
+             << ",\"fieldName\":\"" << json_escape(leaf.field_name)
+             << "\",\"value\":\"" << json_escape(leaf.leaf_value)
+             << "\",\"leafHash\":\"" << json_escape(leaf.leaf_hash)
+             << "\",\"proof\":\"" << json_escape(leaf.proof)
+             << "\",\"verified\":" << (leaf.verified ? "true" : "false")
+             << '}';
+    }
+    json << ']';
+    return json.str();
+}
+
+struct MerkleDisplayNode
+{
+    std::string kind;
+    std::string hash;
+    int leaf_index = -1;
+    std::string field_name;
+    std::string leaf_value;
+    std::string proof;
+    bool verified = false;
+    std::vector<MerkleDisplayNode> children;
+};
+
+std::optional<MerkleDisplayNode> build_merkle_display_tree(
+    const std::vector<MerkleLeafRecord>& leaves)
+{
+    if(leaves.empty()) return std::nullopt;
+
+    std::vector<MerkleDisplayNode> current;
+    current.reserve(leaves.size());
+    for(const MerkleLeafRecord& leaf : leaves)
+    {
+        MerkleDisplayNode node;
+        node.kind = "leaf";
+        node.hash = leaf.leaf_hash;
+        node.leaf_index = leaf.leaf_index;
+        node.field_name = leaf.field_name;
+        node.leaf_value = leaf.leaf_value;
+        node.proof = leaf.proof;
+        node.verified = leaf.verified;
+        current.push_back(std::move(node));
+    }
+
+    while(current.size() > 1)
+    {
+        if(current.size() % 2 != 0)
+        {
+            MerkleDisplayNode duplicate;
+            duplicate.kind = "duplicate";
+            duplicate.hash = current.back().hash;
+            duplicate.verified = current.back().verified;
+            current.push_back(std::move(duplicate));
+        }
+
+        std::vector<MerkleDisplayNode> parents;
+        parents.reserve(current.size() / 2);
+        for(std::size_t index = 0; index < current.size(); index += 2)
+        {
+            MerkleDisplayNode parent;
+            parent.kind = "internal";
+            parent.hash = sha256_value(current[index].hash + current[index + 1].hash);
+            parent.verified = current[index].verified && current[index + 1].verified;
+            parent.children.push_back(std::move(current[index]));
+            parent.children.push_back(std::move(current[index + 1]));
+            parents.push_back(std::move(parent));
+        }
+        current = std::move(parents);
+    }
+
+    return std::move(current.front());
+}
+
+std::string merkle_display_node_json(const MerkleDisplayNode& node,
+                                     const std::string& node_id,
+                                     bool is_root)
+{
+    std::ostringstream json;
+    json << "{\"nodeId\":\"" << json_escape(node_id)
+         << "\",\"kind\":\"" << (is_root ? "root" : node.kind)
+         << "\",\"hash\":\"" << json_escape(node.hash)
+         << "\",\"verified\":" << (node.verified ? "true" : "false")
+         << ",\"leafIndex\":" << node.leaf_index
+         << ",\"fieldName\":\"" << json_escape(node.field_name)
+         << "\",\"value\":\"" << json_escape(node.leaf_value)
+         << "\",\"proof\":\"" << json_escape(node.proof)
+         << "\",\"children\":[";
+
+    for(std::size_t index = 0; index < node.children.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const char* side = index == 0 ? "left" : "right";
+        json << merkle_display_node_json(
+            node.children[index], node_id + "." + side, false);
+    }
+    json << "]}";
+    return json.str();
+}
+
+std::string merkle_tree_json(const SupplyChainRecord& record)
+{
+    const auto tree = build_merkle_display_tree(record.merkle_leaves);
+    if(!tree)
+    {
+        return "{\"root\":null,\"leafCount\":0,\"calculatedRootHash\":\"\","
+               "\"storedRootHash\":\"" + json_escape(record.root_hash) +
+               "\",\"consistent\":false,\"verified\":false}";
+    }
+
+    const bool consistent = tree->hash == record.root_hash;
+    std::ostringstream json;
+    json << "{\"root\":"
+         << merkle_display_node_json(*tree, "root", true)
+         << ",\"leafCount\":" << record.merkle_leaves.size()
+         << ",\"calculatedRootHash\":\"" << json_escape(tree->hash)
+         << "\",\"storedRootHash\":\"" << json_escape(record.root_hash)
+         << "\",\"consistent\":" << (consistent ? "true" : "false")
+         << ",\"verified\":"
+         << (consistent && record.verified ? "true" : "false") << '}';
+    return json.str();
+}
+
 std::string records_json(const std::vector<SupplyChainRecord>& records)
 {
     std::ostringstream json;
@@ -887,9 +1030,13 @@ std::string records_json(const std::vector<SupplyChainRecord>& records)
                  ? "{}"
                  : record.event_data)
              << ",\"ipfsRefs\":" << ipfs_refs_json(record.ipfs_refs)
-             << ",\"rootHash\":\"" << json_escape(record.root_hash)
-             << "\",\"proof\":\"" << json_escape(record.proof)
+             << ",\"parentBlockId\":" << record.parent_block_id
+             << ",\"parentBlockHash\":\""
+             << json_escape(record.parent_block_hash)
+             << "\",\"rootHash\":\"" << json_escape(record.root_hash)
              << "\",\"verified\":" << (record.verified ? "true" : "false")
+             << ",\"merkleLeaves\":" << merkle_leaves_json(record.merkle_leaves)
+             << ",\"merkleTree\":" << merkle_tree_json(record)
              << ",\"blockHash\":\"" << json_escape(record.block_hash)
              << "\",\"chainStatus\":\"" << json_escape(record.chain_status)
              << "\",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
@@ -997,19 +1144,145 @@ const SupplyChainRecord* latest_batch_record(
     return latest;
 }
 
-std::string calculate_block_hash(MerkleTree& tree,
-                                 const SupplyChainRecord& record,
-                                 const SupplyChainRecord* parent)
+std::string calculate_block_hash(const SupplyChainRecord& record)
 {
-    const std::string parent_hash = parent
-        ? (!parent->block_hash.empty() ? parent->block_hash : parent->root_hash)
-        : "GENESIS";
     std::ostringstream input;
     input << "blockId:" << record.block_id << '\n'
-          << "parentHash:" << parent_hash << '\n'
-          << "merkleRoot:" << tree.GetRootHash() << '\n'
+          << "parentBlockId:" << record.parent_block_id << '\n'
+          << "parentHash:" << record.parent_block_hash << '\n'
+          << "merkleRoot:" << record.root_hash << '\n'
           << "canonical:" << record.canonical_record;
-    return tree.SHA256(input.str());
+    return sha256_value(input.str());
+}
+
+bool same_merkle_leaf(const MerkleLeafRecord& left,
+                      const MerkleLeafRecord& right)
+{
+    return left.leaf_index == right.leaf_index &&
+           left.field_name == right.field_name &&
+           left.leaf_value == right.leaf_value &&
+           left.leaf_hash == right.leaf_hash &&
+           left.proof == right.proof &&
+           left.verified == right.verified;
+}
+
+bool validate_stored_chain(const std::vector<SupplyChainRecord>& records,
+                           const std::vector<BlockEdge>& edges,
+                           std::string& error)
+{
+    std::unordered_map<int, const SupplyChainRecord*> by_block_id;
+    std::unordered_map<std::string, const SupplyChainRecord*> latest_by_batch;
+
+    for(std::size_t index = 0; index < records.size(); ++index)
+    {
+        const SupplyChainRecord& record = records[index];
+        if(record.block_id != static_cast<int>(index))
+        {
+            error = "Stored block IDs are not sequential";
+            return false;
+        }
+
+        const auto merkle = build_block_merkle(record.merkle_fields);
+        if(!merkle || merkle->canonical_record != record.canonical_record ||
+           merkle->root_hash != record.root_hash ||
+           merkle->verified != record.verified ||
+           merkle->leaves.size() != record.merkle_leaves.size())
+        {
+            error = "Merkle data mismatch at block " + std::to_string(record.block_id);
+            return false;
+        }
+        for(std::size_t leaf_index = 0; leaf_index < merkle->leaves.size(); ++leaf_index)
+        {
+            if(!same_merkle_leaf(merkle->leaves[leaf_index],
+                                 record.merkle_leaves[leaf_index]))
+            {
+                error = "Merkle leaf mismatch at block " +
+                    std::to_string(record.block_id);
+                return false;
+            }
+        }
+
+        const auto previous = latest_by_batch.find(record.batch_id);
+        const int expected_parent_id = previous == latest_by_batch.end()
+            ? -1
+            : previous->second->block_id;
+        const std::string expected_parent_hash = previous == latest_by_batch.end()
+            ? "GENESIS"
+            : previous->second->block_hash;
+        if(record.parent_block_id != expected_parent_id ||
+           record.parent_block_hash != expected_parent_hash)
+        {
+            error = "Parent link mismatch at block " +
+                std::to_string(record.block_id);
+            return false;
+        }
+
+        if(record.parent_block_id >= 0)
+        {
+            const auto parent = by_block_id.find(record.parent_block_id);
+            if(parent == by_block_id.end() ||
+               parent->second->batch_id != record.batch_id)
+            {
+                error = "Invalid parent block at block " +
+                    std::to_string(record.block_id);
+                return false;
+            }
+        }
+
+        if(calculate_block_hash(record) != record.block_hash)
+        {
+            error = "Block hash mismatch at block " +
+                std::to_string(record.block_id);
+            return false;
+        }
+
+        by_block_id[record.block_id] = &record;
+        latest_by_batch[record.batch_id] = &record;
+    }
+
+    for(const SupplyChainRecord& record : records)
+    {
+        int matching_edges = 0;
+        for(const BlockEdge& edge : edges)
+        {
+            if(edge.to_block_id != record.block_id) continue;
+            ++matching_edges;
+            if(record.parent_block_id < 0 ||
+               edge.from_block_id != record.parent_block_id ||
+               edge.batch_id != record.batch_id ||
+               edge.relation != "continues")
+            {
+                error = "Block edge mismatch at block " +
+                    std::to_string(record.block_id);
+                return false;
+            }
+        }
+
+        const int expected_edges = record.parent_block_id < 0 ? 0 : 1;
+        if(matching_edges != expected_edges)
+        {
+            error = "Missing or duplicate block edge at block " +
+                std::to_string(record.block_id);
+            return false;
+        }
+    }
+
+    for(const BlockEdge& edge : edges)
+    {
+        if(edge.from_block_id < 0 || edge.to_block_id < 0 ||
+           edge.from_block_id >= static_cast<int>(records.size()) ||
+           edge.to_block_id >= static_cast<int>(records.size()) ||
+           edge.from_block_id >= edge.to_block_id ||
+           records[static_cast<std::size_t>(edge.from_block_id)].batch_id !=
+               edge.batch_id ||
+           records[static_cast<std::size_t>(edge.to_block_id)].batch_id !=
+               edge.batch_id)
+        {
+            error = "Invalid block edge table entry";
+            return false;
+        }
+    }
+    return true;
 }
 
 bool is_inside(const fs::path& root, const fs::path& candidate)
@@ -1119,6 +1392,9 @@ int main(int argc, char* argv[])
     if(!init_database(database_path.string()))
         return 1;
 
+    if(!delete_expired_auth_sessions(database_path.string(), unix_time_now()))
+        return 1;
+
     const std::vector<UserAccount> demo_accounts = {
         make_demo_account("uid-supplier-001", "supplier01", "supplier123",
                           "supplier", "supplier-demo"),
@@ -1145,20 +1421,12 @@ int main(int argc, char* argv[])
     if(!load_block_edges(database_path.string(), chain_edges))
         return 1;
 
-    MerkleTree merkle_tree(1);
-    std::vector<std::string> canonical_records;
-    canonical_records.reserve(stored_records.size());
-    for(const SupplyChainRecord& stored_record : stored_records)
+    std::string chain_validation_error;
+    if(!validate_stored_chain(stored_records, chain_edges, chain_validation_error))
     {
-        if(stored_record.block_id != merkle_tree.GetBlockCount() ||
-           !merkle_tree.Append(stored_record.canonical_record))
-        {
-            std::cerr << "Cannot rebuild Merkle Tree at stored block "
-                      << stored_record.block_id << '\n';
-            return 1;
-        }
-
-        canonical_records.push_back(stored_record.canonical_record);
+        std::cerr << "Stored chain validation failed: "
+                  << chain_validation_error << '\n';
+        return 1;
     }
 
     SessionStore sessions;
@@ -1199,7 +1467,7 @@ int main(int argc, char* argv[])
     std::cout << "Control server: http://127.0.0.1:" << port << '\n'
               << "Static root: " << static_root << '\n'
               << "Database: " << database_path << '\n'
-              << "Restored Merkle blocks: " << canonical_records.size() << '\n'
+              << "Restored blocks: " << stored_records.size() << '\n'
               << "Worker threads: " << thread_pool.worker_count() << '\n';
 
     while(true)
@@ -1283,17 +1551,44 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
+                    const auto remember = fields->find("remember");
+                    const bool persistent = remember != fields->end() &&
+                        (remember->second == "true" ||
+                         remember->second == "1" ||
+                         remember->second == "on");
                     const std::string token = generate_random_hex(32);
+                    if(persistent)
+                    {
+                        const std::int64_t expires_at = unix_time_now() +
+                            std::chrono::duration_cast<std::chrono::seconds>(
+                                PERSISTENT_SESSION_LIFETIME).count();
+                        if(!create_persistent_auth_session(
+                               database_path.string(), hash_session_token(token),
+                               account->uid, expires_at))
+                        {
+                            status = "500 Internal Server Error";
+                            body = json_error("Failed to save persistent session");
+                        }
+                        else
+                        {
+                            status = "200 OK";
+                            body = "{\"token\":\"" + json_escape(token) +
+                                   "\",\"user\":" + user_json(*account) +
+                                   "}";
+                        }
+                    }
+                    else
                     {
                         std::lock_guard<std::mutex> lock(sessions_mutex);
                         sessions[token] = Session{
                             *account,
-                            std::chrono::steady_clock::now() + std::chrono::hours(8)
+                            std::chrono::steady_clock::now() +
+                                TEMPORARY_SESSION_LIFETIME
                         };
+                        status = "200 OK";
+                        body = "{\"token\":\"" + json_escape(token) +
+                               "\",\"user\":" + user_json(*account) + "}";
                     }
-                    status = "200 OK";
-                    body = "{\"token\":\"" + json_escape(token) +
-                           "\",\"user\":" + user_json(*account) + "}";
                 }
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
@@ -1302,13 +1597,26 @@ int main(int argc, char* argv[])
         {
             content_type = "application/json; charset=utf-8";
             const auto token = authorization_token(request);
-            bool erased = false;
+            bool memory_erased = false;
+            bool persistent_erased = false;
+            bool persistent_delete_succeeded = true;
             if(token)
             {
-                std::lock_guard<std::mutex> lock(sessions_mutex);
-                erased = sessions.erase(*token) != 0;
+                {
+                    std::lock_guard<std::mutex> lock(sessions_mutex);
+                    memory_erased = sessions.erase(*token) != 0;
+                }
+                persistent_delete_succeeded = delete_persistent_auth_session(
+                    database_path.string(), hash_session_token(*token),
+                    persistent_erased);
             }
-            if(!token || !erased)
+            if(!persistent_delete_succeeded)
+            {
+                status = "500 Internal Server Error";
+                body = json_error("Failed to remove persistent session");
+                send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+            }
+            else if(!token || (!memory_erased && !persistent_erased))
             {
                 status = "401 Unauthorized";
                 body = json_error("Authentication required");
@@ -1324,7 +1632,8 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/auth/me")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1340,7 +1649,8 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1370,7 +1680,8 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/batches")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1395,7 +1706,8 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/workflow")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1416,7 +1728,8 @@ int main(int argc, char* argv[])
         else if(request.method == "GET" && request.target == "/api/chains")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1448,7 +1761,8 @@ int main(int argc, char* argv[])
         else if(request.method == "POST" && request.target == "/api/ipfs/files")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1515,7 +1829,8 @@ int main(int argc, char* argv[])
         else if(request.method == "POST" && request.target == "/api/records")
         {
             content_type = "application/json; charset=utf-8";
-            const auto user = authenticated_user(request, sessions, sessions_mutex);
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
             if(!user)
             {
                 status = "401 Unauthorized";
@@ -1694,33 +2009,25 @@ int main(int argc, char* argv[])
                             return;
                         }
 
-                        const int block_id = static_cast<int>(canonical_records.size());
-                        const std::string record = canonical_record(
-                            batch, *fields, *user, references, parent);
-                        MerkleTree candidate_tree(1);
-                        bool candidate_ready = true;
-                        for(const std::string& stored_record : canonical_records)
-                        {
-                            if(!candidate_tree.Append(stored_record))
-                            {
-                                candidate_ready = false;
-                                break;
-                            }
-                        }
-
-                        if(candidate_ready) candidate_ready = candidate_tree.Append(record);
-                        if(!candidate_ready)
+                        const int block_id = static_cast<int>(stored_records.size());
+                        const std::vector<MerkleField> merkle_fields = block_merkle_fields(
+                            block_id, batch, *fields, *user, references, parent);
+                        const auto merkle = build_block_merkle(merkle_fields);
+                        if(!merkle)
                         {
                             status = "500 Internal Server Error";
-                            body = json_error("Failed to append Merkle block");
+                            body = json_error("Failed to build block Merkle Tree");
                         }
                         else
                         {
-                            const std::string proof = candidate_tree.ProverBlock(block_id);
-                            const bool verified = candidate_tree.Verify(proof);
-
                             SupplyChainRecord database_record;
                             database_record.block_id = block_id;
+                            database_record.parent_block_id = parent
+                                ? parent->block_id
+                                : -1;
+                            database_record.parent_block_hash = parent
+                                ? parent->block_hash
+                                : "GENESIS";
                             database_record.batch_id = batch_id;
                             database_record.product = batch.product;
                             if(user->role == "supplier")
@@ -1745,16 +2052,16 @@ int main(int argc, char* argv[])
                             database_record.organization_id = user->organization_id;
                             database_record.event_data = event_data_json(user->role, *fields);
                             database_record.ipfs_refs = references;
-                            database_record.canonical_record = record;
-                            database_record.root_hash = candidate_tree.GetRootHash();
-                            database_record.proof = proof;
-                            database_record.verified = verified;
+                            database_record.merkle_fields = merkle_fields;
+                            database_record.canonical_record = merkle->canonical_record;
+                            database_record.root_hash = merkle->root_hash;
+                            database_record.merkle_leaves = merkle->leaves;
+                            database_record.verified = merkle->verified;
                             database_record.chain_status =
                                 current_index == static_cast<int>(workflow.size()) - 1
                                     ? "completed"
                                     : "in_progress";
-                            database_record.block_hash = calculate_block_hash(
-                                candidate_tree, database_record, parent);
+                            database_record.block_hash = calculate_block_hash(database_record);
 
                             std::vector<BlockEdge> new_edges;
                             if(parent)
@@ -1773,22 +2080,15 @@ int main(int argc, char* argv[])
                                 status = "500 Internal Server Error";
                                 body = json_error("Failed to save supply-chain block");
                             }
-                            else if(!merkle_tree.Append(record))
-                            {
-                                status = "500 Internal Server Error";
-                                body = json_error(
-                                    "Block saved, but in-memory Merkle update failed");
-                            }
                             else
                             {
-                                canonical_records.push_back(record);
                                 stored_records.push_back(database_record);
                                 chain_edges.insert(
                                     chain_edges.end(), new_edges.begin(), new_edges.end());
                                 status = "201 Created";
                                 body = "{\"blockID\":" + std::to_string(block_id) +
                                        ",\"verified\":" +
-                                       (verified ? "true" : "false") +
+                                       (database_record.verified ? "true" : "false") +
                                        ",\"chainStatus\":\"" +
                                        json_escape(database_record.chain_status) +
                                        "\",\"stage\":\"" +

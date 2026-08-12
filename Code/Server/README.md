@@ -16,8 +16,8 @@ Control browser -> control_server :8081
 ```
 
 user_server serves the user-facing static page. control_server owns
-authentication, the in-memory Merkle Tree, SQLite, IPFS forwarding, block
-creation, the worker pool, and the control page.
+authentication, SQLite, one independent Merkle Tree per block, IPFS
+forwarding, block creation, the worker pool, and the control page.
 
 ## Build
 
@@ -74,10 +74,10 @@ socket -> ThreadPool queue -> MemoryPool task node
                              -> serialized SQLite and Merkle commit
 ```
 
-The Merkle append, block numbering, parent selection, and database write path
-remain serialized. Static requests and independent IPFS requests can use
-different workers. Large file bodies continue through the normal IPFS upload
-path.
+The per-block Merkle build, block numbering, parent selection, and database
+write path remain serialized. Static requests and independent IPFS requests can
+use different workers. Large file bodies continue through the normal IPFS
+upload path.
 
 The control-server build must include:
 
@@ -170,8 +170,13 @@ All API endpoints below are provided by control_server on port 8081.
 
 ### Authentication
 
-POST /api/auth/login accepts username and password and returns a temporary
-Bearer token with the authenticated UID, role, and organization.
+POST /api/auth/login accepts username, password, and an optional `remember`
+field. It returns a Bearer token with the authenticated UID, role, and
+organization.
+
+When `remember=true`, the server stores only a SHA-256 hash of the token in
+`auth_sessions` for 30 days. Without it, the session remains in memory for up
+to eight hours and is lost when the control server stops.
 
 GET /api/auth/me validates a token.
 
@@ -229,7 +234,11 @@ GET /api/records returns saved verification records for the administrator.
 
 ## SQLite schema
 
-The control server creates:
+The control server creates or upgrades these tables:
+
+The existing v3 business tables are preserved. Startup adds the v4 session
+table and updates the schema marker without clearing batches, blocks, edges,
+Merkle leaves, or attachments.
 
 ```
 batches
@@ -243,15 +252,26 @@ batches
     status
 
 supply_chain_records
+    block_id
+    parent_block_id
+    parent_block_hash
     inherited batch data
     event_data
     canonical_record
     root_hash
-    proof
     verified
     block_hash
     chain_status
     created_at
+
+block_merkle_leaves
+    block_id
+    leaf_index
+    field_name
+    leaf_value
+    leaf_hash
+    proof
+    verified
 
 record_attachments
     block_id
@@ -266,16 +286,27 @@ block_edges
     to_block_id
     batch_id
     relation
+
+auth_sessions
+    token_hash
+    uid
+    expires_at
+    created_at
 ```
 
-The canonical Merkle record covers batch master data, role event data, sorted
-CID references, the parent block ID/hash, and authenticated identity fields.
+Every block has its own Merkle Tree. Its canonical input covers the batch master
+data, role event data, sorted CID references, the parent block ID/hash, and
+authenticated identity fields. The block root authenticates the internal tree;
+the block hash includes that root and the parent block hash, creating the outer
+linked block chain.
 
 ## Authentication
 
 The five local demonstration accounts are documented in the repository-level
-README. Passwords are stored as salted PBKDF2 hashes. Both pages provide
-logout and an unchecked remember-me option.
+README. Passwords are stored as salted PBKDF2 hashes. Both pages provide logout
+and an unchecked remember-me option. Persistent sessions store token hashes in
+SQLite and survive control-server restarts for 30 days; temporary sessions
+remain in memory for up to eight hours.
 
 ## Scope limits
 

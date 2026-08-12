@@ -27,7 +27,8 @@ control_server :8081
         |
         +-- batch master data and event data -> SQLite
         +-- large file upload -> local IPFS -> CID
-        +-- batch data, event data, CID references, and parent link -> MerkleTree
+        +-- each block's data, CID references, and parent link -> one Merkle Tree per block
+        +-- parent block hash links the independent block trees into one chain
         +-- control workflow and chain view
 ```
 
@@ -47,7 +48,7 @@ Blockchain Structure/
 │   │   ├── server.cpp             # Control server, API, IPFS adapter
 │   │   ├── user_server.cpp        # User-facing static file server
 │   │   ├── thread_pool.cpp/.hpp   # Control-server worker queue
-│   │   ├── auth_utils.cpp/.hpp    # Password hashing and tokens
+│   │   ├── auth_utils.cpp/.hpp    # Password hashing, token hashing, and sessions
 │   │   ├── db_utils.cpp/.hpp      # SQLite persistence
 │   │   ├── static/                # User page
 │   │   └── control_static/        # Control page
@@ -108,9 +109,9 @@ User page:    http://127.0.0.1:8080/
 Control page: http://127.0.0.1:8081/
 ```
 
-The control server owns authentication, SQLite, the in-memory Merkle Tree,
-IPFS upload forwarding, block creation, the worker pool, and the control page.
-The user server serves the user page and does not own the database.
+The control server owns authentication, SQLite, one independent Merkle Tree per
+block, IPFS upload forwarding, block creation, the worker pool, and the control
+page. The user server serves the user page and does not own the database.
 
 ## Server concurrency and memory allocation
 
@@ -131,10 +132,10 @@ concurrent small-object allocation interface used by worker tasks. Large file
 bodies remain in the normal request/IPFS path and are not routed through
 either allocator.
 
-Block numbering, parent selection, SQLite writes, and in-memory Merkle
-updates use a serialized commit section. This preserves the order of the
-preset route while allowing independent HTTP requests and IPFS operations to
-run on different workers.
+Block numbering, parent selection, per-block Merkle builds, and SQLite writes
+use a serialized commit section. This preserves the order of the preset route
+while allowing independent HTTP requests and IPFS operations to run on
+different workers.
 
 The user server remains a small static-file server and does not use the
 control-server worker pool.
@@ -281,16 +282,26 @@ batches
 
 supply_chain_records
     block_id
+    parent_block_id
+    parent_block_hash
     batch_id
     inherited batch fields
     event_data
     canonical_record
     root_hash
-    proof
     verified
     block_hash
     chain_status
     created_at
+
+block_merkle_leaves
+    block_id
+    leaf_index
+    field_name
+    leaf_value
+    leaf_hash
+    proof
+    verified
 
 record_attachments
     block_id
@@ -305,12 +316,20 @@ block_edges
     to_block_id
     batch_id
     relation
+
+auth_sessions
+    token_hash
+    uid
+    expires_at
+    created_at
 ```
 
-The canonical Merkle input contains the batch master data, role-specific event
-data, sorted CID references, the parent block ID/hash, and authenticated
-identity fields. The existing Code/MerkleTree library is used without
-modification.
+Each supply-chain block owns an independent Merkle Tree. Its leaves cover the
+batch master data, role-specific event data, sorted CID references, the parent
+block ID/hash, and authenticated identity fields. The block root authenticates
+that tree. The block hash includes the root and the parent block hash, so the
+block hashes form the outer linked chain. The existing Code/MerkleTree library
+is used without modification.
 
 ## Control page
 
@@ -319,11 +338,15 @@ The control page has:
 - administrator login;
 - a Canvas view of the fixed route;
 - a block flow for each batch;
+- an explicit linked block chain with one independent Merkle Tree inside each block;
+- expandable leaves, leaf hashes, proof paths, and Merkle roots for every block;
 - role, organization, inherited batch data, event data, and CID references;
 - stored verification status and block connections.
 
-Root and Proof remain server-side verification snapshots. A detailed click-open
-verification dialog and red error path are reserved for a later UI iteration.
+The outer arrows represent `Block 0 -> Block 1 -> ...`. The expandable Merkle
+section inside each block represents that block's own leaves and root. A block's
+parent hash is displayed alongside its Merkle root so the two levels remain
+visibly distinct.
 
 ## Authentication
 
@@ -338,8 +361,12 @@ The local demonstration accounts are:
 | `admin01` | `admin123` | admin |
 
 Both pages provide logout and an unchecked `Remember me on this device`
-option. The control server stores salted PBKDF2 password hashes and keeps
-Bearer sessions in memory.
+option. Without the option, the bearer session is temporary and held in memory
+for up to eight hours. With the option, the browser stores the token in
+`localStorage`, while the control server stores only its SHA-256 hash in the
+`auth_sessions` SQLite table for 30 days. Those persistent sessions survive a
+control-server restart. Logout removes the browser token and invalidates the
+server-side session.
 
 ## Standalone Merkle CLI
 
