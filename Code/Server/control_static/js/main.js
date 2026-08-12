@@ -10,7 +10,18 @@ const statusLine = document.querySelector("#load-status");
 const refreshButton = document.querySelector("#refresh-button");
 const workflowCanvas = document.querySelector("#workflow-canvas");
 const workflowStatus = document.querySelector("#workflow-status");
+const confirmationPolicyForm = document.querySelector("#confirmation-policy-form");
+const rolePolicyList = document.querySelector("#role-policy-list");
+const policyRoleCount = document.querySelector("#policy-role-count");
+const policyStatus = document.querySelector("#policy-status");
+const savePolicyButton = document.querySelector("#save-policy-button");
 const sessionKey = "supply-chain-control-session";
+const policyRoles = [
+    ["supplier", "Supplier"],
+    ["logistics", "Logistics"],
+    ["warehouse", "Warehouse"],
+    ["supermarket", "Supermarket"]
+];
 let session = null;
 let workflowData = null;
 
@@ -105,6 +116,115 @@ async function restoreSession() {
         loadDashboard();
     } catch {
         clearSession();
+    }
+}
+
+function setPolicyStatus(message, state = "") {
+    policyStatus.textContent = message;
+    policyStatus.className = state ? `status ${state}` : "status";
+}
+
+function policyOption(role, suffix, label) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "policy-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = role + suffix;
+    input.value = "true";
+    input.setAttribute("aria-label", `${role} ${label}`);
+    const text = document.createElement("span");
+    text.textContent = label;
+    wrapper.append(input, text);
+    return wrapper;
+}
+
+function renderConfirmationPolicies(policies) {
+    const policiesByRole = new Map(
+        policies.map((policy) => [policy.role, policy])
+    );
+    rolePolicyList.replaceChildren();
+    const header = document.createElement("div");
+    header.className = "policy-matrix-header";
+    for (const label of ["Role", "Typed name", "Handwritten", "Face"]) {
+        const cell = document.createElement("span");
+        cell.textContent = label;
+        header.append(cell);
+    }
+    rolePolicyList.append(header);
+    for (const [role, label] of policyRoles) {
+        const policy = policiesByRole.get(role) || {};
+        const row = document.createElement("div");
+        row.className = "role-policy";
+        const roleName = document.createElement("strong");
+        roleName.className = "policy-role-name";
+        roleName.textContent = label;
+        const typed = policyOption(role, "TypedName", "Typed name");
+        const handwritten = policyOption(role, "Handwritten", "Handwritten");
+        const face = policyOption(role, "Face", "Face");
+        typed.querySelector("input").checked = Boolean(policy.typedName);
+        handwritten.querySelector("input").checked = Boolean(policy.handwritten);
+        face.querySelector("input").checked = Boolean(policy.face);
+        row.append(roleName, typed, handwritten, face);
+        rolePolicyList.append(row);
+    }
+    policyRoleCount.textContent = `${policiesByRole.size} roles configured`;
+}
+
+async function loadConfirmationPolicy() {
+    if (!session) return;
+    try {
+        const response = await fetch("/api/confirmation-policy", {
+            headers: { Authorization: `Bearer ${session.token}` }
+        });
+        const result = await response.json();
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        renderConfirmationPolicies(result.policies || []);
+        setPolicyStatus("Role policies loaded.", "success");
+    } catch (error) {
+        setPolicyStatus(error.message, "error");
+    }
+}
+
+async function saveConfirmationPolicy(event) {
+    event.preventDefault();
+    if (!session) return;
+    for (const [role, label] of policyRoles) {
+        const methods = confirmationPolicyForm.querySelectorAll(
+            `input[name^="${role}"]:checked`
+        );
+        if (methods.length === 0) {
+            setPolicyStatus(`Enable at least one method for ${label}.`, "error");
+            return;
+        }
+    }
+
+    savePolicyButton.disabled = true;
+    setPolicyStatus("Saving confirmation policy...", "pending");
+    try {
+        const response = await fetch("/api/confirmation-policy", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                Authorization: `Bearer ${session.token}`
+            },
+            body: new URLSearchParams(new FormData(confirmationPolicyForm)).toString()
+        });
+        const result = await response.json();
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        renderConfirmationPolicies(result.policies || []);
+        setPolicyStatus("Role confirmation policies saved.", "success");
+    } catch (error) {
+        setPolicyStatus(error.message, "error");
+    } finally {
+        savePolicyButton.disabled = false;
     }
 }
 
@@ -576,7 +696,7 @@ async function loadChains() {
 }
 
 async function loadDashboard() {
-    await Promise.all([loadWorkflow(), loadChains()]);
+    await Promise.all([loadWorkflow(), loadChains(), loadConfirmationPolicy()]);
 }
 
 window.addEventListener("resize", () => {
@@ -586,4 +706,5 @@ window.addEventListener("resize", () => {
 refreshButton.addEventListener("click", loadDashboard);
 loginForm.addEventListener("submit", login);
 logoutButton.addEventListener("click", logout);
+confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
 restoreSession();

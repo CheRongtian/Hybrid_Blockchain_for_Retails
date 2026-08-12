@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 if(NOT TARGET merkle_tree)
     set(MERKLE_TREE_BUILD_CLI OFF)
@@ -25,6 +26,7 @@ add_executable(
     thread_pool.cpp
     auth_utils.cpp
     block_merkle.cpp
+    ../DigitalSignature/digital_signature.cpp
     db_utils.cpp
     identifier_utils.cpp
     log_utils.cpp
@@ -37,10 +39,16 @@ target_link_libraries(
     PRIVATE
     MerkleTree::merkle_tree
     ${SQLite3_LIBRARIES}
+    OpenSSL::Crypto
     Threads::Threads
 )
 
-target_include_directories(control_server PRIVATE ${SQLite3_INCLUDE_DIRS})
+target_include_directories(
+    control_server
+    PRIVATE
+    ${SQLite3_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../DigitalSignature
+)
 
 target_compile_definitions(
     control_server

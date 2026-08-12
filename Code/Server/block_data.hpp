@@ -12,7 +12,19 @@ struct UserAccount
     std::string password_hash;
     std::string role;
     std::string organization_id;
+    std::string display_name;
+    std::string public_key;
     bool active = true;
+};
+
+struct ConfirmationPolicy
+{
+    std::string role;
+    bool typed_name = false;
+    bool handwritten = false;
+    bool face = false;
+    std::string updated_by_uid;
+    std::string updated_at;
 };
 
 struct SupplyChainBatch
@@ -79,6 +91,13 @@ struct SupplyChainRecord
     std::string chain_status = "in_progress";
     std::string created_at;
     std::vector<MerkleLeafRecord> merkle_leaves;
+    std::string confirmation_method;
+    std::string confirmation_name;
+    std::string signature_algorithm;
+    std::string signature;
+    std::string signature_public_key_hash;
+    std::string signed_payload_hash;
+    bool signature_verified = false;
 };
 
 struct BlockEdge

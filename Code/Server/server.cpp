@@ -23,6 +23,7 @@
 #include "auth_utils.hpp"
 #include "block_merkle.hpp"
 #include "db_utils.hpp"
+#include "digital_signature.hpp"
 #include "identifier_utils.hpp"
 #include "log_utils.hpp"
 #include "thread_pool.hpp"
@@ -64,8 +65,18 @@ struct Session
 
 using SessionStore = std::unordered_map<std::string, Session>;
 
+struct ConfirmationChallenge
+{
+    std::string uid;
+    std::chrono::steady_clock::time_point expires_at;
+};
+
+using ConfirmationChallengeStore =
+    std::unordered_map<std::string, ConfirmationChallenge>;
+
 constexpr auto TEMPORARY_SESSION_LIFETIME = std::chrono::hours(8);
 constexpr auto PERSISTENT_SESSION_LIFETIME = std::chrono::hours(24 * 30);
+constexpr auto CONFIRMATION_CHALLENGE_LIFETIME = std::chrono::minutes(5);
 
 std::int64_t unix_time_now()
 {
@@ -91,6 +102,15 @@ std::string lower(std::string value)
         return static_cast<char>(std::tolower(ch));
     });
     return value;
+}
+
+bool parse_boolean(const std::unordered_map<std::string, std::string>& fields,
+                  const std::string& name)
+{
+    const auto item = fields.find(name);
+    if(item == fields.end()) return false;
+    const std::string value = lower(trim(item->second));
+    return value == "true" || value == "1" || value == "on";
 }
 
 std::optional<std::string> authorization_token(const HttpRequest& request)
@@ -731,6 +751,109 @@ bool parse_ipfs_references(const std::string& encoded,
     return true;
 }
 
+std::string percent_encode_component(const std::string& value)
+{
+    const char* hexadecimal = "0123456789ABCDEF";
+    std::string encoded;
+    for(const unsigned char character : value)
+    {
+        const bool unreserved =
+            (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') ||
+            character == '-' || character == '_' || character == '.' ||
+            character == '!' || character == '~' || character == '*' ||
+            character == '\'' || character == '(' || character == ')';
+        if(unreserved)
+        {
+            encoded += static_cast<char>(character);
+        }
+        else
+        {
+            encoded += '%';
+            encoded += hexadecimal[(character >> 4) & 0x0f];
+            encoded += hexadecimal[character & 0x0f];
+        }
+    }
+    return encoded;
+}
+
+std::string canonical_ipfs_references(
+    const std::vector<IpfsReference>& references)
+{
+    std::vector<IpfsReference> sorted = references;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const IpfsReference& left, const IpfsReference& right) {
+                  if(left.category != right.category)
+                      return left.category < right.category;
+                  if(left.cid != right.cid) return left.cid < right.cid;
+                  if(left.filename != right.filename)
+                      return left.filename < right.filename;
+                  if(left.content_type != right.content_type)
+                      return left.content_type < right.content_type;
+                  return left.size < right.size;
+              });
+
+    std::ostringstream encoded;
+    for(std::size_t index = 0; index < sorted.size(); ++index)
+    {
+        if(index > 0) encoded << ',';
+        const IpfsReference& reference = sorted[index];
+        encoded << percent_encode_component(reference.category) << '|'
+                << percent_encode_component(reference.cid) << '|'
+                << percent_encode_component(reference.filename) << '|'
+                << percent_encode_component(reference.content_type) << '|'
+                << reference.size;
+    }
+    return encoded.str();
+}
+
+std::string signature_field(const std::string& name,
+                            const std::string& value)
+{
+    return name + ":" + std::to_string(value.size()) + ":" + value + "\n";
+}
+
+std::string confirmation_signature_payload(
+    const std::string& challenge,
+    const UserAccount& account,
+    const std::string& method,
+    const std::string& confirmation_name,
+    const std::string& batch_id,
+    const std::string& product,
+    const std::unordered_map<std::string, std::string>& fields,
+    const std::vector<IpfsReference>& references,
+    bool confirmed)
+{
+    std::string payload;
+    auto add_field = [&](const std::string& name, const std::string& value) {
+        payload += signature_field(name, value);
+    };
+
+    add_field("challenge", challenge);
+    add_field("uid", account.uid);
+    add_field("username", account.username);
+    add_field("role", account.role);
+    add_field("confirmationMethod", method);
+    add_field("confirmationName", confirmation_name);
+    add_field("batchId", batch_id);
+    add_field("product", product);
+    add_field("confirmed", confirmed ? "true" : "false");
+    for(const std::string& name : role_event_fields(account.role))
+    {
+        const auto item = fields.find(name);
+        add_field("event." + name,
+                  item == fields.end() ? "" : item->second);
+    }
+    add_field("ipfsReferences", canonical_ipfs_references(references));
+    return payload;
+}
+
+std::string effective_display_name(const UserAccount& account)
+{
+    return account.display_name.empty() ? account.username : account.display_name;
+}
+
 std::string event_data_json(const std::string& role,
                             const std::unordered_map<std::string, std::string>& fields)
 {
@@ -792,7 +915,11 @@ std::vector<MerkleField> block_merkle_fields(
     const std::unordered_map<std::string, std::string>& fields,
     const UserAccount& account,
     const std::vector<IpfsReference>& references,
-    const SupplyChainRecord* parent)
+    const SupplyChainRecord* parent,
+    const std::string& confirmation_method,
+    const std::string& confirmation_name,
+    const std::string& signature_public_key_hash,
+    const std::string& signed_payload_hash)
 {
     std::vector<MerkleField> merkle_fields;
     auto add_field = [&](const std::string& name, const std::string& value) {
@@ -808,6 +935,10 @@ std::vector<MerkleField> block_merkle_fields(
     add_field("stage", stage_for_role(account.role));
     add_field("parentBlockId", parent ? std::to_string(parent->block_id) : "GENESIS");
     add_field("parentBlockHash", parent ? parent->block_hash : "GENESIS");
+    add_field("confirmationMethod", confirmation_method);
+    add_field("confirmationName", confirmation_name);
+    add_field("signaturePublicKeyHash", signature_public_key_hash);
+    add_field("signedPayloadHash", signed_payload_hash);
 
     for(const std::string& name : role_event_fields(account.role))
     {
@@ -851,7 +982,32 @@ std::string user_json(const UserAccount& account)
            "\",\"username\":\"" + json_escape(account.username) +
            "\",\"role\":\"" + json_escape(account.role) +
            "\",\"organizationId\":\"" + json_escape(account.organization_id) +
-           "\"}";
+           "\",\"displayName\":\"" +
+           json_escape(effective_display_name(account)) +
+           "\",\"publicKeyRegistered\":" +
+           (account.public_key.empty() ? "false" : "true") +
+           "}";
+}
+
+std::string confirmation_policy_json(const ConfirmationPolicy& policy)
+{
+    return "{\"role\":\"" + json_escape(policy.role) +
+           "\",\"typedName\":" + (policy.typed_name ? "true" : "false") +
+           ",\"handwritten\":" + (policy.handwritten ? "true" : "false") +
+           ",\"face\":" + (policy.face ? "true" : "false") +
+           ",\"updatedAt\":\"" + json_escape(policy.updated_at) + "\"}";
+}
+
+std::string confirmation_policies_json(
+    const std::vector<ConfirmationPolicy>& policies)
+{
+    std::string json = "{\"policies\":[";
+    for(std::size_t index = 0; index < policies.size(); ++index)
+    {
+        if(index > 0) json += ',';
+        json += confirmation_policy_json(policies[index]);
+    }
+    return json + "]}";
 }
 
 std::string ipfs_refs_json(const std::vector<IpfsReference>& references)
@@ -1041,7 +1197,21 @@ std::string records_json(const std::vector<SupplyChainRecord>& records)
              << ",\"merkleTree\":" << merkle_tree_json(record)
              << ",\"blockHash\":\"" << json_escape(record.block_hash)
              << "\",\"chainStatus\":\"" << json_escape(record.chain_status)
-             << "\",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
+             << "\",\"confirmationMethod\":\""
+             << json_escape(record.confirmation_method)
+             << "\",\"confirmationName\":\""
+             << json_escape(record.confirmation_name)
+             << "\",\"signatureAlgorithm\":\""
+             << json_escape(record.signature_algorithm)
+             << "\",\"signature\":\""
+             << json_escape(record.signature)
+             << "\",\"signaturePublicKeyHash\":\""
+             << json_escape(record.signature_public_key_hash)
+             << "\",\"signedPayloadHash\":\""
+             << json_escape(record.signed_payload_hash)
+             << "\",\"signatureVerified\":"
+             << (record.signature_verified ? "true" : "false")
+             << ",\"createdAt\":\"" << json_escape(record.created_at) << "\"}";
     }
     json << ']';
     return json.str();
@@ -1153,6 +1323,11 @@ std::string calculate_block_hash(const SupplyChainRecord& record)
           << "parentBlockId:" << record.parent_block_id << '\n'
           << "parentHash:" << record.parent_block_hash << '\n'
           << "merkleRoot:" << record.root_hash << '\n'
+          << "signatureAlgorithm:" << record.signature_algorithm << '\n'
+          << "signature:" << record.signature << '\n'
+          << "signaturePublicKeyHash:"
+          << record.signature_public_key_hash << '\n'
+          << "signedPayloadHash:" << record.signed_payload_hash << '\n'
           << "canonical:" << record.canonical_record;
     return sha256_value(input.str());
 }
@@ -1357,6 +1532,7 @@ UserAccount make_demo_account(const std::string& uid,
     account.password_hash = hash_password(password, account.password_salt);
     account.role = role;
     account.organization_id = organization_id;
+    account.display_name = username;
     account.active = true;
     return account;
 }
@@ -1433,6 +1609,8 @@ int main(int argc, char* argv[])
 
     SessionStore sessions;
     std::mutex sessions_mutex;
+    ConfirmationChallengeStore confirmation_challenges;
+    std::mutex confirmation_challenges_mutex;
     std::mutex chain_mutex;
 
     const int server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -1500,6 +1678,8 @@ int main(int argc, char* argv[])
             request.target == "/api/auth/login" ||
             request.target == "/api/auth/logout" ||
             request.target == "/api/auth/me" ||
+            request.target == "/api/confirmation-policy" ||
+            request.target == "/api/confirmation/challenge" ||
             request.target == "/api/records" ||
             request.target == "/api/batches" ||
             request.target == "/api/ipfs/files" ||
@@ -1645,6 +1825,167 @@ int main(int argc, char* argv[])
             {
                 status = "200 OK";
                 body = user_json(*user);
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/confirmation-policy")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                if(user->role == "admin")
+                {
+                    std::vector<ConfirmationPolicy> policies;
+                    if(!load_confirmation_policies(database_path.string(), policies))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to load confirmation policies");
+                    }
+                    else
+                    {
+                        status = "200 OK";
+                        body = confirmation_policies_json(policies);
+                    }
+                }
+                else
+                {
+                    ConfirmationPolicy policy;
+                    if(!load_confirmation_policy(
+                           database_path.string(), user->role, policy))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to load confirmation policy");
+                    }
+                    else
+                    {
+                        status = "200 OK";
+                        body = confirmation_policy_json(policy);
+                    }
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "POST" && request.target == "/api/confirmation-policy")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                const auto content_type_header = request.headers.find("content-type");
+                const bool correct_type = content_type_header != request.headers.end() &&
+                    lower(content_type_header->second).find(
+                        "application/x-www-form-urlencoded") == 0;
+                const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
+                if(!correct_type || !fields)
+                {
+                    status = "422 Unprocessable Entity";
+                    body = json_error(
+                        "Content-Type must be application/x-www-form-urlencoded");
+                }
+                else
+                {
+                    const std::vector<std::string> roles = {
+                        "supplier", "logistics", "warehouse", "supermarket"
+                    };
+                    std::vector<ConfirmationPolicy> policies;
+                    std::string invalid_role;
+                    for(const std::string& role : roles)
+                    {
+                        ConfirmationPolicy policy;
+                        policy.role = role;
+                        policy.typed_name = parse_boolean(
+                            *fields, role + "TypedName");
+                        policy.handwritten = parse_boolean(
+                            *fields, role + "Handwritten");
+                        policy.face = parse_boolean(*fields, role + "Face");
+                        policy.updated_by_uid = user->uid;
+                        if(!policy.typed_name && !policy.handwritten && !policy.face)
+                            invalid_role = role;
+                        policies.push_back(std::move(policy));
+                    }
+
+                    if(!invalid_role.empty())
+                    {
+                        status = "422 Unprocessable Entity";
+                        body = json_error(
+                            "At least one confirmation method must be enabled for " +
+                            invalid_role);
+                    }
+                    else if(!save_confirmation_policies(
+                                database_path.string(), policies))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to save confirmation policies");
+                    }
+                    else
+                    {
+                        std::vector<ConfirmationPolicy> saved;
+                        if(!load_confirmation_policies(
+                               database_path.string(), saved))
+                        {
+                            status = "500 Internal Server Error";
+                            body = json_error("Failed to reload confirmation policies");
+                        }
+                        else
+                        {
+                            status = "200 OK";
+                            body = confirmation_policies_json(saved);
+                        }
+                    }
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" && request.target == "/api/confirmation/challenge")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else
+            {
+                const std::string challenge = generate_random_hex(32);
+                {
+                    std::lock_guard<std::mutex> lock(confirmation_challenges_mutex);
+                    for(auto item = confirmation_challenges.begin();
+                        item != confirmation_challenges.end();)
+                    {
+                        if(item->second.expires_at <= std::chrono::steady_clock::now())
+                            item = confirmation_challenges.erase(item);
+                        else
+                            ++item;
+                    }
+                    confirmation_challenges[challenge] = ConfirmationChallenge{
+                        user->uid,
+                        std::chrono::steady_clock::now() +
+                            CONFIRMATION_CHALLENGE_LIFETIME
+                    };
+                }
+                status = "200 OK";
+                body = "{\"challenge\":\"" + json_escape(challenge) +
+                       "\",\"expiresInSeconds\":300}";
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
         }
@@ -1847,6 +2188,14 @@ int main(int argc, char* argv[])
                 auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
                 std::string validation_error;
+                std::vector<IpfsReference> references;
+                std::string confirmation_method = "none";
+                std::string confirmation_name;
+                std::string signature_algorithm;
+                std::string signature;
+                std::string signature_public_key_hash;
+                std::string signed_payload_hash;
+                bool signature_verified = false;
                 if(!correct_type)
                     validation_error = "Content-Type must be application/x-www-form-urlencoded";
                 else if(!fields)
@@ -1854,7 +2203,10 @@ int main(int argc, char* argv[])
                 else
                 {
                     for(auto& field : *fields)
-                        field.second = trim(field.second);
+                    {
+                        if(field.first != "signaturePayload")
+                            field.second = trim(field.second);
+                    }
 
                     const int current_index = workflow_index_for_role(user->role);
                     auto required_value = [&](const std::string& name) {
@@ -1924,7 +2276,6 @@ int main(int argc, char* argv[])
                     if(validation_error.empty())
                     {
                         const auto references_field = fields->find("ipfsRefs");
-                        std::vector<IpfsReference> references;
                         if(!parse_ipfs_references(
                                references_field == fields->end()
                                    ? ""
@@ -1944,6 +2295,144 @@ int main(int argc, char* argv[])
                                     validation_error =
                                         "The attachment category is not allowed for this role";
                                     break;
+                                }
+                            }
+                        }
+                    }
+
+                    if(validation_error.empty())
+                    {
+                        ConfirmationPolicy policy;
+                        if(!load_confirmation_policy(
+                               database_path.string(), user->role, policy))
+                        {
+                            validation_error = "Confirmation policy is unavailable";
+                        }
+                        else
+                        {
+                            const auto method_item = fields->find("confirmationMethod");
+                            const bool has_method = method_item != fields->end() &&
+                                !method_item->second.empty();
+                            if(!has_method)
+                            {
+                                validation_error =
+                                    "Select a configured confirmation method";
+                            }
+                            else
+                            {
+                                confirmation_method = method_item == fields->end()
+                                    ? ""
+                                    : method_item->second;
+                                confirmation_name = fields->count("confirmationName")
+                                    ? fields->at("confirmationName")
+                                    : "";
+                                signature_algorithm = fields->count("signatureAlgorithm")
+                                    ? fields->at("signatureAlgorithm")
+                                    : "";
+                                signature = fields->count("signature")
+                                    ? fields->at("signature")
+                                    : "";
+                                const std::string public_key = fields->count("signaturePublicKey")
+                                    ? fields->at("signaturePublicKey")
+                                    : "";
+                                const std::string challenge = fields->count(
+                                    "confirmationChallenge")
+                                    ? fields->at("confirmationChallenge")
+                                    : "";
+                                const std::string submitted_payload = fields->count(
+                                    "signaturePayload")
+                                    ? fields->at("signaturePayload")
+                                    : "";
+
+                                if(confirmation_method == "typed_name" &&
+                                   !policy.typed_name)
+                                    validation_error =
+                                        "The selected confirmation method is disabled";
+                                else if(confirmation_method == "handwritten" &&
+                                        !policy.handwritten)
+                                    validation_error =
+                                        "The selected confirmation method is disabled";
+                                else if(confirmation_method == "face" && !policy.face)
+                                    validation_error =
+                                        "The selected confirmation method is disabled";
+                                else if(confirmation_method != "typed_name")
+                                    validation_error =
+                                        "Only typed-name confirmation is available in this demo";
+                                else if(confirmation_name != effective_display_name(*user))
+                                    validation_error =
+                                        "The typed name must match the registered display name";
+                                else if(signature_algorithm != "ECDSA-P256-SHA256" ||
+                                        public_key.empty() || signature.empty() ||
+                                        challenge.empty() || submitted_payload.empty())
+                                    validation_error =
+                                        "A complete digital signature is required";
+                                else if(public_key.size() > 4096 || signature.size() > 4096 ||
+                                        submitted_payload.size() > 1024 * 1024)
+                                    validation_error = "The digital signature payload is too large";
+                                else
+                                {
+                                    std::string signed_batch_id = "SERVER_ALLOCATED";
+                                    std::string signed_product = trim(fields->at("product"));
+                                    if(current_index != 0)
+                                    {
+                                        signed_batch_id = trim(fields->at("batchId"));
+                                        const auto batch = find_supply_chain_batch(
+                                            database_path.string(), signed_batch_id);
+                                        if(!batch)
+                                            validation_error =
+                                                "The selected batch does not exist";
+                                        else
+                                            signed_product = batch->product;
+                                    }
+
+                                    if(validation_error.empty())
+                                    {
+                                        const std::string expected_payload =
+                                            confirmation_signature_payload(
+                                                challenge, *user, confirmation_method,
+                                                confirmation_name, signed_batch_id,
+                                                signed_product, *fields, references, true);
+                                        if(submitted_payload != expected_payload)
+                                            validation_error =
+                                                "The signed confirmation payload does not match";
+                                        else
+                                        {
+                                            bool challenge_valid = false;
+                                            {
+                                                std::lock_guard<std::mutex> lock(
+                                                    confirmation_challenges_mutex);
+                                                const auto challenge_item =
+                                                    confirmation_challenges.find(challenge);
+                                                if(challenge_item != confirmation_challenges.end() &&
+                                                   challenge_item->second.uid == user->uid &&
+                                                   challenge_item->second.expires_at >
+                                                       std::chrono::steady_clock::now())
+                                                {
+                                                    challenge_valid = true;
+                                                    confirmation_challenges.erase(challenge_item);
+                                                }
+                                            }
+                                            if(!challenge_valid)
+                                                validation_error =
+                                                    "The confirmation challenge is expired or invalid";
+                                            else if(!verify_ecdsa_p256_signature(
+                                                        public_key, signature,
+                                                        submitted_payload))
+                                                validation_error =
+                                                    "Digital signature verification failed";
+                                            else if(!save_user_public_key(
+                                                        database_path.string(), user->uid,
+                                                        public_key))
+                                                validation_error =
+                                                    "This account is already bound to another signing key";
+                                            else
+                                            {
+                                                signature_public_key_hash = sha256_value(public_key);
+                                                signed_payload_hash = sha256_value(submitted_payload);
+                                                signature_verified = true;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2063,27 +2552,11 @@ int main(int argc, char* argv[])
                     }
                     else
                     {
-                        const auto references_field = fields->find("ipfsRefs");
-                        std::vector<IpfsReference> references;
-                        std::string references_error;
-                        if(!parse_ipfs_references(
-                               references_field == fields->end()
-                                   ? ""
-                                   : references_field->second,
-                               references,
-                               references_error))
-                        {
-                            status = "422 Unprocessable Entity";
-                            body = json_error(references_error);
-                            send_response(
-                                client_fd, status, content_type, body, true, CORS_HEADERS);
-                            close(client_fd);
-                            return;
-                        }
-
                         const int block_id = static_cast<int>(stored_records.size());
                         const std::vector<MerkleField> merkle_fields = block_merkle_fields(
-                            block_id, batch, *fields, *user, references, parent);
+                            block_id, batch, *fields, *user, references, parent,
+                            confirmation_method, confirmation_name,
+                            signature_public_key_hash, signed_payload_hash);
                         const auto merkle = build_block_merkle(merkle_fields);
                         if(!merkle)
                         {
@@ -2129,6 +2602,14 @@ int main(int argc, char* argv[])
                             database_record.root_hash = merkle->root_hash;
                             database_record.merkle_leaves = merkle->leaves;
                             database_record.verified = merkle->verified;
+                            database_record.confirmation_method = confirmation_method;
+                            database_record.confirmation_name = confirmation_name;
+                            database_record.signature_algorithm = signature_algorithm;
+                            database_record.signature = signature;
+                            database_record.signature_public_key_hash =
+                                signature_public_key_hash;
+                            database_record.signed_payload_hash = signed_payload_hash;
+                            database_record.signature_verified = signature_verified;
                             database_record.chain_status =
                                 current_index == static_cast<int>(workflow.size()) - 1
                                     ? "completed"
@@ -2173,7 +2654,9 @@ int main(int argc, char* argv[])
                                                ? workflow[static_cast<std::size_t>(current_index + 1)].role
                                                : "") +
                                        "\",\"ipfsCount\":" +
-                                       std::to_string(references.size()) + "}";
+                                       std::to_string(references.size()) +
+                                       ",\"signatureVerified\":" +
+                                       (database_record.signature_verified ? "true" : "false") + "}";
                             }
                         }
                     }

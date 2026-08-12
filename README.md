@@ -44,6 +44,7 @@ Blockchain Structure/
 ├── Code/
 │   ├── CMakeLists.txt             # Top-level CMake entry
 │   ├── MerkleTree/                # Merkle Tree library and standalone CLI
+│   ├── DigitalSignature/          # ECC/P-256 signature verification
 │   ├── Server/                    # User server, control server, and pages
 │   │   ├── server.cpp             # Control server, API, IPFS adapter
 │   │   ├── user_server.cpp        # User-facing static file server
@@ -317,6 +318,13 @@ supply_chain_records
     verified
     block_hash
     chain_status
+    confirmation_method
+    confirmation_name
+    signature_algorithm
+    signature
+    signature_public_key_hash
+    signed_payload_hash
+    signature_verified
     created_at
 
 block_merkle_leaves
@@ -347,14 +355,30 @@ auth_sessions
     uid
     expires_at
     created_at
+
+users
+    uid
+    username
+    display_name
+    public_key
+    role
+    organization_id
+
+confirmation_policy
+    role
+    typed_name
+    handwritten
+    face
+    updated_by_uid
+    updated_at
 ```
 
 Each supply-chain block owns an independent Merkle Tree. Its leaves cover the
 batch master data, role-specific event data, sorted CID references, the parent
-block ID/hash, and authenticated identity fields. The block root authenticates
-that tree. The block hash includes the root and the parent block hash, so the
-block hashes form the outer linked chain. The existing Code/MerkleTree library
-is used without modification.
+block ID/hash, authenticated identity fields, and verified signature metadata.
+The block root authenticates that tree. The block hash includes the root and the
+parent block hash, so the block hashes form the outer linked chain. The existing
+Code/MerkleTree library is used without modification.
 
 ## Control page
 
@@ -393,6 +417,36 @@ for up to eight hours. With the option, the browser stores the token in
 control-server restart. Logout removes the browser token and invalidates the
 server-side session.
 
+## Identity confirmation and digital signatures
+
+The control page configures a separate confirmation policy for Supplier,
+Logistics, Warehouse, and Supermarket. Each role card provides clickable
+options:
+
+- Typed name
+- Handwritten signature
+- Face confirmation
+
+At least one option must be enabled for every role. A user sees only the
+methods enabled for the authenticated role and must select one before creating
+a block. The current demo implements the typed-name path. The user enters the
+registered display name, and a mismatch is shown in red before submission.
+Handwritten and face options can be configured for later integration, while
+their concrete browser capture components remain deferred.
+
+After the typed name matches, the browser creates an ECDSA P-256 key in the
+Web Crypto API and signs the canonical confirmation payload. The control server
+verifies the signature with OpenSSL before creating the Merkle block. The
+payload includes the authenticated UID, route role, selected batch or the
+server-allocated supplier batch marker, event fields, confirmation name, and
+canonical CID references. The user name is an input to the signed payload; it
+is not copied from the server as a substitute for signing.
+
+The verified signature metadata is stored with the block, while the public key
+is bound to the account in SQLite. `Code/DigitalSignature/` contains the C++17
+OpenSSL verification adapter. The browser private key remains in local storage
+for the local demonstration account.
+
 ## Standalone Merkle CLI
 
 The Merkle Tree CLI remains independent of the HTTP servers:
@@ -410,7 +464,8 @@ flow receives records from the user page and does not depend on that file.
 - The active route has four stages and is fixed in the control server.
 - Inspection Agency fields from the appendix are reserved for a later route
   extension.
-- Digital signatures and third-party verification are deferred.
+- ECDSA P-256 typed-name confirmation is implemented. Handwritten capture,
+  face capture, and third-party verification are deferred.
 - Public-chain, private-chain, cross-chain, and external gateway work is
   outside this prototype stage.
 - `MemoryPool` and `ConMemPool` retain their standalone experiment entry

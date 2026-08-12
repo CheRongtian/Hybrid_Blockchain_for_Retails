@@ -163,6 +163,134 @@ dt {
     margin-bottom: 1rem;
 }
 
+.policy-card {
+    margin-bottom: 1rem;
+}
+
+.policy-card {
+    padding: 0;
+    overflow: hidden;
+}
+
+.policy-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.policy-summary::-webkit-details-marker {
+    display: none;
+}
+
+.policy-summary::after {
+    content: "+";
+    flex: 0 0 auto;
+    color: #73cef4;
+    font-size: 1.5rem;
+    font-weight: 800;
+}
+
+.policy-card[open] .policy-summary::after {
+    content: "−";
+}
+
+.policy-summary .badge {
+    margin-left: auto;
+}
+
+.policy-summary p {
+    margin: 0.2rem 0 0;
+    color: #91a2b9;
+    font-size: 0.85rem;
+}
+
+.policy-summary .eyebrow {
+    margin: 0 0 0.2rem;
+    color: #73cef4;
+    font-size: 0.68rem;
+}
+
+.policy-content {
+    padding: 0 1.25rem 1.15rem;
+    border-top: 1px solid #26364c;
+}
+
+.policy-form {
+    display: grid;
+    gap: 0.8rem;
+    margin-top: 0.9rem;
+}
+
+.role-policy-list {
+    display: grid;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid #30445f;
+    border-radius: 0.75rem;
+}
+
+.policy-matrix-header,
+.role-policy {
+    display: grid;
+    grid-template-columns: minmax(8rem, 1.2fr) repeat(3, minmax(7rem, 1fr));
+    align-items: center;
+}
+
+.policy-matrix-header {
+    padding: 0.55rem 0.75rem;
+    color: #91a2b9;
+    background: #080f1c;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.role-policy {
+    min-width: 0;
+    padding: 0.45rem 0.75rem;
+    border-top: 1px solid #26364c;
+}
+
+.policy-role-name {
+    color: #71d7ff;
+    font-size: 0.9rem;
+}
+
+.policy-option {
+    display: flex !important;
+    align-items: center;
+    gap: 0.45rem !important;
+    min-width: 0;
+    padding: 0.35rem 0;
+    color: #d6dfed;
+    font-size: 0.8rem;
+}
+
+.policy-option input {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+}
+
+.policy-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-top: 0.35rem;
+}
+
+.policy-actions button {
+    flex: 0 0 auto;
+}
+
+.policy-actions .status {
+    min-height: 1.4rem;
+    margin: 0;
+}
+
 #workflow-canvas {
     display: block;
     width: 100%;
@@ -517,6 +645,28 @@ dt {
 }
 
 @media (max-width: 760px) {
+    .policy-summary {
+        align-items: flex-start;
+    }
+
+    .policy-summary .badge {
+        display: none;
+    }
+
+    .policy-matrix-header {
+        display: none;
+    }
+
+    .role-policy {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.3rem;
+        padding: 0.65rem 0.75rem;
+    }
+
+    .policy-role-name {
+        grid-column: 1 / -1;
+    }
+
     .merkle-node-details {
         max-height: 16rem;
     }
@@ -636,6 +786,15 @@ pre {
 
     .header-actions button {
         flex: 1 1 10rem;
+    }
+
+    .policy-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .policy-actions button {
+        width: 100%;
     }
 
     dl {

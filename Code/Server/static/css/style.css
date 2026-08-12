@@ -165,6 +165,51 @@ input[type="file"] {
     margin-top: 2px;
 }
 
+.confirmation-panel {
+    margin-top: 2px;
+}
+
+.confirmation-methods {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.confirmation-method {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 48px;
+    padding: 12px;
+    border: 1px solid #ffffff26;
+    border-radius: 12px;
+    background: #080d19b3;
+    cursor: pointer;
+}
+
+.confirmation-method input {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+
+.confirmation-method.disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+#typed-name-field {
+    grid-column: 1 / -1;
+}
+
+.signature-status {
+    margin: 12px 0 0;
+    color: #94a3b8;
+    font-size: 14px;
+    font-weight: 700;
+}
+
 .attachment-list {
     grid-column: 1 / -1;
     display: grid;
@@ -234,6 +279,10 @@ button:hover {
     display: flex;
     align-items: center;
     gap: 18px;
+}
+
+.submission-actions #submit-record {
+    min-width: 0;
 }
 
 .submission-actions button {
@@ -328,6 +377,10 @@ code {
 
     .role-section,
     .readonly-summary {
+        grid-template-columns: 1fr;
+    }
+
+    .confirmation-methods {
         grid-template-columns: 1fr;
     }
 

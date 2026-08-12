@@ -15,8 +15,19 @@ struct PersistentAuthSession
 };
 
 bool init_database(const std::string& db_path);
+bool load_confirmation_policy(const std::string& db_path,
+                              const std::string& role,
+                              ConfirmationPolicy& policy);
+bool load_confirmation_policies(const std::string& db_path,
+                                std::vector<ConfirmationPolicy>& policies);
+bool save_confirmation_policies(
+    const std::string& db_path,
+    const std::vector<ConfirmationPolicy>& policies);
 bool insert_user_account(const std::string& db_path,
                          const UserAccount& account);
+bool save_user_public_key(const std::string& db_path,
+                          const std::string& uid,
+                          const std::string& public_key);
 std::optional<UserAccount> find_user_account(const std::string& db_path,
                                              const std::string& username);
 bool create_persistent_auth_session(const std::string& db_path,

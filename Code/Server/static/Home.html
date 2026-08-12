@@ -275,6 +275,21 @@
                     <ul id="attachment-list" class="attachment-list"></ul>
                 </section>
 
+                <section id="confirmation-panel" class="role-section confirmation-panel" hidden>
+                    <div class="section-heading">
+                        <h2>Identity confirmation</h2>
+                        <p id="confirmation-policy-summary">Loading configured confirmation methods...</p>
+                    </div>
+                    <div id="confirmation-methods" class="confirmation-methods"></div>
+                    <label id="typed-name-field" hidden>
+                        Type your registered name
+                        <input id="typed-confirmation-name" autocomplete="off"
+                               maxlength="256" placeholder="Your registered display name">
+                    </label>
+                    <p id="confirmation-error" class="request-status" role="alert"
+                       aria-live="polite"></p>
+                </section>
+
                 <label class="confirmation">
                     <input id="confirmed" name="confirmed" type="checkbox"
                            value="true" required>
@@ -288,6 +303,8 @@
                     <p id="request-status" class="request-status" role="status"
                        aria-live="polite"></p>
                 </div>
+                <p id="signature-status" class="signature-status" role="status"
+                   aria-live="polite"></p>
             </form>
             <button id="logout-button" type="button">Log Out</button>
         </section>

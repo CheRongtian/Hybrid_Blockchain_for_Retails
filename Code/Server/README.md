@@ -7,6 +7,7 @@ User browser -> user_server :8080
              -> control_server :8081/api/auth/login
              -> control_server :8081/api/records
              -> control_server worker pool
+             -> ECDSA P-256 signature verification
              -> MerkleTree append and proof verification
              -> SQLite block, batch, attachment, and edge records
 
@@ -16,8 +17,9 @@ Control browser -> control_server :8081
 ```
 
 user_server serves the user-facing static page. control_server owns
-authentication, SQLite, one independent Merkle Tree per block, IPFS
-forwarding, block creation, the worker pool, and the control page.
+authentication, SQLite, ECDSA P-256 verification, one independent Merkle Tree
+per block, IPFS forwarding, block creation, the worker pool, and the control
+page.
 
 ## Build
 
@@ -204,6 +206,19 @@ GET /api/auth/me validates a token.
 
 POST /api/auth/logout invalidates a token.
 
+### Confirmation policy
+
+GET /api/confirmation-policy returns all four role policies to an administrator.
+An authenticated route user receives only the policy for that user's role.
+
+POST /api/confirmation-policy is restricted to the administrator and accepts
+role-prefixed `TypedName`, `Handwritten`, and `Face` fields for Supplier,
+Logistics, Warehouse, and Supermarket. At least one confirmation method must
+remain enabled for each role.
+
+GET /api/confirmation/challenge creates a short-lived, single-use challenge
+for the authenticated user.
+
 ### Batch selection
 
 GET /api/batches returns batch master data and the next required route stage.
@@ -238,11 +253,18 @@ POST /api/records requires:
 - the role-specific event fields;
 - confirmed=true;
 - optional ipfsRefs;
+- confirmationMethod, confirmationName, and confirmationChallenge;
+- ECDSA-P256-SHA256 signature, public key, and signed payload;
 - an Authorization Bearer token.
 
 The server derives the stage, UID, confirmer, organization, and a new Supplier
 batch ID from the authenticated session and submitted product. The browser
 cannot choose the stage or create a batch ID.
+
+Every route role must select a method enabled by its own policy. The typed-name
+demo path checks the entered name against the account display name, verifies
+the signed payload and one-time challenge with OpenSSL, and only then creates
+the Merkle block.
 
 The response includes the new block ID, verification status, batch ID, next
 stage, and CID count.
@@ -260,10 +282,10 @@ GET /api/records returns saved verification records for the administrator.
 
 The control server creates or upgrades these tables:
 
-The v4 schema stores batch master data, blocks, edges, Merkle leaves,
-attachments, users, and persistent sessions. The local demo database is
-replaceable test data; reset operations clear business records while keeping
-the user accounts and table definitions.
+The v6 schema stores batch master data, blocks, edges, Merkle leaves,
+attachments, users, persistent sessions, and per-role confirmation policies.
+The v5 global confirmation policy is migrated to separate Supplier, Logistics,
+Warehouse, and Supermarket rows without changing stored business records.
 
 ```
 batches
@@ -287,6 +309,13 @@ supply_chain_records
     verified
     block_hash
     chain_status
+    confirmation_method
+    confirmation_name
+    signature_algorithm
+    signature
+    signature_public_key_hash
+    signed_payload_hash
+    signature_verified
     created_at
 
 block_merkle_leaves
@@ -317,11 +346,27 @@ auth_sessions
     uid
     expires_at
     created_at
+
+users
+    uid
+    username
+    display_name
+    public_key
+    role
+    organization_id
+
+confirmation_policy
+    role
+    typed_name
+    handwritten
+    face
+    updated_by_uid
+    updated_at
 ```
 
 Every block has its own Merkle Tree. Its canonical input covers the batch master
 data, role event data, sorted CID references, the parent block ID/hash, and
-authenticated identity fields. The block root authenticates the internal tree;
+authenticated identity fields and signature metadata. The block root authenticates the internal tree;
 the block hash includes that root and the parent block hash, creating the outer
 linked block chain.
 
@@ -336,8 +381,8 @@ remain in memory for up to eight hours.
 ## Scope limits
 
 - The active route is fixed to four stages.
-- Inspection Agency, digital signatures, and third-party verification are
-  deferred.
+- ECDSA P-256 typed-name confirmation is implemented. Handwritten capture, face
+  capture, Inspection Agency, and third-party verification are deferred.
 - Public-chain, private-chain, cross-chain, and external gateway work is
   outside this stage.
 - MerkleTree is used as an existing library and remains unchanged.
