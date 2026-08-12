@@ -305,8 +305,9 @@ def compile_benchmark(project_root: Path, output_path: Path, compiler: list[str]
     source_path = output_path.with_suffix(".cpp")
     source_path.write_text(BENCHMARK_SOURCE, encoding="utf-8")
 
-    memory_pool_dir = project_root / "Code" / "MemoryPool"
-    conmem_pool_dir = project_root / "Code" / "ConMemPool"
+    private_chain_dir = project_root / "Code" / "PrivateChain"
+    memory_pool_dir = private_chain_dir / "MemoryPool"
+    conmem_pool_dir = private_chain_dir / "ConMemPool"
     command = [
         *compiler,
         "-std=c++17",

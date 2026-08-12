@@ -1,0 +1,146 @@
+# Private Chain Prototype
+
+This module contains the currently runnable supply-chain system. It accepts
+role-specific events, links them into a batch chain, builds an independent
+Merkle Tree inside every block, stores local state in SQLite, and keeps large
+files in IPFS through CID references.
+
+## Module layout
+
+```text
+PrivateChain/
+├── Server/             # User server, control server, APIs, and web pages
+├── MerkleTree/         # Reusable C++ Merkle Tree and standalone CLI
+├── DigitalSignature/   # OpenSSL ECDSA P-256 verification adapter
+├── MemoryPool/         # Fixed-block allocator
+├── ConMemPool/         # Concurrent allocator
+├── Database/           # Local SQLite database location
+└── README.md
+```
+
+Detailed references:
+
+- [Server](Server/README.md)
+- [MerkleTree](MerkleTree/README.md)
+- [Database](Database/README.md)
+
+## Current route
+
+```text
+Supplier -> Logistics -> Warehouse -> Supermarket
+```
+
+The Supplier creates a new product batch. Later roles select a batch whose
+next stage matches their authenticated role. The Supermarket completes the
+current route.
+
+Each batch is represented as an outer linked block chain:
+
+```text
+Block 0 ------------> Block 1 ------------> Block 2
+   |                     |                     |
+   +-- Merkle Tree 0     +-- Merkle Tree 1     +-- Merkle Tree 2
+```
+
+Each block hash includes its own Merkle root and the previous block hash. The
+Merkle leaves cover inherited batch data, role event fields, authenticated
+identity data, signature metadata, CID references, and the parent link.
+
+## Runtime data flow
+
+```text
+User browser :8080
+        |
+        | authenticated role event, confirmation, and CID references
+        v
+control_server :8081
+        |
+        +-- validates route order and field formats
+        +-- verifies ECDSA P-256 confirmation
+        +-- builds and verifies a per-block Merkle Tree
+        +-- commits batches, blocks, leaves, edges, and CIDs to SQLite
+        +-- forwards selected files to the local IPFS API
+        +-- serves the administrator control page
+```
+
+The user-facing static page is served by `user_server`. Authentication, block
+creation, persistence, IPFS forwarding, and the administrator page are owned
+by `control_server`.
+
+## Build and run
+
+Configure the project from the top-level `Code` directory:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"
+cmake -S . -B build
+cmake --build build
+```
+
+Start both servers from `Code/build` in separate terminals:
+
+```bash
+./Server/control_server
+```
+
+```bash
+./Server/user_server
+```
+
+Open:
+
+```text
+User page:    http://127.0.0.1:8080/
+Control page: http://127.0.0.1:8081/
+```
+
+The source directories moved under `PrivateChain`, while the output paths stay
+under `Code/build/Server` and `Code/build/MerkleTree`.
+
+## Persistence and IPFS
+
+The default SQLite database is:
+
+```text
+Code/PrivateChain/Database/supply_chain.db
+```
+
+The database stores structured records, hashes, Merkle proofs, block links,
+identity metadata, and CID metadata. Large file bodies stay in IPFS.
+
+The local Kubo API is expected at:
+
+```text
+http://127.0.0.1:5002
+```
+
+The IPFS daemon is an external local service and must be started separately.
+
+## Identity confirmation
+
+The administrator configures confirmation methods separately for Supplier,
+Logistics, Warehouse, and Supermarket. Every role must have at least one
+enabled method, and a user can select only a method enabled for the current
+role.
+
+Typed-name confirmation is currently implemented end to end. The browser signs
+the canonical confirmation payload with ECDSA P-256, and the C++ control server
+verifies it through OpenSSL before saving the block. Handwritten and face
+confirmation remain configuration placeholders.
+
+## Concurrency and allocation
+
+The control server dispatches accepted sockets through a bounded worker pool.
+`MemoryPool` supplies fixed task nodes, while `ConMemPool` supplies concurrent
+callable storage. Block numbering, parent selection, Merkle construction, and
+the final SQLite commit remain serialized.
+
+The repository-level `server_concurrency_test.py` benchmarks allocator
+throughput independently from HTTP, SQLite, Merkle, and IPFS work.
+
+## Current boundary
+
+This module is the private-side prototype. It does not yet generate a public
+snapshot, submit transactions to an EVM network, bridge between chains, or
+serve a consumer QR trace page. Those responsibilities belong to the sibling
+`Snapshot` and `PublicChain` modules.

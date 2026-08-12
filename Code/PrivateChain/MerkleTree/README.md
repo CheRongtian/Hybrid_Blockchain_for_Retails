@@ -1,15 +1,19 @@
 # Merkle Tree
-C++ 17 and OpenSSL to implement a foundamental Merkle Tree.
+
+This directory contains the reusable C++17 and OpenSSL Merkle Tree library and
+its standalone CLI demonstration.
+
 ## Run the CLI
 
-From any working directory, run:
+From this directory, run:
 
 ```bash
 ./run_merkle.sh
 ```
 
 The script configures and builds `merkle_cli`, then passes the absolute path of
-`inp.txt` to it. A different input file can be supplied explicitly:
+`inp.txt` to it. `inp.txt` is CLI demonstration input and is not used by the
+private-chain servers. A different input file can be supplied explicitly:
 
 ```bash
 ./run_merkle.sh /absolute/path/to/input.txt

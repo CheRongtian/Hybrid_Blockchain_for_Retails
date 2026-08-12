@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 #endif
 
 #ifndef CONTROL_DEFAULT_DATABASE_PATH
-#define CONTROL_DEFAULT_DATABASE_PATH "../../Database/supply_chain.db"
+#define CONTROL_DEFAULT_DATABASE_PATH "../PrivateChain/Database/supply_chain.db"
 #endif
 
 namespace

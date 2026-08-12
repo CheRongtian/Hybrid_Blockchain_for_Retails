@@ -55,7 +55,7 @@ Control page: http://127.0.0.1:8081/
 The default database path is:
 
 ```
-Code/Database/supply_chain.db
+Code/PrivateChain/Database/supply_chain.db
 ```
 
 The control server also accepts:
@@ -84,9 +84,9 @@ upload path.
 The control-server build must include:
 
 ```
-Server/thread_pool.cpp
-MemoryPool/mempool.cpp
-ConMemPool/concurrency_mempool.cpp
+PrivateChain/Server/thread_pool.cpp
+PrivateChain/MemoryPool/mempool.cpp
+PrivateChain/ConMemPool/concurrency_mempool.cpp
 ```
 
 The standalone allocator tests remain outside the control-server target.
@@ -383,6 +383,6 @@ remain in memory for up to eight hours.
 - The active route is fixed to four stages.
 - ECDSA P-256 typed-name confirmation is implemented. Handwritten capture, face
   capture, Inspection Agency, and third-party verification are deferred.
-- Public-chain, private-chain, cross-chain, and external gateway work is
-  outside this stage.
+- Public snapshot generation, public-chain anchoring, cross-chain relaying,
+  and external gateway work are outside this module.
 - MerkleTree is used as an existing library and remains unchanged.
