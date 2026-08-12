@@ -26,6 +26,7 @@ add_executable(
     auth_utils.cpp
     block_merkle.cpp
     db_utils.cpp
+    identifier_utils.cpp
     log_utils.cpp
     ../MemoryPool/mempool.cpp
     ../ConMemPool/concurrency_mempool.cpp

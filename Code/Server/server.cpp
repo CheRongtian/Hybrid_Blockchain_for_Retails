@@ -23,6 +23,7 @@
 #include "auth_utils.hpp"
 #include "block_merkle.hpp"
 #include "db_utils.hpp"
+#include "identifier_utils.hpp"
 #include "log_utils.hpp"
 #include "thread_pool.hpp"
 
@@ -625,11 +626,12 @@ std::vector<std::string> role_event_fields(const std::string& role)
         return {"harvestDate", "farmLocation", "certificateId"};
     if(role == "logistics")
         return {"shipmentId", "pickupLocation", "deliveryLocation",
-                "departureTime", "arrivalTime", "temperatureHumiditySummary",
+                "departureTime", "arrivalTime", "temperature", "temperatureUnit",
+                "humidity",
                 "vehicleContainerId"};
     if(role == "warehouse")
         return {"storageLotId", "inboundTime", "outboundTime",
-                "temperatureHumiditySummary", "storageZoneRackId"};
+                "temperature", "temperatureUnit", "humidity", "storageZoneRackId"};
     if(role == "supermarket")
         return {"shelfPlacementDate", "expirationSellByDate", "storeLocationId"};
     return {};
@@ -1842,7 +1844,7 @@ int main(int argc, char* argv[])
                 const bool correct_type = content_type_header != request.headers.end() &&
                     lower(content_type_header->second).find(
                         "application/x-www-form-urlencoded") == 0;
-                const auto fields = correct_type ? parse_form(request.body) : std::nullopt;
+                auto fields = correct_type ? parse_form(request.body) : std::nullopt;
 
                 std::string validation_error;
                 if(!correct_type)
@@ -1851,6 +1853,9 @@ int main(int argc, char* argv[])
                     validation_error = "Malformed form body";
                 else
                 {
+                    for(auto& field : *fields)
+                        field.second = trim(field.second);
+
                     const int current_index = workflow_index_for_role(user->role);
                     auto required_value = [&](const std::string& name) {
                         const auto item = fields->find(name);
@@ -1859,12 +1864,16 @@ int main(int argc, char* argv[])
                                item->second.size() <= 256;
                     };
 
-                    if(!required_value("batchId"))
-                        validation_error = "batchId is required";
-                    else if(current_index < 0)
+                    if(current_index < 0)
                         validation_error = "This account is not part of the preset workflow";
+                    else if(current_index != 0 && !required_value("batchId"))
+                        validation_error = "batchId is required for a continuing stage";
                     else if(current_index == 0 && !required_value("product"))
                         validation_error = "product is required for a new batch";
+                    else if(current_index == 0 &&
+                            !normalize_product_code(trim(fields->at("product"))))
+                        validation_error =
+                            "product must contain at least one letter or number";
                     else if(fields->find("confirmed") == fields->end() ||
                             fields->at("confirmed") != "true")
                         validation_error = "Information must be confirmed";
@@ -1876,6 +1885,38 @@ int main(int argc, char* argv[])
                             {
                                 validation_error = name + " is required";
                                 break;
+                            }
+                        }
+
+                        if(validation_error.empty())
+                        {
+                            for(const std::string& name : role_event_fields(user->role))
+                            {
+                                const auto item = fields->find(name);
+                                if(item == fields->end()) continue;
+                                const std::string identifier_error =
+                                    identifier_format_error(name, trim(item->second));
+                                if(!identifier_error.empty())
+                                {
+                                    validation_error = identifier_error;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if(validation_error.empty())
+                        {
+                            for(const std::string& name : role_event_fields(user->role))
+                            {
+                                const auto item = fields->find(name);
+                                if(item == fields->end()) continue;
+                                const std::string measurement_error =
+                                    measurement_format_error(name, trim(item->second));
+                                if(!measurement_error.empty())
+                                {
+                                    validation_error = measurement_error;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1917,11 +1958,42 @@ int main(int argc, char* argv[])
                 else
                 {
                     std::lock_guard<std::mutex> chain_lock(chain_mutex);
-                    const std::string batch_id = fields->at("batchId");
+                    const int current_index = workflow_index_for_role(user->role);
+                    std::string batch_id;
+                    if(current_index == 0)
+                    {
+                        std::vector<SupplyChainBatch> batches;
+                        if(!load_supply_chain_batches(
+                               database_path.string(), batches))
+                        {
+                            status = "500 Internal Server Error";
+                            body = json_error("Failed to read existing batches");
+                            send_response(
+                                client_fd, status, content_type, body, true, CORS_HEADERS);
+                            close(client_fd);
+                            return;
+                        }
+
+                        const auto generated_batch_id = next_batch_id_for_product(
+                            batches, trim(fields->at("product")));
+                        if(!generated_batch_id)
+                        {
+                            status = "409 Conflict";
+                            body = json_error("Unable to allocate a batch ID for this product");
+                            send_response(
+                                client_fd, status, content_type, body, true, CORS_HEADERS);
+                            close(client_fd);
+                            return;
+                        }
+                        batch_id = *generated_batch_id;
+                    }
+                    else
+                    {
+                        batch_id = trim(fields->at("batchId"));
+                    }
                     const SupplyChainRecord* parent =
                         latest_batch_record(stored_records, batch_id);
                     const auto& workflow = fixed_workflow();
-                    const int current_index = workflow_index_for_role(user->role);
                     const auto stored_batch =
                         find_supply_chain_batch(database_path.string(), batch_id);
                     std::string workflow_error;
@@ -1968,7 +2040,7 @@ int main(int argc, char* argv[])
                         if(current_index == 0)
                         {
                             batch.batch_id = batch_id;
-                            batch.product = fields->at("product");
+                            batch.product = trim(fields->at("product"));
                             batch.harvest_date = fields->at("harvestDate");
                             batch.farm_location = fields->at("farmLocation");
                             batch.certificate_id = fields->at("certificateId");
@@ -2028,7 +2100,7 @@ int main(int argc, char* argv[])
                             database_record.parent_block_hash = parent
                                 ? parent->block_hash
                                 : "GENESIS";
-                            database_record.batch_id = batch_id;
+                            database_record.batch_id = batch.batch_id;
                             database_record.product = batch.product;
                             if(user->role == "supplier")
                                 database_record.location_summary = fields->at("farmLocation");

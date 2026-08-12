@@ -241,13 +241,10 @@ function appendMerkleTree(record) {
     rootSummary.className = record.merkleTree?.consistent
         ? "merkle-tree-summary-root verified-node"
         : "merkle-tree-summary-root failed-node";
-    rootSummary.textContent = "Root available";
+    rootSummary.textContent = record.merkleTree?.consistent
+        ? "Verified root"
+        : "Root check failed";
     section.append(rootSummary);
-
-    const explanation = document.createElement("p");
-    explanation.className = "merkle-tree-label";
-    explanation.textContent = "Open the tree to inspect the root-to-leaf hierarchy.";
-    section.append(explanation);
 
     const openButton = document.createElement("button");
     openButton.type = "button";
@@ -328,27 +325,40 @@ function renderChainNode(record) {
     header.append(title, badge);
 
     node.append(header);
-    appendNodeLine(node, "Role", record.role);
-    appendNodeLine(node, "Organization", record.organizationId);
-    appendNodeLine(node, "Stage", record.stage);
-    appendNodeLine(node, "Product", record.product);
-    appendNodeLine(node, "Harvest Date", record.batchHarvestDate);
-    appendNodeLine(node, "Farm Location", record.batchFarmLocation);
-    appendNodeLine(node, "Location Summary", record.locationSummary);
+
+    const summary = document.createElement("div");
+    summary.className = "chain-node-summary";
+    appendNodeLine(summary, "Role", record.role);
+    appendNodeLine(summary, "Organization", record.organizationId);
+    appendNodeLine(summary, "Stage", record.stage);
+    appendNodeLine(summary, "Product", record.product);
+    node.append(summary);
+
+    const details = document.createElement("details");
+    details.className = "chain-node-details";
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = "Open block details";
+    const detailsBody = document.createElement("div");
+    detailsBody.className = "chain-node-details-body";
+    appendNodeLine(detailsBody, "Harvest Date", record.batchHarvestDate);
+    appendNodeLine(detailsBody, "Farm Location", record.batchFarmLocation);
+    appendNodeLine(detailsBody, "Location Summary", record.locationSummary);
 
     const eventData = document.createElement("pre");
     eventData.className = "event-data";
     eventData.textContent = JSON.stringify(record.eventData || {}, null, 2);
-    node.append(eventData);
+    detailsBody.append(eventData);
 
     const cidText = record.ipfsRefs?.length
         ? record.ipfsRefs.map((reference) => `${reference.category}: ${reference.cid}`).join("\n")
         : "None";
-    appendNodeLine(node, "CID References", cidText);
-    appendNodeLine(node, "Parent Block", record.parentBlockId >= 0
+    appendNodeLine(detailsBody, "CID References", cidText);
+    appendNodeLine(detailsBody, "Parent Block", record.parentBlockId >= 0
         ? `Block ${record.parentBlockId}`
         : "Genesis");
-    appendNodeLine(node, "Parent Hash", record.parentBlockHash || "GENESIS");
+    appendNodeLine(detailsBody, "Parent Hash", shortHash(record.parentBlockHash || "GENESIS"));
+    details.append(detailsSummary, detailsBody);
+    node.append(details);
     node.append(appendMerkleTree(record));
     return node;
 }

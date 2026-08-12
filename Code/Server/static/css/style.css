@@ -86,6 +86,40 @@ select {
     font: inherit;
 }
 
+.measurement-input,
+.identifier-input {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.measurement-input input,
+.identifier-input input {
+    min-width: 0;
+    flex: 1;
+}
+
+.measurement-input select {
+    width: 76px;
+    flex: 0 0 76px;
+}
+
+.measurement-suffix,
+.identifier-prefix {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    border: 1px solid #ffffff26;
+    border-radius: 12px;
+    color: #a7f3d0;
+    background: #080d19b3;
+    white-space: nowrap;
+}
+
+.identifier-prefix {
+    flex: 0 0 auto;
+}
+
 input[type="file"] {
     padding: 10px;
 }
@@ -195,6 +229,36 @@ button:hover {
     filter: brightness(1.08);
 }
 
+.submission-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+}
+
+.submission-actions button {
+    flex: 1;
+}
+
+.submission-actions .request-status {
+    min-width: 180px;
+    margin: 0;
+    font-size: 14px;
+    font-weight: 750;
+}
+
+.submission-actions .request-status.success,
+.submission-actions .request-status.error {
+    padding: 10px 12px;
+    border: 1px solid currentColor;
+    border-radius: 10px;
+    background: #080d19b3;
+}
+
+#record-card > #logout-button {
+    margin-top: 1.25rem;
+}
+
 .request-status {
     min-height: 24px;
     margin: 20px 0 0;
@@ -265,5 +329,14 @@ code {
     .role-section,
     .readonly-summary {
         grid-template-columns: 1fr;
+    }
+
+    .submission-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .submission-actions .request-status {
+        min-width: 0;
     }
 }

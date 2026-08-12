@@ -50,13 +50,8 @@
                 <section id="supplier-master-fields" class="role-section" hidden>
                     <div class="section-heading">
                         <h2>Create batch master data</h2>
-                        <p>This information is entered once for this route batch.</p>
+                        <p>Batch ID is generated from the product and its product-specific sequence.</p>
                     </div>
-                    <label>
-                        Batch ID
-                        <input id="batch-id-input" placeholder="BATCH-001"
-                               maxlength="256">
-                    </label>
                     <label>
                         Product
                         <input id="product-input" placeholder="Pumpkins"
@@ -113,7 +108,8 @@
                     <label>
                         Certificate ID
                         <input id="certificate-id" name="certificateId"
-                               placeholder="CERT-001" maxlength="256">
+                               value="CERT-0001" pattern="CERT-[0-9]{4}"
+                               title="Use the format CERT-0001" maxlength="256">
                     </label>
                 </section>
 
@@ -124,7 +120,9 @@
                     </div>
                     <label>
                         Shipment ID
-                        <input name="shipmentId" placeholder="SHIP-001" maxlength="256">
+                        <input name="shipmentId" value="SHIP-0001"
+                               pattern="SHIP-[0-9]{4}"
+                               title="Use the format SHIP-0001" maxlength="256">
                     </label>
                     <label>
                         Pickup Location
@@ -143,14 +141,37 @@
                         <input name="arrivalTime" type="datetime-local" maxlength="256">
                     </label>
                     <label>
-                        Temperature / Humidity Summary
-                        <input name="temperatureHumiditySummary"
-                               placeholder="2–5 °C; 72% RH" maxlength="256">
+                        Temperature
+                        <span class="measurement-input">
+                            <input name="temperature" inputmode="decimal"
+                                   placeholder="2 or 2-5"
+                                   pattern="[+-]?[0-9]+([.][0-9]+)?([ ]*-[ ]*[+-]?[0-9]+([.][0-9]+)?)?"
+                                   title="Enter one number or a range such as 2-5."
+                                   maxlength="256">
+                            <select name="temperatureUnit" aria-label="Temperature unit">
+                                <option value="C">°C</option>
+                                <option value="F">°F</option>
+                            </select>
+                        </span>
+                    </label>
+                    <label>
+                        Humidity
+                        <span class="measurement-input">
+                            <input name="humidity" inputmode="decimal"
+                                   placeholder="70 or 65-75"
+                                   pattern="[0-9]+([.][0-9]+)?([ ]*-[ ]*[0-9]+([.][0-9]+)?)?"
+                                   title="Enter a percentage or range from 0 to 100."
+                                   maxlength="256">
+                            <span class="measurement-suffix">% RH</span>
+                        </span>
                     </label>
                     <label>
                         Vehicle / Container ID
                         <input name="vehicleContainerId"
-                               placeholder="TRUCK-001" maxlength="256">
+                               value="VEHICLE-0001"
+                               pattern="(VEHICLE|CONTAINER)-[0-9]{4}"
+                               title="Use VEHICLE-0001 or CONTAINER-0001"
+                               maxlength="256">
                     </label>
                 </section>
 
@@ -161,7 +182,9 @@
                     </div>
                     <label>
                         Storage Lot ID
-                        <input name="storageLotId" placeholder="STORAGE-001" maxlength="256">
+                        <input name="storageLotId" value="STORAGE-0001"
+                               pattern="STORAGE-[0-9]{4}"
+                               title="Use the format STORAGE-0001" maxlength="256">
                     </label>
                     <label>
                         Inbound Time
@@ -172,14 +195,36 @@
                         <input name="outboundTime" type="datetime-local" maxlength="256">
                     </label>
                     <label>
-                        Temperature / Humidity Summary
-                        <input name="temperatureHumiditySummary"
-                               placeholder="3 °C average; 70% RH" maxlength="256">
+                        Temperature
+                        <span class="measurement-input">
+                            <input name="temperature" inputmode="decimal"
+                                   placeholder="3 or 3-5"
+                                   pattern="[+-]?[0-9]+([.][0-9]+)?([ ]*-[ ]*[+-]?[0-9]+([.][0-9]+)?)?"
+                                   title="Enter one number or a range such as 3-5."
+                                   maxlength="256">
+                            <select name="temperatureUnit" aria-label="Temperature unit">
+                                <option value="C">°C</option>
+                                <option value="F">°F</option>
+                            </select>
+                        </span>
+                    </label>
+                    <label>
+                        Humidity
+                        <span class="measurement-input">
+                            <input name="humidity" inputmode="decimal"
+                                   placeholder="70 or 65-75"
+                                   pattern="[0-9]+([.][0-9]+)?([ ]*-[ ]*[0-9]+([.][0-9]+)?)?"
+                                   title="Enter a percentage or range from 0 to 100."
+                                   maxlength="256">
+                            <span class="measurement-suffix">% RH</span>
+                        </span>
                     </label>
                     <label>
                         Storage Zone / Rack ID
                         <input name="storageZoneRackId"
-                               placeholder="ZONE-A / RACK-03" maxlength="256">
+                               value="ZONE-0001"
+                               pattern="(ZONE|RACK)-[0-9]{4}"
+                               title="Use ZONE-0001 or RACK-0001" maxlength="256">
                     </label>
                 </section>
 
@@ -198,8 +243,16 @@
                     </label>
                     <label>
                         Store Location ID
-                        <input name="storeLocationId"
-                               placeholder="STORE-001" maxlength="256">
+                        <span class="identifier-input">
+                            <span class="identifier-prefix">STORE-</span>
+                            <input id="store-location-number" type="text"
+                                   inputmode="numeric" value="0001"
+                                   pattern="[0-9]{4}" maxlength="4"
+                                   title="Enter exactly four digits, such as 0001."
+                                   aria-label="Store location number">
+                        </span>
+                        <input id="store-location-id" name="storeLocationId"
+                               type="hidden" value="STORE-0001">
                     </label>
                 </section>
 
@@ -228,19 +281,25 @@
                     <span>I have reviewed and confirmed that the information is correct.</span>
                 </label>
 
-                <button id="submit-record" type="submit">
-                    Confirm and Create Merkle Block
-                </button>
+                <div class="submission-actions">
+                    <button id="submit-record" type="submit">
+                        Confirm and Create Merkle Block
+                    </button>
+                    <p id="request-status" class="request-status" role="status"
+                       aria-live="polite"></p>
+                </div>
             </form>
-
-            <p id="request-status" class="request-status" aria-live="polite"></p>
             <button id="logout-button" type="button">Log Out</button>
         </section>
 
         <section id="result-card" class="card result-card" hidden>
             <p class="eyebrow">SUBMISSION RESULT</p>
-            <h2 id="verification-title">Verified</h2>
+            <h2 id="verification-title">Block details</h2>
             <dl>
+                <div>
+                    <dt>Batch ID</dt>
+                    <dd id="batch-id-result"></dd>
+                </div>
                 <div>
                     <dt>Block ID</dt>
                     <dd id="block-id"></dd>

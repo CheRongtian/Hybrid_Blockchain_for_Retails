@@ -98,9 +98,31 @@ Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
 The server accepts a new block only when the authenticated role is the next
-stage for that batch. Supplier creates the batch master data. Later stages
-select an existing batch and inherit its product, harvest date, farm location,
-and certificate ID. Supermarket completes the route.
+stage for that batch. Supplier creates the batch master data. The server
+generates the batch ID from the normalized product name and a product-specific
+four-digit sequence. Later stages select an existing batch and inherit its
+product, harvest date, farm location, certificate ID, and generated batch ID.
+Supermarket completes the route.
+
+Examples:
+
+```
+BATCH-POTATO-0001
+BATCH-POTATO-0002
+BATCH-EGGPLANT-0001
+```
+
+Event identifiers use short fixed prefixes with four-digit numeric suffixes:
+
+```
+CERT-0001       SHIP-0001       STORAGE-0001
+VEHICLE-0001    CONTAINER-0001  ZONE-0001
+RACK-0001       STORE-0001
+```
+
+The same shipment ID can appear in multiple batch records when one shipment
+carries multiple batches. The ID format is validated by the server; shipment
+and storage identifiers are not encoded with a batch ID.
 
 The route topology is separate from transport event facts. Logistics records
 pickup and delivery locations inside its own event data; those fields do not
@@ -211,14 +233,16 @@ The response contains:
 
 POST /api/records requires:
 
-- batchId;
+- product for a new Supplier batch;
+- batchId for Logistics, Warehouse, and Supermarket continuation events;
 - the role-specific event fields;
 - confirmed=true;
 - optional ipfsRefs;
 - an Authorization Bearer token.
 
-The server derives the stage, UID, confirmer, and organization from the
-authenticated session. The browser cannot choose the stage.
+The server derives the stage, UID, confirmer, organization, and a new Supplier
+batch ID from the authenticated session and submitted product. The browser
+cannot choose the stage or create a batch ID.
 
 The response includes the new block ID, verification status, batch ID, next
 stage, and CID count.
@@ -236,9 +260,10 @@ GET /api/records returns saved verification records for the administrator.
 
 The control server creates or upgrades these tables:
 
-The existing v3 business tables are preserved. Startup adds the v4 session
-table and updates the schema marker without clearing batches, blocks, edges,
-Merkle leaves, or attachments.
+The v4 schema stores batch master data, blocks, edges, Merkle leaves,
+attachments, users, and persistent sessions. The local demo database is
+replaceable test data; reset operations clear business records while keeping
+the user accounts and table definitions.
 
 ```
 batches

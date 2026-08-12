@@ -187,17 +187,42 @@ are outside the benchmark and can dominate complete request latency.
 Batch master data is created once for one route batch by the Supplier:
 
 ```
-Batch ID
 Product
 Harvest Date
 Farm Location
 Certificate ID
 ```
 
-The later stages select an existing batch. Product, harvest date, farm
-location, and certificate ID are loaded by the server and shown as inherited
-read-only data. The browser does not submit a new product definition for those
-stages.
+The server generates the Batch ID from the normalized product name and a
+product-specific four-digit sequence. A single Supplier can therefore create
+independent batches for different products:
+
+```
+BATCH-POTATO-0001
+BATCH-POTATO-0002
+BATCH-EGGPLANT-0001
+```
+
+The sequence is shared across the project for the same product code. If two
+earlier eggplant batches already exist, the next one is
+`BATCH-EGGPLANT-0003`, regardless of which Supplier created them.
+
+The later stages select an existing batch. Product, batch ID, harvest date,
+farm location, and certificate ID are loaded by the server and shown as
+inherited read-only data. The browser does not submit a new product definition
+for those stages.
+
+Event identifiers use short prefixes with four numeric digits:
+
+```
+CERT-0001       SHIP-0001       STORAGE-0001
+VEHICLE-0001    CONTAINER-0001  ZONE-0001
+RACK-0001       STORE-0001
+```
+
+One shipment can carry multiple product batches, so a shipment ID is stored in
+the event data and can be reused across those batch records. Batch IDs are not
+embedded inside shipment, storage, or store identifiers.
 
 The active role-specific event fields follow the project appendix:
 

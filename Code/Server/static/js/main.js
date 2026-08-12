@@ -10,7 +10,6 @@ const currentStage = document.querySelector("#current-stage");
 const statusLine = document.querySelector("#request-status");
 const resultCard = document.querySelector("#result-card");
 const verificationTitle = document.querySelector("#verification-title");
-const batchIdInput = document.querySelector("#batch-id-input");
 const productInput = document.querySelector("#product-input");
 const supplierMasterFields = document.querySelector("#supplier-master-fields");
 const existingBatchFields = document.querySelector("#existing-batch-fields");
@@ -23,6 +22,8 @@ const attachmentCategory = document.querySelector("#attachment-category");
 const ipfsFiles = document.querySelector("#ipfs-files");
 const attachmentList = document.querySelector("#attachment-list");
 const submitRecord = document.querySelector("#submit-record");
+const storeLocationNumber = document.querySelector("#store-location-number");
+const storeLocationId = document.querySelector("#store-location-id");
 const controlApiBase = "http://127.0.0.1:8081/api";
 const sessionKey = "supply-chain-user-session";
 
@@ -46,7 +47,8 @@ const roleConfig = {
     logistics: {
         fields: [
             "shipmentId", "pickupLocation", "deliveryLocation",
-            "departureTime", "arrivalTime", "temperatureHumiditySummary",
+            "departureTime", "arrivalTime", "temperature", "temperatureUnit",
+            "humidity",
             "vehicleContainerId"
         ],
         categories: {
@@ -59,7 +61,7 @@ const roleConfig = {
     warehouse: {
         fields: [
             "storageLotId", "inboundTime", "outboundTime",
-            "temperatureHumiditySummary", "storageZoneRackId"
+            "temperature", "temperatureUnit", "humidity", "storageZoneRackId"
         ],
         categories: {
             inspectionReports: "Inspection Reports",
@@ -88,6 +90,12 @@ function currentRole() {
 
 function setCurrentStage(role) {
     currentStage.value = roleLabels[role] || role;
+}
+
+function syncStoreLocationId() {
+    if (!storeLocationNumber || !storeLocationId) return;
+    const number = storeLocationNumber.value.trim();
+    storeLocationId.value = /^[0-9]{4}$/.test(number) ? "STORE-" + number : "";
 }
 
 function showSession(result) {
@@ -293,7 +301,7 @@ function configureRole() {
     const supplier = role === "supplier";
     supplierMasterFields.hidden = !supplier;
     existingBatchFields.hidden = supplier;
-    setRequired("#batch-id-input, #product-input", supplier);
+    setRequired("#product-input", supplier);
 
     document.querySelectorAll("[data-role-section]").forEach((section) => {
         const active = section.dataset.roleSection === role;
@@ -302,9 +310,11 @@ function configureRole() {
             input.required = active;
         });
     });
+    storeLocationNumber.required = role === "supermarket";
 
     populateAttachmentCategories(role);
     setCurrentStage(role);
+    syncStoreLocationId();
     if (supplier) {
         submitRecord.disabled = false;
         batchStatus.textContent = "";
@@ -370,8 +380,7 @@ function encodeIpfsReferences() {
 
 function buildRecordPayload(role) {
     const payload = new URLSearchParams();
-    const batchId = role === "supplier" ? batchIdInput.value : batchSelect.value;
-    payload.set("batchId", batchId);
+    if (role !== "supplier") payload.set("batchId", batchSelect.value);
 
     if (role === "supplier") {
         payload.set("product", productInput.value);
@@ -396,10 +405,13 @@ logoutButton.addEventListener("click", logout);
 batchSelect.addEventListener("change", updateBatchSummary);
 ipfsFiles.addEventListener("change", renderAttachmentList);
 attachmentCategory.addEventListener("change", renderAttachmentList);
+storeLocationNumber.addEventListener("input", syncStoreLocationId);
 
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!session) return;
+    syncStoreLocationId();
+    if (!form.reportValidity()) return;
 
     const role = currentRole();
     statusLine.textContent = "Submitting record...";
@@ -431,6 +443,7 @@ form.addEventListener("submit", async (event) => {
 
         verificationTitle.textContent = result.verified ? "Verified ✓" : "Verification failed";
         verificationTitle.className = result.verified ? "verified" : "failed";
+        document.querySelector("#batch-id-result").textContent = result.batchId;
         document.querySelector("#block-id").textContent = result.blockID;
         document.querySelector("#next-stage").textContent =
             roleLabels[result.nextStage] || "Route complete";
@@ -442,8 +455,8 @@ form.addEventListener("submit", async (event) => {
         configureRole();
 
         statusLine.textContent = result.verified
-            ? "Record saved. Merkle proof verified."
-            : "Record saved, but Merkle proof verification failed.";
+            ? "Verified ✓ Record saved."
+            : "Verification failed. Record saved.";
         statusLine.className = result.verified
             ? "request-status success"
             : "request-status error";
