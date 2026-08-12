@@ -167,6 +167,191 @@ dt {
     margin-bottom: 1rem;
 }
 
+.snapshot-card {
+    margin-bottom: 1rem;
+    padding: 0;
+    overflow: hidden;
+}
+
+.snapshot-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.snapshot-summary::-webkit-details-marker {
+    display: none;
+}
+
+.snapshot-summary::after {
+    content: "+";
+    flex: 0 0 auto;
+    color: #73cef4;
+    font-size: 1.5rem;
+    font-weight: 800;
+}
+
+.snapshot-card[open] .snapshot-summary::after {
+    content: "−";
+}
+
+.snapshot-summary .badge {
+    margin-left: auto;
+}
+
+.snapshot-summary h2,
+.snapshot-summary p {
+    margin-bottom: 0;
+}
+
+.snapshot-summary p:last-child {
+    margin-top: 0.2rem;
+    color: #91a2b9;
+    font-size: 0.85rem;
+}
+
+.snapshot-summary .eyebrow {
+    margin: 0 0 0.2rem;
+    color: #73cef4;
+    font-size: 0.68rem;
+}
+
+.snapshot-content {
+    padding: 1rem 1.25rem 1.25rem;
+    border-top: 1px solid #26364c;
+}
+
+.snapshot-form {
+    display: grid;
+    gap: 1rem;
+}
+
+.snapshot-form > label {
+    display: grid;
+    gap: 0.45rem;
+    color: #91a2b9;
+    font-weight: 700;
+}
+
+.snapshot-form select {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #30445f;
+    border-radius: 0.65rem;
+    color: #e5edf8;
+    background: #080f1c;
+    font: inherit;
+}
+
+.snapshot-evidence-fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0.8rem;
+    border: 1px solid #30445f;
+    border-radius: 0.75rem;
+}
+
+.snapshot-evidence-fieldset legend {
+    padding: 0 0.35rem;
+    color: #73cef4;
+    font-weight: 800;
+}
+
+.snapshot-evidence-fieldset > p {
+    margin-bottom: 0.7rem;
+    color: #91a2b9;
+    font-size: 0.82rem;
+}
+
+.snapshot-evidence-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+}
+
+.snapshot-evidence-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    min-width: 0;
+    padding: 0.7rem;
+    border: 1px solid #26364c;
+    border-radius: 0.65rem;
+    background: #080f1c;
+}
+
+.snapshot-evidence-option input {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    margin-top: 0.1rem;
+}
+
+.snapshot-evidence-option span,
+.snapshot-evidence-option code {
+    display: block;
+    min-width: 0;
+}
+
+.snapshot-evidence-option strong {
+    color: #dce7f5;
+    font-size: 0.82rem;
+}
+
+.snapshot-evidence-option code {
+    margin-top: 0.25rem;
+    color: #9ce7d0;
+    font-size: 0.7rem;
+    overflow-wrap: anywhere;
+}
+
+.snapshot-actions {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.snapshot-actions .status {
+    min-height: 1.4rem;
+    margin: 0;
+}
+
+.snapshot-preview {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #26364c;
+}
+
+.snapshot-metadata {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 0 0 1rem;
+}
+
+.snapshot-metadata dd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.75rem;
+}
+
+.snapshot-manifest,
+.snapshot-exclusions {
+    margin-top: 0.65rem;
+}
+
+.snapshot-manifest pre {
+    max-height: 28rem;
+    overflow: auto;
+}
+
+.snapshot-exclusions ul {
+    margin: 0;
+    padding: 0 1.8rem 0.8rem;
+    color: #91a2b9;
+}
+
 .policy-card {
     padding: 0;
     overflow: hidden;
@@ -653,6 +838,10 @@ dt {
         display: none;
     }
 
+    .snapshot-summary .badge {
+        display: none;
+    }
+
     .policy-matrix-header {
         display: none;
     }
@@ -669,6 +858,20 @@ dt {
 
     .merkle-node-details {
         max-height: 16rem;
+    }
+
+    .snapshot-evidence-list,
+    .snapshot-metadata {
+        grid-template-columns: 1fr;
+    }
+
+    .snapshot-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .snapshot-actions button {
+        width: 100%;
     }
 }
 

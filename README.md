@@ -7,8 +7,9 @@ three architectural modules:
 Private Chain -> Public Snapshot -> Public Chain -> Consumer QR Verification
 ```
 
-The private-chain module is currently runnable. Snapshot generation and public
-chain anchoring are defined as the next implementation stages.
+The private-chain module is currently runnable. Consumer-safe snapshot preview
+generation is implemented locally. Snapshot publication and public-chain
+anchoring are the next implementation stages.
 
 ## Current architecture
 
@@ -27,10 +28,10 @@ PrivateChain
           |
           | approved public fields only
           v
-Snapshot                         planned
+Snapshot                         preview implemented
   +-- canonical public manifest
   +-- independent public root
-  +-- public manifest CID
+  +-- selected existing evidence CIDs
           |
           v
 PublicChain                      planned
@@ -56,7 +57,7 @@ Blockchain Structure/
 │   │   ├── MemoryPool/               # Fixed-block allocator
 │   │   ├── ConMemPool/               # Concurrent allocator
 │   │   └── Database/                 # Local SQLite data
-│   ├── Snapshot/                    # Public snapshot boundary (planned)
+│   ├── Snapshot/                    # Public snapshot preview module
 │   ├── PublicChain/                 # EVM anchor and QR flow (planned)
 │   ├── CMakeLists.txt               # Central C++ build entry
 │   ├── PrCsample.sol                # Historical Solidity sample
@@ -126,12 +127,13 @@ verifiable tree for each event.
   signatures, confirmation policies, and CID metadata;
 - local Kubo/IPFS upload integration through returned CIDs;
 - administrator chain and Merkle Tree visualization;
+- completed-batch public Manifest and Public Root preview;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
 Handwritten-signature capture and face confirmation are policy placeholders.
-Inspection Agency, public snapshots, EVM deployment, relaying, and the consumer
-QR page are pending.
+Inspection Agency, saved/published snapshots, EVM deployment, relaying, and the
+consumer QR page are pending.
 
 ## Requirements
 
@@ -213,7 +215,6 @@ at the `Code` root for reference. The production snapshot format and public
 contract will be implemented in `Code/Snapshot` and `Code/PublicChain` without
 turning either sample directly into runtime code.
 
-The next architectural milestone is snapshot generation: select approved
-consumer-visible fields from a completed private batch, build a public
-manifest and independent public root, store the manifest through IPFS, and
-prepare the resulting anchor data for an EVM contract.
+The next architectural milestone is snapshot publication: persist a reviewed
+preview as a versioned snapshot, decide how its public Manifest is distributed,
+and prepare the resulting anchor data for an EVM contract.

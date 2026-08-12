@@ -26,6 +26,8 @@
 #include "digital_signature.hpp"
 #include "identifier_utils.hpp"
 #include "log_utils.hpp"
+#include "snapshot_adapter.hpp"
+#include "snapshot_policy.hpp"
 #include "thread_pool.hpp"
 
 namespace fs = std::filesystem;
@@ -1010,6 +1012,120 @@ std::string confirmation_policies_json(
     return json + "]}";
 }
 
+std::string string_array_json(const std::vector<std::string>& values)
+{
+    std::ostringstream json;
+    json << '[';
+    for(std::size_t index = 0; index < values.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        json << '"' << json_escape(values[index]) << '"';
+    }
+    json << ']';
+    return json.str();
+}
+
+std::string snapshot_evidence_json(
+    const schnucks::snapshot::BatchInput& batch)
+{
+    std::ostringstream json;
+    json << '[';
+    bool first = true;
+    for(const schnucks::snapshot::StageInput& stage : batch.stages)
+    {
+        for(const schnucks::snapshot::EvidenceInput& evidence : stage.evidence)
+        {
+            const auto* policy =
+                schnucks::snapshot::find_evidence_policy(evidence.category);
+            if(!policy || evidence.cid.empty()) continue;
+            if(!first) json << ',';
+            first = false;
+            json << "{\"stage\":\"" << json_escape(stage.stage)
+                 << "\",\"category\":\"" << json_escape(evidence.category)
+                 << "\",\"type\":\"" << json_escape(policy->public_type)
+                 << "\",\"label\":\"" << json_escape(policy->label)
+                 << "\",\"cid\":\"" << json_escape(evidence.cid)
+                 << "\",\"selectedByDefault\":"
+                 << (policy->selected_by_default ? "true" : "false") << '}';
+        }
+    }
+    json << ']';
+    return json.str();
+}
+
+std::string eligible_snapshot_batches_json(
+    const std::vector<SupplyChainBatch>& batches,
+    const std::vector<SupplyChainRecord>& records)
+{
+    std::ostringstream json;
+    json << "{\"batches\":[";
+    bool first = true;
+    for(const SupplyChainBatch& batch : batches)
+    {
+        const schnucks::snapshot::BatchInput input =
+            make_snapshot_batch_input(batch, records);
+        const auto eligibility = schnucks::snapshot::evaluate_eligibility(input);
+        if(!eligibility.eligible) continue;
+        if(!first) json << ',';
+        first = false;
+        json << "{\"batchId\":\"" << json_escape(batch.batch_id)
+             << "\",\"product\":\"" << json_escape(batch.product)
+             << "\",\"status\":\"" << json_escape(batch.status)
+             << "\",\"finalPrivateBlockHash\":\""
+             << json_escape(input.stages.back().block_hash)
+             << "\",\"evidence\":" << snapshot_evidence_json(input) << '}';
+    }
+    json << "]}";
+    return json.str();
+}
+
+std::string snapshot_preview_json(const schnucks::snapshot::Preview& preview)
+{
+    std::ostringstream json;
+    json << "{\"snapshotId\":\"" << json_escape(preview.snapshot_id)
+         << "\",\"snapshotVersion\":" << preview.snapshot_version
+         << ",\"generatedAt\":\"" << json_escape(preview.generated_at)
+         << "\",\"batchId\":\"" << json_escape(preview.batch_id)
+         << "\",\"publicRoot\":\"" << json_escape(preview.public_root)
+         << "\",\"finalPrivateBlockHash\":\""
+         << json_escape(preview.final_private_block_hash)
+         << "\",\"publicFieldCount\":" << preview.public_fields.size()
+         << ",\"selectedEvidenceCount\":" << preview.public_evidence.size()
+         << ",\"excludedFields\":"
+         << string_array_json(preview.excluded_fields)
+         << ",\"manifest\":" << preview.manifest_json << '}';
+    return json.str();
+}
+
+bool parse_snapshot_evidence_selection(
+    const std::string& encoded,
+    std::vector<schnucks::snapshot::EvidenceInput>& selections,
+    std::string& error)
+{
+    selections.clear();
+    if(encoded.empty()) return true;
+    if(encoded.size() > 128 * 1024)
+    {
+        error = "Selected evidence list is too large";
+        return false;
+    }
+
+    for(const std::string& token : split_text(encoded, ','))
+    {
+        const auto pieces = split_text(token, '|');
+        if(pieces.size() != 3 || trim(pieces[0]).empty() ||
+           trim(pieces[1]).empty() || trim(pieces[2]).empty())
+        {
+            error = "Malformed public evidence selection";
+            return false;
+        }
+        selections.push_back(schnucks::snapshot::EvidenceInput{
+            trim(pieces[0]), trim(pieces[1]), trim(pieces[2])
+        });
+    }
+    return true;
+}
+
 std::string ipfs_refs_json(const std::vector<IpfsReference>& references)
 {
     std::ostringstream json;
@@ -1684,7 +1800,9 @@ int main(int argc, char* argv[])
             request.target == "/api/batches" ||
             request.target == "/api/ipfs/files" ||
             request.target == "/api/workflow" ||
-            request.target == "/api/chains";
+            request.target == "/api/chains" ||
+            request.target == "/api/snapshot/eligible-batches" ||
+            request.target == "/api/snapshot/preview";
 
         if(request.method == "OPTIONS" && is_api_target)
         {
@@ -2097,6 +2215,131 @@ int main(int argc, char* argv[])
                 {
                     status = "500 Internal Server Error";
                     body = json_error("Failed to read supply-chain graph");
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" &&
+                request.target == "/api/snapshot/eligible-batches")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                std::vector<SupplyChainBatch> batches;
+                std::vector<SupplyChainRecord> records;
+                if(load_supply_chain_batches(database_path.string(), batches) &&
+                   load_supply_chain_records(database_path.string(), records))
+                {
+                    status = "200 OK";
+                    body = eligible_snapshot_batches_json(batches, records);
+                }
+                else
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error("Failed to read snapshot candidates");
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "POST" &&
+                request.target == "/api/snapshot/preview")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else
+            {
+                const auto content_type_header = request.headers.find("content-type");
+                const bool correct_type = content_type_header != request.headers.end() &&
+                    lower(content_type_header->second).find(
+                        "application/x-www-form-urlencoded") == 0;
+                const auto fields = correct_type
+                    ? parse_form(request.body)
+                    : std::nullopt;
+                const auto batch_field = fields
+                    ? fields->find("batchId")
+                    : std::unordered_map<std::string, std::string>::const_iterator{};
+                if(!correct_type || !fields || batch_field == fields->end() ||
+                   trim(batch_field->second).empty() || batch_field->second.size() > 256)
+                {
+                    status = "422 Unprocessable Entity";
+                    body = json_error("A valid batchId is required");
+                }
+                else
+                {
+                    const std::string batch_id = trim(batch_field->second);
+                    const auto batch = find_supply_chain_batch(
+                        database_path.string(), batch_id);
+                    std::vector<SupplyChainRecord> records;
+                    if(!batch)
+                    {
+                        status = "404 Not Found";
+                        body = json_error("The selected batch does not exist");
+                    }
+                    else if(!load_supply_chain_records(
+                                database_path.string(), records))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to read snapshot source records");
+                    }
+                    else
+                    {
+                        std::vector<schnucks::snapshot::EvidenceInput>
+                            selected_evidence;
+                        const auto selected_field = fields->find("selectedEvidence");
+                        std::string selection_error;
+                        if(!parse_snapshot_evidence_selection(
+                               selected_field == fields->end()
+                                   ? ""
+                                   : selected_field->second,
+                               selected_evidence,
+                               selection_error))
+                        {
+                            status = "422 Unprocessable Entity";
+                            body = json_error(selection_error);
+                        }
+
+                        if(status.empty())
+                        {
+                            const auto input = make_snapshot_batch_input(
+                                *batch, records);
+                            std::string preview_error;
+                            const auto preview = schnucks::snapshot::build_preview(
+                                input, selected_evidence, preview_error);
+                            if(!preview)
+                            {
+                                status = "422 Unprocessable Entity";
+                                body = json_error(preview_error);
+                            }
+                            else
+                            {
+                                status = "200 OK";
+                                body = snapshot_preview_json(*preview);
+                            }
+                        }
+                    }
                 }
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);

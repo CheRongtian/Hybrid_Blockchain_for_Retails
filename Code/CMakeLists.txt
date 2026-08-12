@@ -8,4 +8,5 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(MERKLE_TREE_BUILD_CLI "Build the standalone MerkleTree CLI" ON)
 
 add_subdirectory(PrivateChain/MerkleTree MerkleTree)
+add_subdirectory(Snapshot Snapshot)
 add_subdirectory(PrivateChain/Server Server)

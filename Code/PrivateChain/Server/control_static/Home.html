@@ -75,6 +75,69 @@
                 </div>
             </details>
 
+            <details class="record-card snapshot-card">
+                <summary class="snapshot-summary">
+                    <div>
+                        <p class="eyebrow">PUBLIC SNAPSHOT</p>
+                        <h2>Consumer Data Preview</h2>
+                        <p>Review the public manifest without publishing it.</p>
+                    </div>
+                    <span id="snapshot-batch-count" class="badge pending">Loading batches</span>
+                </summary>
+                <div class="snapshot-content">
+                    <form id="snapshot-preview-form" class="snapshot-form">
+                        <label>
+                            Completed Batch
+                            <select id="snapshot-batch-select" name="batchId"></select>
+                        </label>
+                        <fieldset class="snapshot-evidence-fieldset">
+                            <legend>Public Evidence</legend>
+                            <p>
+                                Only administrator-selected CIDs from the public
+                                evidence allowlist enter the preview.
+                            </p>
+                            <div id="snapshot-evidence-list" class="snapshot-evidence-list"></div>
+                        </fieldset>
+                        <div class="snapshot-actions">
+                            <button id="generate-snapshot-button" type="submit">
+                                Generate Snapshot Preview
+                            </button>
+                            <p id="snapshot-status" class="status" role="status"
+                               aria-live="polite"></p>
+                        </div>
+                    </form>
+
+                    <section id="snapshot-preview" class="snapshot-preview" hidden>
+                        <dl class="snapshot-metadata">
+                            <div>
+                                <dt>Snapshot ID</dt>
+                                <dd id="snapshot-id"></dd>
+                            </div>
+                            <div>
+                                <dt>Public Root</dt>
+                                <dd id="snapshot-public-root"></dd>
+                            </div>
+                            <div>
+                                <dt>Final Private Block Hash</dt>
+                                <dd id="snapshot-private-hash"></dd>
+                            </div>
+                            <div>
+                                <dt>Public Fields</dt>
+                                <dd id="snapshot-field-count"></dd>
+                            </div>
+                        </dl>
+                        <details class="snapshot-manifest" open>
+                            <summary>Public Manifest</summary>
+                            <pre id="snapshot-manifest-json"></pre>
+                        </details>
+                        <details class="snapshot-exclusions">
+                            <summary>Excluded Private Data</summary>
+                            <ul id="snapshot-excluded-fields"></ul>
+                        </details>
+                    </section>
+                </div>
+            </details>
+
             <p id="load-status" class="status" aria-live="polite">Loading supply-chain workflow...</p>
             <section id="record-list" class="record-list" aria-label="Supply-chain records"></section>
         </section>

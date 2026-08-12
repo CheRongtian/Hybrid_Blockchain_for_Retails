@@ -17,6 +17,13 @@ if(NOT TARGET merkle_tree)
     )
 endif()
 
+if(NOT TARGET snapshot)
+    add_subdirectory(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../Snapshot
+        ${CMAKE_CURRENT_BINARY_DIR}/snapshot
+    )
+endif()
+
 # Include current directory for header files
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -26,6 +33,7 @@ add_executable(
     thread_pool.cpp
     auth_utils.cpp
     block_merkle.cpp
+    snapshot_adapter.cpp
     ../DigitalSignature/digital_signature.cpp
     db_utils.cpp
     identifier_utils.cpp
@@ -38,6 +46,7 @@ target_link_libraries(
     control_server
     PRIVATE
     MerkleTree::merkle_tree
+    Snapshot::snapshot
     ${SQLite3_LIBRARIES}
     OpenSSL::Crypto
     Threads::Threads

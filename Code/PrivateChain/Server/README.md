@@ -278,6 +278,15 @@ control page.
 
 GET /api/records returns saved verification records for the administrator.
 
+GET /api/snapshot/eligible-batches returns completed batches whose four stages,
+parent links, Merkle results, and signatures pass the Snapshot eligibility
+policy.
+
+POST /api/snapshot/preview accepts a batch ID and optional allowlisted CID
+selection. It returns a consumer-safe Manifest, independent Public Merkle Root,
+final private block hash, and private-data exclusion summary. The preview is
+not persisted or published.
+
 ## SQLite schema
 
 The control server creates or upgrades these tables:
@@ -383,6 +392,7 @@ remain in memory for up to eight hours.
 - The active route is fixed to four stages.
 - ECDSA P-256 typed-name confirmation is implemented. Handwritten capture, face
   capture, Inspection Agency, and third-party verification are deferred.
-- Public snapshot generation, public-chain anchoring, cross-chain relaying,
-  and external gateway work are outside this module.
+- Public snapshot preview generation is provided through the sibling Snapshot
+  library. Snapshot persistence/publication, public-chain anchoring,
+  cross-chain relaying, and external gateway work remain outside this module.
 - MerkleTree is used as an existing library and remains unchanged.

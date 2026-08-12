@@ -60,6 +60,7 @@ control_server :8081
         +-- builds and verifies a per-block Merkle Tree
         +-- commits batches, blocks, leaves, edges, and CIDs to SQLite
         +-- forwards selected files to the local IPFS API
+        +-- previews consumer-safe public snapshots for completed batches
         +-- serves the administrator control page
 ```
 
@@ -140,7 +141,8 @@ throughput independently from HTTP, SQLite, Merkle, and IPFS work.
 
 ## Current boundary
 
-This module is the private-side prototype. It does not yet generate a public
-snapshot, submit transactions to an EVM network, bridge between chains, or
-serve a consumer QR trace page. Those responsibilities belong to the sibling
-`Snapshot` and `PublicChain` modules.
+This module is the private-side prototype. The sibling `Snapshot` module can
+generate a non-persisted public Manifest and Public Root preview from a
+completed batch. The system does not yet publish a snapshot, submit
+transactions to an EVM network, bridge between chains, or serve a consumer QR
+trace page.

@@ -15,6 +15,19 @@ const rolePolicyList = document.querySelector("#role-policy-list");
 const policyRoleCount = document.querySelector("#policy-role-count");
 const policyStatus = document.querySelector("#policy-status");
 const savePolicyButton = document.querySelector("#save-policy-button");
+const snapshotPreviewForm = document.querySelector("#snapshot-preview-form");
+const snapshotBatchSelect = document.querySelector("#snapshot-batch-select");
+const snapshotBatchCount = document.querySelector("#snapshot-batch-count");
+const snapshotEvidenceList = document.querySelector("#snapshot-evidence-list");
+const generateSnapshotButton = document.querySelector("#generate-snapshot-button");
+const snapshotStatus = document.querySelector("#snapshot-status");
+const snapshotPreview = document.querySelector("#snapshot-preview");
+const snapshotId = document.querySelector("#snapshot-id");
+const snapshotPublicRoot = document.querySelector("#snapshot-public-root");
+const snapshotPrivateHash = document.querySelector("#snapshot-private-hash");
+const snapshotFieldCount = document.querySelector("#snapshot-field-count");
+const snapshotManifestJson = document.querySelector("#snapshot-manifest-json");
+const snapshotExcludedFields = document.querySelector("#snapshot-excluded-fields");
 const sessionKey = "supply-chain-control-session";
 const policyRoles = [
     ["supplier", "Supplier"],
@@ -24,6 +37,7 @@ const policyRoles = [
 ];
 let session = null;
 let workflowData = null;
+let snapshotBatches = [];
 
 function showSession(result) {
     session = result;
@@ -53,6 +67,10 @@ function clearSession() {
     loginCard.hidden = false;
     dashboard.hidden = true;
     list.replaceChildren();
+    snapshotBatches = [];
+    snapshotBatchSelect.replaceChildren();
+    snapshotEvidenceList.replaceChildren();
+    snapshotPreview.hidden = true;
 }
 
 async function logout() {
@@ -695,8 +713,153 @@ async function loadChains() {
     }
 }
 
+function setSnapshotStatus(message, state = "") {
+    snapshotStatus.textContent = message;
+    snapshotStatus.className = state ? `status ${state}` : "status";
+}
+
+function selectedSnapshotBatch() {
+    return snapshotBatches.find((batch) => batch.batchId === snapshotBatchSelect.value);
+}
+
+function renderSnapshotEvidence() {
+    snapshotEvidenceList.replaceChildren();
+    snapshotPreview.hidden = true;
+    const batch = selectedSnapshotBatch();
+    const evidence = batch?.evidence || [];
+    if (evidence.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "status";
+        empty.textContent = "No approved public evidence is attached to this batch.";
+        snapshotEvidenceList.append(empty);
+        return;
+    }
+
+    for (const item of evidence) {
+        const option = document.createElement("label");
+        option.className = "snapshot-evidence-option";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.name = "selectedEvidence";
+        input.value = `${item.stage}|${item.category}|${item.cid}`;
+        input.checked = Boolean(item.selectedByDefault);
+        const content = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = `${item.label} · ${item.stage}`;
+        const cid = document.createElement("code");
+        cid.textContent = item.cid;
+        content.append(title, cid);
+        option.append(input, content);
+        snapshotEvidenceList.append(option);
+    }
+}
+
+function renderSnapshotBatches(batches) {
+    snapshotBatches = batches;
+    snapshotBatchSelect.replaceChildren();
+    for (const batch of batches) {
+        const option = document.createElement("option");
+        option.value = batch.batchId;
+        option.textContent = `${batch.batchId} · ${batch.product}`;
+        snapshotBatchSelect.append(option);
+    }
+
+    const hasBatches = batches.length > 0;
+    snapshotBatchSelect.disabled = !hasBatches;
+    generateSnapshotButton.disabled = !hasBatches;
+    snapshotBatchCount.textContent = hasBatches
+        ? `${batches.length} eligible batch${batches.length === 1 ? "" : "es"}`
+        : "No eligible batches";
+    snapshotBatchCount.className = hasBatches ? "badge verified" : "badge pending";
+    renderSnapshotEvidence();
+    setSnapshotStatus(hasBatches
+        ? "Select a completed batch and review its public evidence."
+        : "Complete and verify all four route stages before generating a snapshot.",
+        hasBatches ? "success" : "pending");
+}
+
+async function loadSnapshotCandidates() {
+    if (!session) return;
+    snapshotBatchCount.textContent = "Loading batches";
+    snapshotBatchCount.className = "badge pending";
+    generateSnapshotButton.disabled = true;
+    try {
+        const response = await fetch("/api/snapshot/eligible-batches", {
+            headers: { Authorization: `Bearer ${session.token}` }
+        });
+        const result = await response.json();
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        renderSnapshotBatches(result.batches || []);
+    } catch (error) {
+        renderSnapshotBatches([]);
+        setSnapshotStatus(error.message, "error");
+    }
+}
+
+function renderSnapshotPreview(result) {
+    snapshotId.textContent = result.snapshotId;
+    snapshotPublicRoot.textContent = result.publicRoot;
+    snapshotPrivateHash.textContent = result.finalPrivateBlockHash;
+    snapshotFieldCount.textContent =
+        `${result.publicFieldCount} fields · ${result.selectedEvidenceCount} evidence CID(s)`;
+    snapshotManifestJson.textContent = JSON.stringify(result.manifest, null, 2);
+    snapshotExcludedFields.replaceChildren();
+    for (const field of result.excludedFields || []) {
+        const item = document.createElement("li");
+        item.textContent = field;
+        snapshotExcludedFields.append(item);
+    }
+    snapshotPreview.hidden = false;
+}
+
+async function generateSnapshotPreview(event) {
+    event.preventDefault();
+    if (!session || !snapshotBatchSelect.value) return;
+    const selectedEvidence = [...snapshotEvidenceList.querySelectorAll(
+        'input[name="selectedEvidence"]:checked'
+    )].map((input) => input.value);
+
+    generateSnapshotButton.disabled = true;
+    snapshotPreview.hidden = true;
+    setSnapshotStatus("Generating a private, non-published preview...", "pending");
+    try {
+        const response = await fetch("/api/snapshot/preview", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                Authorization: `Bearer ${session.token}`
+            },
+            body: new URLSearchParams({
+                batchId: snapshotBatchSelect.value,
+                selectedEvidence: selectedEvidence.join(",")
+            }).toString()
+        });
+        const result = await response.json();
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        renderSnapshotPreview(result);
+        setSnapshotStatus("Snapshot preview generated locally. Nothing was published.", "success");
+    } catch (error) {
+        setSnapshotStatus(error.message, "error");
+    } finally {
+        generateSnapshotButton.disabled = snapshotBatches.length === 0;
+    }
+}
+
 async function loadDashboard() {
-    await Promise.all([loadWorkflow(), loadChains(), loadConfirmationPolicy()]);
+    await Promise.all([
+        loadWorkflow(),
+        loadChains(),
+        loadConfirmationPolicy(),
+        loadSnapshotCandidates()
+    ]);
 }
 
 window.addEventListener("resize", () => {
@@ -707,4 +870,6 @@ refreshButton.addEventListener("click", loadDashboard);
 loginForm.addEventListener("submit", login);
 logoutButton.addEventListener("click", logout);
 confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
+snapshotBatchSelect.addEventListener("change", renderSnapshotEvidence);
+snapshotPreviewForm.addEventListener("submit", generateSnapshotPreview);
 restoreSession();
