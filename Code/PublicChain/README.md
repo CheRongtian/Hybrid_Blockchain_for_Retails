@@ -104,25 +104,17 @@ duplicate-last Public Merkle Tree rule.
 
 ## Run the integrated local flow
 
-Terminal 1 starts the local EVM and remains open:
+After installing dependencies, start the customer-facing service from the
+project root:
 
 ```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
-npm run node
+./start_customer_server.sh
 ```
 
-Terminal 2 deploys the gateway once after each fresh EVM start:
-
-```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
-npm run deploy:local
-```
-
-Then start the independent publication and customer service in Terminal 2:
-
-```bash
-npm run consumer
-```
+The script checks port 8545, starts a Hardhat node in the background when
+needed, deploys SnapshotGateway after a fresh node start, and then starts the
+independent customer/publication service. If a Hardhat node is already
+running, it is reused without another deployment.
 
 The customer page is available at:
 
@@ -130,7 +122,7 @@ The customer page is available at:
 http://127.0.0.1:8082/
 ```
 
-Keep the existing C++ control server on port 8081. Log in as the administrator,
+Keep the C++ control server on port 8081 using `./start_control_server.sh`. Log in as the administrator,
 generate a snapshot preview for a completed batch, and select **Publish to
 Local Public Chain**. A successful response includes the EVM block number. The
 customer page remains an independent service at `http://127.0.0.1:8082/` and is

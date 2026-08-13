@@ -66,6 +66,9 @@ Blockchain Structure/
 │   ├── SNsample.sol                 # Early snapshot contract sample
 │   └── QRCodeExample.html           # Historical QR sample
 ├── server_concurrency_test.py       # Allocator benchmark
+├── start_user_server.sh             # User submission service :8080
+├── start_control_server.sh          # Administrator control service :8081
+├── start_customer_server.sh         # Customer trace service :8082
 └── README.md
 ```
 
@@ -171,58 +174,41 @@ cmake -S . -B build
 cmake --build build
 ```
 
-## Run the private-chain demo
+## Run the three business services
 
-Start the two servers from `Code/build` in separate terminals:
+After the one-time CMake build and PublicChain npm setup, run these three
+scripts from the project root. Each script owns one business-facing service:
 
 ```bash
-./Server/control_server
+./start_user_server.sh
 ```
 
 ```bash
-./Server/user_server
+./start_control_server.sh
 ```
 
-Open:
+```bash
+./start_customer_server.sh
+```
+
+The pages are:
 
 ```text
-User page:    http://127.0.0.1:8080/
-Control page: http://127.0.0.1:8081/
+User submission page: http://127.0.0.1:8080/
+Control page:         http://127.0.0.1:8081/
+Customer trace page:  http://127.0.0.1:8082/
 ```
 
-The IPFS daemon remains an external local service and must already be running
-when attachments are submitted.
+The user and control scripts ensure that the Homebrew Kubo service is running
+on IPFS API port 5002. The customer script starts a local Hardhat node on port
+8545 in the background when no process is listening, deploys SnapshotGateway
+after that fresh start, and then starts the customer service. If Hardhat is
+already running, the customer script reuses its current deployment.
 
-## Run the local public-chain and customer flow
-
-Install and compile the PublicChain module once as documented in its README.
-Then use two additional terminals.
-
-Terminal 1 keeps the local EVM running:
-
-```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
-npm run node
-```
-
-After each fresh EVM start, deploy the gateway once from another terminal:
-
-```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
-npm run deploy:local
-```
-
-The same terminal can then remain open as the publication and customer server:
-
-```bash
-npm run consumer
-```
-
-Open:
-
-```text
-Customer page: http://127.0.0.1:8082/
-```
+The scripts remain independent. There is no combined start command. Hardhat
+is local in-memory state, so a newly started node requires a new deployment;
+the private SQLite database is unaffected. IPFS runs as a Homebrew background
+service and does not require an additional terminal.
 
 In the administrator control page, generate a completed-batch snapshot and
 select **Publish to Local Public Chain**. The control server forwards the

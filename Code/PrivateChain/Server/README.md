@@ -35,16 +35,14 @@ cmake --build build
 
 ## Run
 
-Start each server in its own terminal:
+From the project root, start each business-facing service independently:
 
 ```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
-./Server/control_server
+./start_user_server.sh
 ```
 
 ```bash
-cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
-./Server/user_server
+./start_control_server.sh
 ```
 
 Open:
@@ -52,6 +50,17 @@ Open:
 ```
 User page:    http://127.0.0.1:8080/
 Control page: http://127.0.0.1:8081/
+```
+
+The root scripts locate the binaries under `Code/build/Server` and ensure the
+Homebrew Kubo service is running on IPFS API port 5002. They do not start the
+Hardhat node or the customer trace service. Direct binary execution remains
+available for low-level development:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
+./Server/control_server
+./Server/user_server
 ```
 
 The default database path is:
