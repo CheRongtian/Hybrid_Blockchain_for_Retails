@@ -165,6 +165,46 @@ The current local Kubo API configuration expects:
 http://127.0.0.1:5002
 ```
 
+## Local services and ports
+
+| Service | Address | Started by |
+| --- | --- | --- |
+| Participant submission page | `http://127.0.0.1:8080/` | `start_user_server.sh` |
+| Administrator control page | `http://127.0.0.1:8081/` | `start_control_server.sh` |
+| Customer trace page and publication API | `http://127.0.0.1:8082/` | `start_customer_server.sh` |
+| Hardhat JSON-RPC node | `http://127.0.0.1:8545` | `start_customer_server.sh` |
+| Kubo IPFS API | `http://127.0.0.1:5002` | Homebrew service |
+
+Kubo is one background service shared by the participant and administrator
+servers. It does not need a dedicated terminal after it has been configured.
+The three project scripts remain separate because they represent three
+different application roles. A port error usually means that the corresponding
+service is already running; close the old process or reuse the existing page
+instead of starting a second copy.
+
+### One-time Kubo setup on macOS
+
+```bash
+brew install ipfs
+ipfs init
+ipfs config Addresses.API /ip4/127.0.0.1/tcp/5002
+brew services start kubo
+```
+
+If Homebrew reports a `launchctl bootstrap ... exit 5` error, inspect the
+service state before changing anything:
+
+```bash
+brew services list
+ps aux | rg '[i]pfs daemon'
+lsof -nP -iTCP:5002 -sTCP:LISTEN
+```
+
+An already-running Kubo daemon can be left in place. If the Homebrew service
+entry is stale, restart that one service with `brew services restart kubo`.
+The application expects the API on port 5002; changing the Kubo API port
+requires updating `IPFS_API_URL` for the private-chain server as well.
+
 ## Build
 
 Configure from the central `Code` directory. Reconfigure after pulling the

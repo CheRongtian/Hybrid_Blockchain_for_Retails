@@ -100,6 +100,9 @@ Control page: http://127.0.0.1:8081/
 The source directories moved under `PrivateChain`, while the output paths stay
 under `Code/build/Server` and `Code/build/MerkleTree`.
 
+The root launch scripts also check the shared Kubo service. They do not create
+a second IPFS daemon for each server.
+
 ## Persistence and IPFS
 
 The default SQLite database is:
@@ -117,7 +120,20 @@ The local Kubo API is expected at:
 http://127.0.0.1:5002
 ```
 
-The IPFS daemon is an external local service and must be started separately.
+Kubo is an external local background service. Configure it once, then the
+participant and administrator launch scripts reuse it:
+
+```bash
+brew install ipfs
+ipfs init
+ipfs config Addresses.API /ip4/127.0.0.1/tcp/5002
+brew services start kubo
+```
+
+If `brew services start kubo` reports a `launchctl bootstrap` error, check
+`brew services list` and `lsof -nP -iTCP:5002 -sTCP:LISTEN`. An existing Kubo
+daemon can be reused; a stale Homebrew entry can be repaired with
+`brew services restart kubo`.
 
 ## Identity confirmation
 

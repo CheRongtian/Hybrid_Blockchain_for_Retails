@@ -63,6 +63,16 @@ cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/build"
 ./Server/user_server
 ```
 
+The local application ports are:
+
+```text
+8080  participant submission page
+8081  administrator control page
+8082  customer trace page and PublicChain publication API
+8545  local Hardhat JSON-RPC node
+5002  local Kubo IPFS API
+```
+
 The default database path is:
 
 ```
@@ -116,6 +126,19 @@ sequence that starts with Supplier and ends with Supermarket. It may contain
 repeated Logistics and Warehouse nodes, or connect Supplier directly to
 Supermarket. The server accepts a new block only when the authenticated role is
 the next node on that batch's saved route.
+
+The Canvas supports the following editing actions:
+
+- drag a route node to set its position;
+- select one node and then another node to add a connection;
+- click a connection and choose **Remove connection**;
+- choose **Auto arrange** to rebuild a compact layout;
+- select an intermediate node and edit its display label; and
+- save only a connected route that starts at Supplier and ends at Supermarket.
+
+The browser reports duplicate connections, invalid endpoints, cycles, and
+disconnected nodes immediately. The server validates the same route rules when
+the route is saved and when a participant submits an event.
 
 Supplier creates the batch master data. The server generates the batch ID from
 the normalized product name and a product-specific four-digit sequence. Later
@@ -181,6 +204,19 @@ ipfs config Addresses.API /ip4/127.0.0.1/tcp/5002
 brew services start kubo
 ```
 
+Kubo is shared by both private-chain servers and does not require another
+terminal. If Homebrew reports `launchctl bootstrap ... exit 5`, inspect the
+service and listener before restarting it:
+
+```bash
+brew services list
+ps aux | rg '[i]pfs daemon'
+lsof -nP -iTCP:5002 -sTCP:LISTEN
+```
+
+If a Kubo daemon is already listening on port 5002, reuse it. If only the
+Homebrew service registration is stale, run `brew services restart kubo`.
+
 After that setup, the control server only needs:
 
 ```bash
@@ -203,8 +239,8 @@ Authorization: Bearer <token>
 The file body is held by IPFS. SQLite stores the CID and file metadata. The
 current local demo accepts files up to 30 MB per upload.
 
-The IPFS daemon must be started separately. This project does not run or test
-an external IPFS service automatically.
+The root user and control launch scripts check the Kubo service before starting
+their C++ server. This project does not implement the IPFS protocol.
 
 ## API
 

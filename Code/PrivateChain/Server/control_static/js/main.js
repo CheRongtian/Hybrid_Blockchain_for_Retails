@@ -15,8 +15,13 @@ const workflowBatchSelect = document.querySelector("#workflow-batch-select");
 const workflowNodeType = document.querySelector("#workflow-node-type");
 const workflowAddNode = document.querySelector("#workflow-add-node");
 const workflowDeleteNode = document.querySelector("#workflow-delete-node");
+const workflowDeleteEdge = document.querySelector("#workflow-delete-edge");
+const workflowAutoLayout = document.querySelector("#workflow-auto-layout");
 const workflowResetRoute = document.querySelector("#workflow-reset-route");
 const workflowSave = document.querySelector("#workflow-save");
+const workflowNodeEditor = document.querySelector("#workflow-node-editor");
+const workflowNodeLabel = document.querySelector("#workflow-node-label");
+const workflowApplyNodeLabel = document.querySelector("#workflow-apply-node-label");
 const confirmationPolicyForm = document.querySelector("#confirmation-policy-form");
 const rolePolicyList = document.querySelector("#role-policy-list");
 const policyRoleCount = document.querySelector("#policy-role-count");
@@ -48,6 +53,8 @@ let session = null;
 let workflowData = null;
 let workflowBatchId = "";
 let workflowSelectedNodeId = "";
+let workflowSelectedEdgeIndex = -1;
+let workflowPointerState = null;
 let snapshotBatches = [];
 let publicationCandidate = null;
 
@@ -82,6 +89,8 @@ function clearSession() {
     workflowData = null;
     workflowBatchId = "";
     workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
     workflowBatchSelect.value = "";
     workflowCanvas.replaceChildren();
     snapshotBatches = [];
@@ -652,22 +661,213 @@ function normalizeWorkflow(workflow) {
     };
 }
 
-function workflowPositions(workflow, width, height) {
+function workflowValidation(workflow) {
+    const nodes = workflow.nodes || [];
+    const edges = workflow.edges || [];
+    if (nodes.length < 2) {
+        return { valid: false, error: "A route needs at least a Supplier and a Supermarket." };
+    }
+
+    const byId = new Map();
+    let supplier = null;
+    let supermarket = null;
+    for (const node of nodes) {
+        if (!node.id || !node.label || byId.has(node.id)) {
+            return { valid: false, error: "Route node IDs and labels must be unique and non-empty." };
+        }
+        if (!["supplier", "logistics", "warehouse", "supermarket"].includes(node.role)) {
+            return { valid: false, error: "The route contains an unsupported node role." };
+        }
+        if (node.role === "supplier") supplier = supplier ? null : node;
+        if (node.role === "supermarket") supermarket = supermarket ? null : node;
+        byId.set(node.id, node);
+    }
+    if (!supplier || !supermarket ||
+        nodes.filter((node) => node.role === "supplier").length !== 1 ||
+        nodes.filter((node) => node.role === "supermarket").length !== 1) {
+        return { valid: false, error: "A route must have exactly one Supplier and one Supermarket." };
+    }
+
+    const incoming = new Map();
+    const outgoing = new Map();
+    const edgeKeys = new Set();
+    for (const edge of edges) {
+        const key = `${edge.from}\u0000${edge.to}`;
+        if (!byId.has(edge.from) || !byId.has(edge.to) || edge.from === edge.to) {
+            return { valid: false, error: "Every connection must join two different route nodes." };
+        }
+        if (edgeKeys.has(key)) {
+            return { valid: false, error: "Duplicate connections are not allowed." };
+        }
+        edgeKeys.add(key);
+        incoming.set(edge.to, (incoming.get(edge.to) || 0) + 1);
+        outgoing.set(edge.from, (outgoing.get(edge.from) || 0) + 1);
+    }
+    if ((incoming.get(supplier.id) || 0) !== 0 ||
+        (outgoing.get(supermarket.id) || 0) !== 0) {
+        return { valid: false, error: "Supplier must start the route and Supermarket must end it." };
+    }
+
+    const nextById = new Map();
+    for (const edge of edges) {
+        if (nextById.has(edge.from)) {
+            return { valid: false, error: "Each route node can have only one outgoing connection." };
+        }
+        nextById.set(edge.from, edge.to);
+    }
+    const visited = new Set();
+    let current = supplier.id;
+    while (true) {
+        if (visited.has(current)) {
+            return { valid: false, error: "A route cannot contain a cycle." };
+        }
+        visited.add(current);
+        if (current === supermarket.id) break;
+        const next = nextById.get(current);
+        if (!next) {
+            return { valid: false, error: "Every route node must lead to the Supermarket." };
+        }
+        current = next;
+    }
+    if (visited.size !== nodes.length) {
+        return { valid: false, error: "Every route node must be connected to the same route." };
+    }
+    return { valid: true, error: "" };
+}
+
+function workflowCanvasLayout(workflow, width, force = false) {
     const ordered = routeOrder(workflow);
     const nodeWidth = 164;
     const nodeHeight = 96;
     const margin = 28;
-    const available = width - margin * 2 - nodeWidth * ordered.length;
-    const gap = ordered.length > 1
-        ? Math.max(18, available / (ordered.length - 1))
-        : 0;
-    return ordered.map((node, index) => ({
-        node,
-        x: margin + index * (nodeWidth + gap),
-        y: (height - nodeHeight) / 2,
-        width: nodeWidth,
-        height: nodeHeight
-    }));
+    const columnGap = 34;
+    const rowGap = 42;
+    const columns = Math.max(
+        1,
+        Math.floor((width - margin * 2 + columnGap) / (nodeWidth + columnGap))
+    );
+    const hasSavedLayout = ordered.length > 0 && ordered.every((node) =>
+        Number.isFinite(node.x) && Number.isFinite(node.y) &&
+        (node.x !== 0 || node.y !== 0)
+    );
+    const savedLayoutFits = hasSavedLayout && ordered.every((node) =>
+        node.x >= 0 && node.y >= 0 &&
+        node.x + nodeWidth <= width && node.y + nodeHeight <= 600
+    );
+
+    if (force || !savedLayoutFits) {
+        ordered.forEach((node, index) => {
+            const column = index % columns;
+            const row = Math.floor(index / columns);
+            node.x = margin + column * (nodeWidth + columnGap);
+            node.y = margin + row * (nodeHeight + rowGap);
+            node.stepIndex = index;
+        });
+    }
+
+    const requiredHeight = ordered.length === 0
+        ? 250
+        : Math.max(...ordered.map((node) => node.y + nodeHeight + margin), 250);
+    return {
+        positions: ordered.map((node) => ({
+            node,
+            x: node.x,
+            y: node.y,
+            width: nodeWidth,
+            height: nodeHeight
+        })),
+        height: requiredHeight
+    };
+}
+
+function workflowPoint(event) {
+    const rect = workflowCanvas.getBoundingClientRect();
+    const scale = window.devicePixelRatio || 1;
+    return {
+        x: (event.clientX - rect.left) * (workflowCanvas.width / scale) / rect.width,
+        y: (event.clientY - rect.top) * (workflowCanvas.height / scale) / rect.height
+    };
+}
+
+function workflowNodeAt(point) {
+    return workflowCanvas._workflowPositions?.find((position) =>
+        point.x >= position.x && point.x <= position.x + position.width &&
+        point.y >= position.y && point.y <= position.y + position.height
+    ) || null;
+}
+
+function distanceToSegment(point, start, end) {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) {
+        return Math.hypot(point.x - start.x, point.y - start.y);
+    }
+    const ratio = Math.max(0, Math.min(1,
+        ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)
+    ));
+    return Math.hypot(
+        point.x - (start.x + ratio * dx),
+        point.y - (start.y + ratio * dy)
+    );
+}
+
+function workflowEdgeAt(point) {
+    if (!workflowData || !workflowCanvas._workflowPositions) return -1;
+    const positionById = new Map(
+        workflowCanvas._workflowPositions.map((position) => [position.node.id, position])
+    );
+    let closest = -1;
+    let closestDistance = 10;
+    workflowData.edges.forEach((edge, index) => {
+        const from = positionById.get(edge.from);
+        const to = positionById.get(edge.to);
+        if (!from || !to) return;
+        const distance = distanceToSegment(
+            point,
+            { x: from.x + from.width, y: from.y + from.height / 2 },
+            { x: to.x, y: to.y + to.height / 2 }
+        );
+        if (distance < closestDistance) {
+            closest = index;
+            closestDistance = distance;
+        }
+    });
+    return closest;
+}
+
+function workflowNodeForSelection() {
+    return workflowData?.nodes.find((node) => node.id === workflowSelectedNodeId) || null;
+}
+
+function updateWorkflowEditor() {
+    const selected = workflowNodeForSelection();
+    workflowNodeEditor.hidden = !selected;
+    if (selected) workflowNodeLabel.value = selected.label;
+}
+
+function workflowConnectionError(fromId, toId) {
+    const from = workflowData.nodes.find((node) => node.id === fromId);
+    const to = workflowData.nodes.find((node) => node.id === toId);
+    if (!from || !to) return "The selected nodes are unavailable.";
+    if (from.role === "supermarket") return "Supermarket must remain the final node.";
+    if (to.role === "supplier") return "Supplier must remain the first node.";
+    if (fromId === toId) return "A node cannot connect to itself.";
+    if (workflowData.edges.some((edge) => edge.from === fromId && edge.to === toId)) {
+        return "That connection already exists.";
+    }
+    if (workflowData.edges.some((edge) => edge.from === fromId)) {
+        return "Each route node can have only one outgoing connection.";
+    }
+    if (workflowData.edges.some((edge) => edge.to === toId)) {
+        return "Each route node can have only one incoming connection.";
+    }
+    const candidate = {
+        ...workflowData,
+        edges: [...workflowData.edges, { from: fromId, to: toId }]
+    };
+    const validation = workflowValidation(candidate);
+    if (!validation.valid && validation.error.includes("cycle")) return validation.error;
+    return "";
 }
 
 function drawWorkflowNode(context, position, selected) {
@@ -695,10 +895,11 @@ function drawWorkflowNode(context, position, selected) {
 }
 
 function renderWorkflow(workflow) {
-    workflowData = normalizeWorkflow(workflow);
+    workflowData = workflow === workflowData ? workflowData : normalizeWorkflow(workflow);
     const parentWidth = workflowCanvas.parentElement.clientWidth || 900;
-    const width = Math.max(parentWidth, 760);
-    const height = 250;
+    const width = Math.max(parentWidth, 640);
+    const layout = workflowCanvasLayout(workflowData, width);
+    const height = Math.max(250, layout.height);
     const scale = window.devicePixelRatio || 1;
     workflowCanvas.width = width * scale;
     workflowCanvas.height = height * scale;
@@ -707,16 +908,15 @@ function renderWorkflow(workflow) {
     const context = workflowCanvas.getContext("2d");
     context.setTransform(scale, 0, 0, scale, 0, 0);
     context.clearRect(0, 0, width, height);
-    const positions = workflowPositions(workflowData, width, height);
+    const positions = layout.positions;
     workflowCanvas._workflowPositions = positions;
     const positionById = new Map(
         positions.map((position) => [position.node.id, position])
     );
 
     context.lineWidth = 3;
-    context.strokeStyle = "#55d6b0";
     context.fillStyle = "#55d6b0";
-    for (const edge of workflowData.edges) {
+    for (const [index, edge] of workflowData.edges.entries()) {
         const from = positionById.get(edge.from);
         const to = positionById.get(edge.to);
         if (!from || !to) continue;
@@ -727,6 +927,8 @@ function renderWorkflow(workflow) {
         context.beginPath();
         context.moveTo(fromX, fromY);
         context.lineTo(toX - 10, toY);
+        context.strokeStyle = index === workflowSelectedEdgeIndex ? "#9acbff" : "#55d6b0";
+        context.lineWidth = index === workflowSelectedEdgeIndex ? 5 : 3;
         context.stroke();
         drawArrow(context, toX, toY, toX - 10, toY);
     }
@@ -738,22 +940,27 @@ function renderWorkflow(workflow) {
         );
     }
 
-    const ready = workflowData.nodes.length >= 2;
+    const validation = workflowValidation(workflowData);
     workflowRouteBadge.textContent = workflowData.routeId || "Route unavailable";
-    workflowRouteBadge.className = "badge " + (ready ? "verified" : "pending");
+    workflowRouteBadge.className = "badge " + (validation.valid ? "verified" : "pending");
     workflowDeleteNode.disabled = !workflowSelectedNodeId;
-    workflowStatus.textContent = workflowData.nodes.length + " route node(s), " +
-        workflowData.edges.length + " connection(s). Select a node, then another node to connect them.";
-    workflowStatus.className = "status " + (ready ? "success" : "pending");
+    workflowDeleteEdge.disabled = workflowSelectedEdgeIndex < 0;
+    workflowSave.disabled = !validation.valid;
+    updateWorkflowEditor();
+    workflowStatus.textContent = validation.valid
+        ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes, click a line to remove it, or select two nodes to connect them.`
+        : `Route error: ${validation.error}`;
+    workflowStatus.className = "status " + (validation.valid ? "success" : "error");
 }
 
-function recalculateWorkflowLayout() {
+function recalculateWorkflowLayout(force = true) {
     if (!workflowData) return;
+    const width = Math.max(workflowCanvas.parentElement.clientWidth || 900, 640);
+    const layout = workflowCanvasLayout(workflowData, width, force);
     for (const [index, node] of routeOrder(workflowData).entries()) {
         node.stepIndex = index;
-        node.x = 28 + index * 180;
-        node.y = 78;
     }
+    return layout;
 }
 
 function workflowNodePayload(node) {
@@ -801,7 +1008,14 @@ async function loadWorkflowScopes() {
 
 async function saveWorkflow() {
     if (!session || !workflowData) return;
-    recalculateWorkflowLayout();
+    const validation = workflowValidation(workflowData);
+    if (!validation.valid) {
+        workflowStatus.textContent = `Route error: ${validation.error}`;
+        workflowStatus.className = "status error";
+        workflowSave.disabled = true;
+        return;
+    }
+    recalculateWorkflowLayout(false);
     workflowSave.disabled = true;
     workflowStatus.textContent = "Saving route...";
     workflowStatus.className = "status pending";
@@ -836,7 +1050,7 @@ async function saveWorkflow() {
         workflowStatus.textContent = error.message;
         workflowStatus.className = "status error";
     } finally {
-        workflowSave.disabled = false;
+        workflowSave.disabled = !workflowValidation(workflowData).valid;
     }
 }
 
@@ -1103,37 +1317,134 @@ loginForm.addEventListener("submit", login);
 logoutButton.addEventListener("click", logout);
 workflowBatchSelect.addEventListener("change", () => {
     workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
     loadWorkflow(workflowBatchSelect.value);
 });
-workflowCanvas.addEventListener("click", (event) => {
+workflowCanvas.addEventListener("pointerdown", (event) => {
     if (!workflowData || !workflowCanvas._workflowPositions) return;
-    const rect = workflowCanvas.getBoundingClientRect();
-    const scale = window.devicePixelRatio || 1;
-    const x = (event.clientX - rect.left) *
-        (workflowCanvas.width / scale) / rect.width;
-    const y = (event.clientY - rect.top) *
-        (workflowCanvas.height / scale) / rect.height;
-    const position = workflowCanvas._workflowPositions.find((item) =>
-        x >= item.x && x <= item.x + item.width &&
-        y >= item.y && y <= item.y + item.height
-    );
-    if (!position) return;
-    if (workflowSelectedNodeId === position.node.id) {
-        workflowSelectedNodeId = "";
-    } else if (workflowSelectedNodeId) {
-        const duplicate = workflowData.edges.some((edge) =>
-            edge.from === workflowSelectedNodeId && edge.to === position.node.id
-        );
-        if (!duplicate) {
+    const point = workflowPoint(event);
+    const position = workflowNodeAt(point);
+    workflowSelectedEdgeIndex = -1;
+
+    if (position) {
+        if (workflowSelectedNodeId && workflowSelectedNodeId !== position.node.id) {
+            const error = workflowConnectionError(
+                workflowSelectedNodeId,
+                position.node.id
+            );
+            if (error) {
+                renderWorkflow(workflowData);
+                workflowStatus.textContent = `Route error: ${error}`;
+                workflowStatus.className = "status error";
+                return;
+            }
             workflowData.edges.push({
                 from: workflowSelectedNodeId,
                 to: position.node.id
             });
+            workflowSelectedNodeId = position.node.id;
+            workflowPointerState = null;
+            renderWorkflow(workflowData);
+            return;
         }
+
         workflowSelectedNodeId = position.node.id;
-    } else {
-        workflowSelectedNodeId = position.node.id;
+        workflowPointerState = {
+            pointerId: event.pointerId,
+            nodeId: position.node.id,
+            startX: point.x,
+            startY: point.y,
+            offsetX: point.x - position.x,
+            offsetY: point.y - position.y,
+            dragging: false
+        };
+        workflowCanvas.setPointerCapture(event.pointerId);
+        workflowCanvas.style.cursor = "grabbing";
+        renderWorkflow(workflowData);
+        return;
     }
+
+    const edgeIndex = workflowEdgeAt(point);
+    if (edgeIndex >= 0) {
+        workflowSelectedNodeId = "";
+        workflowSelectedEdgeIndex = edgeIndex;
+        renderWorkflow(workflowData);
+        return;
+    }
+
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    renderWorkflow(workflowData);
+});
+workflowCanvas.addEventListener("pointermove", (event) => {
+    if (!workflowData || !workflowPointerState ||
+        workflowPointerState.pointerId !== event.pointerId) return;
+
+    const point = workflowPoint(event);
+    const moved = Math.hypot(
+        point.x - workflowPointerState.startX,
+        point.y - workflowPointerState.startY
+    );
+    if (!workflowPointerState.dragging && moved < 4) return;
+    workflowPointerState.dragging = true;
+
+    const node = workflowData.nodes.find((item) =>
+        item.id === workflowPointerState.nodeId
+    );
+    if (!node) return;
+    const layout = workflowCanvas._workflowPositions?.[0];
+    const nodeWidth = layout?.width || 164;
+    const nodeHeight = layout?.height || 96;
+    const scale = window.devicePixelRatio || 1;
+    const canvasWidth = workflowCanvas.width / scale;
+    const canvasHeight = workflowCanvas.height / scale;
+    node.x = Math.max(
+        12,
+        Math.min(Math.max(12, canvasWidth - nodeWidth - 12), point.x - workflowPointerState.offsetX)
+    );
+    node.y = Math.max(
+        12,
+        Math.min(Math.max(12, canvasHeight - nodeHeight - 12), point.y - workflowPointerState.offsetY)
+    );
+    renderWorkflow(workflowData);
+    event.preventDefault();
+});
+function finishWorkflowPointer(event) {
+    if (!workflowPointerState || workflowPointerState.pointerId !== event.pointerId) return;
+    if (workflowCanvas.hasPointerCapture(event.pointerId)) {
+        workflowCanvas.releasePointerCapture(event.pointerId);
+    }
+    workflowPointerState = null;
+    workflowCanvas.style.cursor = "crosshair";
+    renderWorkflow(workflowData);
+}
+workflowCanvas.addEventListener("pointerup", finishWorkflowPointer);
+workflowCanvas.addEventListener("pointercancel", finishWorkflowPointer);
+workflowDeleteEdge.addEventListener("click", () => {
+    if (!workflowData || workflowSelectedEdgeIndex < 0) return;
+    workflowData.edges.splice(workflowSelectedEdgeIndex, 1);
+    workflowSelectedEdgeIndex = -1;
+    renderWorkflow(workflowData);
+});
+workflowAutoLayout.addEventListener("click", () => {
+    if (!workflowData) return;
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
+    recalculateWorkflowLayout(true);
+    renderWorkflow(workflowData);
+});
+workflowApplyNodeLabel.addEventListener("click", () => {
+    const selected = workflowNodeForSelection();
+    const label = workflowNodeLabel.value.trim();
+    if (!selected) return;
+    if (!label) {
+        workflowStatus.textContent = "Route error: the node label cannot be empty.";
+        workflowStatus.className = "status error";
+        return;
+    }
+    selected.label = label;
     renderWorkflow(workflowData);
 });
 workflowAddNode.addEventListener("click", () => {
@@ -1157,6 +1468,7 @@ workflowAddNode.addEventListener("click", () => {
         stepIndex: -1
     });
     workflowSelectedNodeId = nodeId;
+    workflowSelectedEdgeIndex = -1;
     recalculateWorkflowLayout();
     renderWorkflow(workflowData);
 });
@@ -1177,11 +1489,15 @@ workflowDeleteNode.addEventListener("click", () => {
         edge.from !== workflowSelectedNodeId && edge.to !== workflowSelectedNodeId
     );
     workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
     recalculateWorkflowLayout();
     renderWorkflow(workflowData);
 });
 workflowResetRoute.addEventListener("click", () => {
     workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
     loadWorkflow(workflowBatchSelect.value);
 });
 workflowSave.addEventListener("click", saveWorkflow);

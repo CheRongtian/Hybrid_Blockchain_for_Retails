@@ -69,15 +69,28 @@
                     <button id="workflow-delete-node" class="workflow-secondary" type="button" disabled>
                         Delete selected
                     </button>
+                    <button id="workflow-delete-edge" class="workflow-secondary" type="button" disabled>
+                        Remove connection
+                    </button>
+                    <button id="workflow-auto-layout" class="workflow-secondary" type="button">
+                        Auto arrange
+                    </button>
                     <button id="workflow-reset-route" class="workflow-secondary" type="button">
                         Reload route
                     </button>
                     <button id="workflow-save" type="button">Save route</button>
                 </div>
                 <p class="workflow-help">
-                    Select one node, then select another node to connect them. The route must start at Supplier and end at Supermarket.
+                    Select one node, then another node to connect them. Click a connection to select it. Drag nodes to arrange the route.
                 </p>
                 <canvas id="workflow-canvas" aria-label="Editable supply chain route"></canvas>
+                <div id="workflow-node-editor" class="workflow-node-editor" hidden>
+                    <label>
+                        Selected node label
+                        <input id="workflow-node-label" type="text" maxlength="80" autocomplete="off">
+                    </label>
+                    <button id="workflow-apply-node-label" type="button">Apply label</button>
+                </div>
                 <p id="workflow-status" class="status" aria-live="polite">Loading route...</p>
             </section>
 
