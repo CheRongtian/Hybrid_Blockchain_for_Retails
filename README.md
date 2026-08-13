@@ -4,12 +4,12 @@ This repository is a C++17 supply-chain traceability prototype organized into
 three architectural modules:
 
 ```text
-Private Chain -> Public Snapshot -> Public Chain -> Consumer QR Verification
+Private Chain -> Public Snapshot -> Public Chain -> Customer Verification
 ```
 
-The private-chain module is runnable. Consumer-safe snapshot generation and a
-local EVM publication prototype are implemented independently. Connecting the
-control server to the local relayer is the next integration stage.
+The private-chain module, consumer-safe snapshot gateway, local EVM
+publication service, and customer trace page are connected in one local
+prototype. Each module remains independently owned and documented.
 
 ## Current architecture
 
@@ -28,16 +28,18 @@ PrivateChain
           |
           | approved public fields only
           v
-Snapshot                         preview implemented
+Snapshot
   +-- canonical public manifest
   +-- independent public root
   +-- selected existing evidence CIDs
           |
           v
-PublicChain                      local prototype implemented
+PublicChain
   +-- Hardhat EVM node
   +-- SnapshotGateway contract
-  +-- deploy, publish, and query scripts
+  +-- administrator publication service
+  +-- public Manifest storage and verification
+  +-- customer trace page with published-batch selection
 ```
 
 Private operational records and public consumer data have separate Merkle
@@ -58,7 +60,7 @@ Blockchain Structure/
 │   │   ├── ConMemPool/               # Concurrent allocator
 │   │   └── Database/                 # Local SQLite data
 │   ├── Snapshot/                    # Public snapshot preview module
-│   ├── PublicChain/                 # Local EVM gateway and relayer scripts
+│   ├── PublicChain/                 # EVM gateway, publisher, and customer page
 │   ├── CMakeLists.txt               # Central C++ build entry
 │   ├── PrCsample.sol                # Historical Solidity sample
 │   ├── SNsample.sol                 # Early snapshot contract sample
@@ -128,13 +130,15 @@ verifiable tree for each event.
 - local Kubo/IPFS upload integration through returned CIDs;
 - administrator chain and Merkle Tree visualization;
 - completed-batch public Manifest, Public Root, and Gateway Payload;
-- local Hardhat EVM gateway, deployment, publication, and query scripts;
+- administrator-triggered publication to the local Hardhat EVM gateway;
+- independently revalidated publication candidates and public Manifests;
+- customer Batch ID search with public route and chain verification details;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
 Handwritten-signature capture and face confirmation are policy placeholders.
-Inspection Agency, control-server relaying, durable publication records,
-public-testnet deployment, and the consumer QR page are pending.
+Inspection Agency, production key custody, durable relayer jobs, public-testnet
+ deployment and QR-code entry are pending.
 
 ## Requirements
 
@@ -189,6 +193,47 @@ Control page: http://127.0.0.1:8081/
 The IPFS daemon remains an external local service and must already be running
 when attachments are submitted.
 
+## Run the local public-chain and customer flow
+
+Install and compile the PublicChain module once as documented in its README.
+Then use two additional terminals.
+
+Terminal 1 keeps the local EVM running:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
+npm run node
+```
+
+After each fresh EVM start, deploy the gateway once from another terminal:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
+npm run deploy:local
+```
+
+The same terminal can then remain open as the publication and customer server:
+
+```bash
+npm run consumer
+```
+
+Open:
+
+```text
+Customer page: http://127.0.0.1:8082/
+```
+
+In the administrator control page, generate a completed-batch snapshot and
+select **Publish to Local Public Chain**. The control server forwards the
+verified publication candidate to the independent PublicChain service. The
+control page reports the publication block number. The independent customer
+page then loads the published product-batch selection list. Open it separately
+at `http://127.0.0.1:8082/` when customer-facing verification is needed. Clicking
+a batch loads its active contract record, matching public Manifest, and verifies
+the identifiers, Manifest hash, Public Merkle Root, and source block anchor.
+The customer does not type a Batch ID. QR-code behavior is deferred.
+
 ## Demonstration accounts
 
 | Role | Username | Password |
@@ -223,6 +268,8 @@ in `Code/Snapshot`, and the public gateway is implemented in
 `Code/PublicChain`; neither historical sample is part of the runtime.
 
 The production gateway contract now lives only at
-`Code/PublicChain/contracts/SnapshotGateway.sol`. The next architectural
-milestone is connecting the control server to the local relayer, persisting
-transaction status, and then building the consumer query/QR flow.
+`Code/PublicChain/contracts/SnapshotGateway.sol`. The local administrator
+publication and customer query flow is implemented without using either
+historical sample. The next architectural milestones are durable publication
+job storage, production key custody, public-testnet deployment, and QR-code
+entry into the existing customer page.

@@ -7,6 +7,7 @@ using supermarket::snapshot::GatewayContext;
 using supermarket::snapshot::Preview;
 using supermarket::snapshot::build_gateway_payload;
 using supermarket::snapshot::keccak256_hex;
+using supermarket::snapshot::publication_candidate_json;
 
 int main()
 {
@@ -23,6 +24,7 @@ int main()
     preview.manifest_json = "{\"batch\":\"BATCH-0001\"}";
     preview.public_root = std::string(64, 'a');
     preview.final_private_block_hash = std::string(64, 'b');
+    preview.public_fields.push_back({"batch.batch_id", "BATCH-0001"});
 
     GatewayContext context;
     context.source_network = "supermarket-private-local-v1";
@@ -37,6 +39,11 @@ int main()
     assert(payload->source_block_hash == "0x" + std::string(64, 'b'));
     assert(payload->protocol_hash.size() == 66);
     assert(payload->manifest_hash.size() == 66);
+
+    const std::string candidate = publication_candidate_json(preview);
+    assert(candidate.find("\"manifestCanonical\"") != std::string::npos);
+    assert(candidate.find("\"publicFields\"") != std::string::npos);
+    assert(candidate.find("batch.batch_id") != std::string::npos);
 
     std::cout << "Snapshot gateway payload tests passed.\n";
     return 0;

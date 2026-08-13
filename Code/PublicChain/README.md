@@ -1,30 +1,43 @@
-# Public Chain Prototype
+# Public Chain and Customer Trace
 
-This module runs the first local EVM publication loop for approved public
-snapshots. It owns the Solidity gateway, Hardhat network configuration,
-contract deployment, snapshot submission, and on-chain queries.
+This module owns the local EVM gateway, publication boundary, persisted public
+Manifests, and customer-facing trace page. It does not read the private SQLite
+database or apply private disclosure policy.
 
-The Snapshot module remains responsible for disclosure filtering, canonical
-Manifest generation, and the independent Public Merkle Root.
+The Snapshot module supplies one self-contained publication candidate. This
+module independently verifies that candidate before submitting an EVM
+transaction.
 
-## Current flow
+## Runtime flow
 
 ```text
-Code/Snapshot gateway payload
+Administrator :8081
         |
+        | Publish to Local Public Chain
         v
-Local relayer script
+PrivateChain administrator API
         |
+        | internal publication token
         v
-SnapshotGateway.sol on Hardhat EVM
+PublicChain service :8082/api/publish
         |
-        +-- transaction hash and block number
-        +-- current snapshot per batch
-        +-- ordered snapshot history
-        +-- recall and revocation state
+        +-- verify raw IDs and Keccak hashes
+        +-- verify exact canonical Manifest hash
+        +-- rebuild SHA-256 Public Merkle Root
+        +-- submit SnapshotGateway transaction
+        +-- save public Manifest beside chain metadata
+        v
+Customer :8082/
+        |
+        +-- choose a published product batch
+        +-- read active snapshot from SnapshotGateway
+        +-- load matching public Manifest
+        +-- repeat all candidate and chain checks
+        +-- display public product route and evidence CIDs
 ```
 
-The local scripts do not send data to a public testnet or mainnet.
+The customer page cannot access the private database, participant credentials,
+signatures, private Merkle leaves, or excluded attachment metadata.
 
 ## Layout
 
@@ -33,33 +46,38 @@ PublicChain/
 ├── contracts/
 │   ├── SnapshotGateway.sol
 │   └── SnapshotGateway.t.sol
-├── deployments/
-│   └── .gitkeep
+├── consumer/
+│   ├── css/style.css
+│   ├── js/main.js
+│   └── index.html
+├── deployments/                    # Generated local deployment records
+├── public-manifests/               # Generated customer-safe publications
 ├── scripts/
 │   ├── deploy.js
+│   ├── publication.js
 │   ├── publish_snapshot.js
 │   ├── query_snapshot.js
 │   └── runtime.js
 ├── test/
+│   ├── Publication.test.js
 │   └── SnapshotGateway.test.js
-├── .env.example
-├── .gitignore
+├── consumer_server.js
 ├── hardhat.config.js
 ├── package.json
 └── README.md
 ```
 
-`SnapshotGateway.sol` has one source location in this module. The historical
-`Code/PrCsample.sol` and `Code/SNsample.sol` files remain reference examples.
+Generated deployment records and public Manifest files are ignored by Git.
+They remain local runtime state.
 
 ## Apple Silicon environment
 
 The current development machine is an Apple M3 Mac with 18 GB memory. This is
-more than sufficient for one local Hardhat node and the two C++ demo servers.
-Hardhat is CPU-only for this workflow and does not use the Apple GPU.
+more than sufficient for the local Hardhat node, publisher, customer page, and
+two C++ servers. Hardhat is CPU-only for this workflow.
 
-Use an ARM64 build of Node.js 22 LTS. Node.js 25 is outside Hardhat 3's
-supported LTS range and produces a compatibility warning.
+Use an ARM64 build of Node.js 22 LTS. Existing global Hardhat installations are
+unnecessary because the project pins a local version.
 
 With Homebrew:
 
@@ -71,87 +89,105 @@ node --version
 npm --version
 ```
 
-The expected Node version begins with `v22`. Existing global Hardhat installs
-are unnecessary because this module uses the version pinned in `package.json`.
-
-## Install project dependencies
-
-From this directory:
+## Install, compile, and test
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
 npm install
-```
-
-This creates `node_modules` and a package lock. Copy `.env.example` to `.env`
-only when overriding defaults. Generated Hardhat artifacts, cache, deployments,
-`.env`, and dependencies are ignored where appropriate.
-
-## Compile and test
-
-```bash
 npm run compile
 npm test
 ```
 
-The JavaScript integration tests cover publication, permissions, duplicate
-snapshot IDs, nonce replay, input validation, replacement history, recall,
-revocation, and pause behavior. The `.t.sol` file keeps the self-contained
-Solidity test harness beside the contract.
+The test suites cover contract permissions and lifecycle behavior plus
+publication-candidate hashes, canonical Manifest verification, and the
+duplicate-last Public Merkle Tree rule.
 
-## Run the local EVM loop
+## Run the integrated local flow
 
-Use three terminal sessions in `Code/PublicChain`.
-
-Terminal 1 starts the local chain and must remain open:
+Terminal 1 starts the local EVM and remains open:
 
 ```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
 npm run node
 ```
 
-Terminal 2 deploys the contract, enables the source network, grants an optional
-relayer, and writes `deployments/31337.json`:
+Terminal 2 deploys the gateway once after each fresh EVM start:
 
 ```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"
 npm run deploy:local
 ```
 
-Terminal 2 can then publish the example Gateway Payload:
+Then start the independent publication and customer service in Terminal 2:
 
 ```bash
-npm run publish:local
+npm run consumer
 ```
 
-Terminal 3 queries the current snapshot and batch history:
+The customer page is available at:
 
-```bash
-npm run query:local
+```text
+http://127.0.0.1:8082/
 ```
 
-The example payload targets chain ID `31337` and can be published once per
-fresh local-chain deployment. Repeating it correctly triggers duplicate ID or
-nonce protection.
+Keep the existing C++ control server on port 8081. Log in as the administrator,
+generate a snapshot preview for a completed batch, and select **Publish to
+Local Public Chain**. A successful response includes the EVM block number. The
+customer page remains an independent service at `http://127.0.0.1:8082/` and is
+opened separately when needed.
+
+The customer page loads its published-batch selection list from the PublicChain
+service. The customer clicks a product batch, and the page loads that batch's
+public trace. Batch IDs are not typed into the customer page. QR-code behavior
+is outside the current scope.
+
+The low-level `publish:local` and `query:local` commands remain contract smoke
+tools. The integrated customer flow should use the administrator Publish button
+so the exact public Manifest is retained for later verification.
 
 ## Configuration
 
-Optional settings are documented in `.env.example`:
+Copy `.env.example` to `.env` only when overriding defaults.
 
 | Variable | Default purpose |
 | --- | --- |
-| `PUBLIC_CHAIN_RPC_URL` | Local JSON-RPC endpoint |
-| `PUBLIC_CHAIN_ID` | Expected local destination chain |
-| `SOURCE_NETWORK_NAME` | Name hashed into the approved source network ID |
-| `RELAYER_PRIVATE_KEY` | Optional signer key; local unlocked account by default |
-| `SNAPSHOT_PAYLOAD_PATH` | Gateway Payload JSON to publish |
-| `QUERY_BATCH_ID` | Raw batch ID to query |
-| `QUERY_SNAPSHOT_HASH` | Optional exact snapshot hash to query |
+| `PUBLIC_CHAIN_RPC_URL` | `http://127.0.0.1:8545` local JSON-RPC |
+| `PUBLIC_CHAIN_ID` | `31337` expected destination chain |
+| `SOURCE_NETWORK_NAME` | Approved private source-network name |
+| `RELAYER_PRIVATE_KEY` | Optional signer; first local account by default |
+| `CONSUMER_PORT` | `8082` customer and publication service |
+| `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
+| `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
+| `SNAPSHOT_PAYLOAD_PATH` | Low-level Gateway Payload smoke-test input |
+| `QUERY_BATCH_ID` | Low-level query Batch ID |
+| `QUERY_SNAPSHOT_HASH` | Optional exact snapshot hash |
 
-Hardhat automatically exposes funded development accounts on its local node.
-With an empty `RELAYER_PRIVATE_KEY`, deployment and publication use its first
-unlocked account. Any configured key becomes the actual transaction signer and
-the deployer receives publisher permission in the contract constructor. Local
-development accounts and their private keys are public test fixtures and must
-never be used on a real network.
+If `PUBLIC_CHAIN_PUBLICATION_TOKEN` is changed, launch `control_server` with
+the same value. The token protects the internal local publication endpoint from
+ordinary browser requests. Production deployment requires proper service
+authentication and secret management.
+
+Hardhat exposes funded development accounts on its local node. These accounts
+and private keys are public test fixtures and must never be reused on a real
+network.
+
+## Verification boundary
+
+Before publication, `scripts/publication.js` verifies:
+
+- protocol, snapshot, and batch ID hashes;
+- exact canonical Manifest bytes and Keccak-256 Manifest hash;
+- all ordered public fields and the SHA-256 Public Merkle Root;
+- bytes32 formatting for the source private-block anchor; and
+- the deployed gateway source-network allowlist.
+
+The Solidity gateway then validates publisher authority, protocol and schema
+version, destination chain, source network, nonzero anchors, unique snapshot
+IDs, source-network nonce replay, pause state, and recalled-batch state.
+
+Customer lookup repeats the candidate checks and compares the Manifest anchors
+against the active on-chain record. A trace is marked Verified only when every
+check passes and the contract status is Active.
 
 ## Contract boundary
 
@@ -164,16 +200,15 @@ The contract stores compact verification anchors:
 - source network, destination chain, nonce, schema version, and publisher;
 - Active, Superseded, Recalled, or Revoked state.
 
-It validates authorized publishers, approved source networks, protocol/version,
-target chain, unique snapshot IDs, and source-network nonces. Public Manifest
-field selection stays in C++ so the on-chain gateway has one clear admission
-responsibility.
+Public Manifest field selection remains in the C++ Snapshot module. The EVM
+contract never receives participant passwords, private signatures, private
+Merkle leaves, or raw files.
 
 ## Deferred work
 
-- control-server relayer endpoint and durable nonce allocation;
-- control-page publication status and transaction details;
+- durable publication jobs and nonce allocation;
 - wallet and production key custody;
+- retry and transaction-receipt persistence;
 - public testnet deployment;
-- consumer query API and QR page; and
+- QR-code entry into the existing customer page; and
 - optional cross-chain messaging protocol adapters.

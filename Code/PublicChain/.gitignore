@@ -4,5 +4,6 @@ cache/
 coverage/
 typechain-types/
 deployments/*.json
+public-manifests/*.json
 .env
 *.log

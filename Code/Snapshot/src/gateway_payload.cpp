@@ -156,6 +156,12 @@ std::string json_string(const std::string& value)
 {
     return "\"" + json_escape(value) + "\"";
 }
+
+std::string bytes32_json_value(const std::string& value)
+{
+    const auto normalized = normalize_bytes32(value);
+    return normalized ? *normalized : value;
+}
 }
 
 std::string keccak256_hex(const std::string& value)
@@ -267,6 +273,44 @@ std::string gateway_payload_json(const GatewayPayload& payload)
          << "  \"nonce\": " << payload.nonce << ",\n"
          << "  \"snapshotVersion\": " << payload.snapshot_version << "\n"
          << '}';
+    return json.str();
+}
+
+std::string publication_candidate_json(const Preview& preview)
+{
+    std::ostringstream json;
+    json << "{\n"
+         << "  \"protocol\": " << json_string(preview.protocol) << ",\n"
+         << "  \"snapshotId\": " << json_string(preview.snapshot_id) << ",\n"
+         << "  \"snapshotVersion\": " << preview.snapshot_version << ",\n"
+         << "  \"generatedAt\": " << json_string(preview.generated_at) << ",\n"
+         << "  \"batchId\": " << json_string(preview.batch_id) << ",\n"
+         << "  \"protocolHash\": "
+         << json_string("0x" + keccak256_hex(preview.protocol)) << ",\n"
+         << "  \"snapshotIdHash\": "
+         << json_string("0x" + keccak256_hex(preview.snapshot_id)) << ",\n"
+         << "  \"batchIdHash\": "
+         << json_string("0x" + keccak256_hex(preview.batch_id)) << ",\n"
+         << "  \"publicRoot\": "
+         << json_string(bytes32_json_value(preview.public_root)) << ",\n"
+         << "  \"manifestHash\": "
+         << json_string("0x" + keccak256_hex(preview.manifest_json)) << ",\n"
+         << "  \"sourceBlockHash\": "
+         << json_string(bytes32_json_value(
+                preview.final_private_block_hash)) << ",\n"
+         << "  \"manifestCanonical\": "
+         << json_string(preview.manifest_json) << ",\n"
+         << "  \"manifest\": " << preview.manifest_json << ",\n"
+         << "  \"publicFields\": [";
+    for(std::size_t index = 0; index < preview.public_fields.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const PublicField& field = preview.public_fields[index];
+        json << "\n    {\"name\":" << json_string(field.name)
+             << ",\"value\":" << json_string(field.value) << '}';
+    }
+    if(!preview.public_fields.empty()) json << '\n';
+    json << "  ]\n}";
     return json.str();
 }
 }

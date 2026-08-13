@@ -26,6 +26,7 @@
 #include "digital_signature.hpp"
 #include "identifier_utils.hpp"
 #include "log_utils.hpp"
+#include "gateway_payload.hpp"
 #include "snapshot_adapter.hpp"
 #include "snapshot_policy.hpp"
 #include "thread_pool.hpp"
@@ -483,18 +484,15 @@ std::optional<std::vector<MultipartPart>> parse_multipart(
     return parts;
 }
 
-struct IpfsEndpoint
+struct HttpEndpoint
 {
     std::string host;
     std::string port;
 };
 
-std::optional<IpfsEndpoint> ipfs_endpoint()
+std::optional<HttpEndpoint> parse_http_endpoint(const std::string& url,
+                                                const std::string& default_port)
 {
-    const char* configured = std::getenv("IPFS_API_URL");
-    const std::string url = configured && *configured
-        ? configured
-        : "http://127.0.0.1:5002";
     if(url.rfind("http://", 0) != 0) return std::nullopt;
 
     const std::string authority = url.substr(7);
@@ -503,18 +501,42 @@ std::optional<IpfsEndpoint> ipfs_endpoint()
     if(host_port.empty()) return std::nullopt;
 
     const std::size_t colon = host_port.rfind(':');
-    IpfsEndpoint endpoint;
+    HttpEndpoint endpoint;
     endpoint.host = colon == std::string::npos
         ? host_port
         : host_port.substr(0, colon);
     endpoint.port = colon == std::string::npos
-        ? "5002"
+        ? default_port
         : host_port.substr(colon + 1);
     if(endpoint.host.empty() || endpoint.port.empty()) return std::nullopt;
     return endpoint;
 }
 
-int connect_to_ipfs(const IpfsEndpoint& endpoint)
+std::optional<HttpEndpoint> ipfs_endpoint()
+{
+    const char* configured = std::getenv("IPFS_API_URL");
+    return parse_http_endpoint(
+        configured && *configured ? configured : "http://127.0.0.1:5002",
+        "5002");
+}
+
+std::optional<HttpEndpoint> public_chain_endpoint()
+{
+    const char* configured = std::getenv("PUBLIC_CHAIN_SERVICE_URL");
+    return parse_http_endpoint(
+        configured && *configured ? configured : "http://127.0.0.1:8082",
+        "8082");
+}
+
+std::string public_chain_publication_token()
+{
+    const char* configured = std::getenv("PUBLIC_CHAIN_PUBLICATION_TOKEN");
+    return configured && *configured
+        ? configured
+        : "local-publication-demo-token";
+}
+
+int connect_to_endpoint(const HttpEndpoint& endpoint)
 {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
@@ -584,7 +606,7 @@ std::optional<IpfsAddResult> add_file_to_ipfs(const MultipartPart& file)
     const auto endpoint = ipfs_endpoint();
     if(!endpoint) return std::nullopt;
 
-    const int socket_fd = connect_to_ipfs(*endpoint);
+    const int socket_fd = connect_to_endpoint(*endpoint);
     if(socket_fd == -1) return std::nullopt;
 
     const std::string boundary = "supply-chain-ipfs-" + generate_random_hex(8);
@@ -648,6 +670,64 @@ std::optional<IpfsAddResult> add_file_to_ipfs(const MultipartPart& file)
     const auto cid = json_string_value(response_body, "Hash");
     if(!cid || cid->empty()) return std::nullopt;
     return IpfsAddResult{*cid};
+}
+
+struct HttpJsonResult
+{
+    int status_code = 0;
+    std::string body;
+};
+
+std::optional<HttpJsonResult> post_publication_candidate(
+    const std::string& candidate_json)
+{
+    const auto endpoint = public_chain_endpoint();
+    if(!endpoint) return std::nullopt;
+    const int socket_fd = connect_to_endpoint(*endpoint);
+    if(socket_fd == -1) return std::nullopt;
+
+    std::ostringstream request;
+    request << "POST /api/publish HTTP/1.1\r\n"
+            << "Host: " << endpoint->host << ':' << endpoint->port << "\r\n"
+            << "Content-Type: application/json\r\n"
+            << "X-Publication-Token: "
+            << public_chain_publication_token() << "\r\n"
+            << "Content-Length: " << candidate_json.size() << "\r\n"
+            << "Connection: close\r\n\r\n"
+            << candidate_json;
+    if(!write_all(socket_fd, request.str()))
+    {
+        close(socket_fd);
+        return std::nullopt;
+    }
+
+    std::string response;
+    char buffer[8192];
+    while(response.size() <= MAX_BODY_SIZE)
+    {
+        const ssize_t bytes_read = read(socket_fd, buffer, sizeof(buffer));
+        if(bytes_read == 0) break;
+        if(bytes_read < 0)
+        {
+            close(socket_fd);
+            return std::nullopt;
+        }
+        response.append(buffer, static_cast<std::size_t>(bytes_read));
+    }
+    close(socket_fd);
+    if(response.size() > MAX_BODY_SIZE) return std::nullopt;
+
+    const std::size_t status_end = response.find("\r\n");
+    const std::size_t header_end = response.find("\r\n\r\n");
+    if(status_end == std::string::npos || header_end == std::string::npos)
+        return std::nullopt;
+    std::istringstream status_line(response.substr(0, status_end));
+    std::string version;
+    HttpJsonResult result;
+    status_line >> version >> result.status_code;
+    if(result.status_code < 100) return std::nullopt;
+    result.body = response.substr(header_end + 4);
+    return result;
 }
 
 std::vector<std::string> role_event_fields(const std::string& role)
@@ -1101,7 +1181,10 @@ std::string snapshot_preview_json(const supermarket::snapshot::Preview& preview)
          << ",\"selectedEvidenceCount\":" << preview.public_evidence.size()
          << ",\"excludedFields\":"
          << string_array_json(preview.excluded_fields)
-         << ",\"manifest\":" << preview.manifest_json << '}';
+         << ",\"manifest\":" << preview.manifest_json
+         << ",\"publicationCandidate\":"
+         << supermarket::snapshot::publication_candidate_json(preview)
+         << '}';
     return json.str();
 }
 
@@ -1812,7 +1895,8 @@ int main(int argc, char* argv[])
             request.target == "/api/workflow" ||
             request.target == "/api/chains" ||
             request.target == "/api/snapshot/eligible-batches" ||
-            request.target == "/api/snapshot/preview";
+            request.target == "/api/snapshot/preview" ||
+            request.target == "/api/snapshot/publish";
 
         if(request.method == "OPTIONS" && is_api_target)
         {
@@ -2353,6 +2437,54 @@ int main(int argc, char* argv[])
                 }
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "POST" &&
+                request.target == "/api/snapshot/publish")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto user = authenticated_user(
+                request, database_path, sessions, sessions_mutex);
+            const auto type = request.headers.find("content-type");
+            const bool correct_type = type != request.headers.end() &&
+                lower(type->second).find("application/json") == 0;
+            if(!user)
+            {
+                status = "401 Unauthorized";
+                body = json_error("Authentication required");
+            }
+            else if(user->role != "admin")
+            {
+                status = "403 Forbidden";
+                body = json_error("Admin role required");
+            }
+            else if(!correct_type || request.body.empty())
+            {
+                status = "422 Unprocessable Entity";
+                body = json_error("A publication candidate is required");
+            }
+            else
+            {
+                const auto published = post_publication_candidate(request.body);
+                if(!published)
+                {
+                    status = "503 Service Unavailable";
+                    body = json_error(
+                        "The local public-chain service is unavailable");
+                }
+                else
+                {
+                    body = published->body;
+                    if(published->status_code >= 200 &&
+                       published->status_code < 300)
+                        status = "201 Created";
+                    else if(published->status_code == 503)
+                        status = "503 Service Unavailable";
+                    else
+                        status = "422 Unprocessable Entity";
+                }
+            }
+            send_response(client_fd, status, content_type, body, true,
+                          CORS_HEADERS);
         }
         else if(request.method == "POST" && request.target == "/api/ipfs/files")
         {

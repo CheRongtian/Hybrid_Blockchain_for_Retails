@@ -41,6 +41,8 @@ std::optional<GatewayPayload> build_gateway_payload(
     std::string& error);
 
 std::string gateway_payload_json(const GatewayPayload& payload);
+
+std::string publication_candidate_json(const Preview& preview);
 }
 
 #endif

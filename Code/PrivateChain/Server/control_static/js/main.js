@@ -28,6 +28,8 @@ const snapshotPrivateHash = document.querySelector("#snapshot-private-hash");
 const snapshotFieldCount = document.querySelector("#snapshot-field-count");
 const snapshotManifestJson = document.querySelector("#snapshot-manifest-json");
 const snapshotExcludedFields = document.querySelector("#snapshot-excluded-fields");
+const publishSnapshotButton = document.querySelector("#publish-snapshot-button");
+const snapshotPublishStatus = document.querySelector("#snapshot-publish-status");
 const sessionKey = "supply-chain-control-session";
 const policyRoles = [
     ["supplier", "Supplier"],
@@ -38,6 +40,7 @@ const policyRoles = [
 let session = null;
 let workflowData = null;
 let snapshotBatches = [];
+let publicationCandidate = null;
 
 function showSession(result) {
     session = result;
@@ -71,6 +74,7 @@ function clearSession() {
     snapshotBatchSelect.replaceChildren();
     snapshotEvidenceList.replaceChildren();
     snapshotPreview.hidden = true;
+    publicationCandidate = null;
 }
 
 async function logout() {
@@ -725,6 +729,9 @@ function selectedSnapshotBatch() {
 function renderSnapshotEvidence() {
     snapshotEvidenceList.replaceChildren();
     snapshotPreview.hidden = true;
+    publicationCandidate = null;
+    publishSnapshotButton.disabled = true;
+    snapshotPublishStatus.textContent = "";
     const batch = selectedSnapshotBatch();
     const evidence = batch?.evidence || [];
     if (evidence.length === 0) {
@@ -813,7 +820,44 @@ function renderSnapshotPreview(result) {
         item.textContent = field;
         snapshotExcludedFields.append(item);
     }
+    publicationCandidate = result.publicationCandidate;
+    publishSnapshotButton.disabled = !publicationCandidate;
+    snapshotPublishStatus.textContent = publicationCandidate
+        ? "Preview ready for administrator publication."
+        : "Publication data is unavailable.";
+    snapshotPublishStatus.className = publicationCandidate
+        ? "status pending"
+        : "status error";
     snapshotPreview.hidden = false;
+}
+
+async function publishSnapshot() {
+    if (!session || !publicationCandidate) return;
+    publishSnapshotButton.disabled = true;
+    snapshotPublishStatus.textContent = "Submitting snapshot to the local public chain...";
+    snapshotPublishStatus.className = "status pending";
+    try {
+        const response = await fetch("/api/snapshot/publish", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${session.token}`
+            },
+            body: JSON.stringify(publicationCandidate)
+        });
+        const result = await response.json();
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        snapshotPublishStatus.textContent = `Published in block ${result.blockNumber}.`;
+        snapshotPublishStatus.className = "status success";
+    } catch (error) {
+        snapshotPublishStatus.textContent = error.message;
+        snapshotPublishStatus.className = "status error";
+        publishSnapshotButton.disabled = false;
+    }
 }
 
 async function generateSnapshotPreview(event) {
@@ -825,6 +869,9 @@ async function generateSnapshotPreview(event) {
 
     generateSnapshotButton.disabled = true;
     snapshotPreview.hidden = true;
+    publicationCandidate = null;
+    publishSnapshotButton.disabled = true;
+    snapshotPublishStatus.textContent = "";
     setSnapshotStatus("Generating a private, non-published preview...", "pending");
     try {
         const response = await fetch("/api/snapshot/preview", {
@@ -872,4 +919,5 @@ logoutButton.addEventListener("click", logout);
 confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
 snapshotBatchSelect.addEventListener("change", renderSnapshotEvidence);
 snapshotPreviewForm.addEventListener("submit", generateSnapshotPreview);
+publishSnapshotButton.addEventListener("click", publishSnapshot);
 restoreSession();

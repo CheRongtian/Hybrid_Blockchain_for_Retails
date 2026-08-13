@@ -10,7 +10,8 @@
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy.js --network localhost",
     "publish:local": "hardhat run scripts/publish_snapshot.js --network localhost",
-    "query:local": "hardhat run scripts/query_snapshot.js --network localhost"
+    "query:local": "hardhat run scripts/query_snapshot.js --network localhost",
+    "consumer": "node consumer_server.js"
   },
   "engines": {
     "node": ">=22.10.0 <25"

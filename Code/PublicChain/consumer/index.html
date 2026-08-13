@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fresh Produce Trace</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <p class="eyebrow">PUBLIC SUPPLY CHAIN</p>
+      <h1>Fresh Produce Trace</h1>
+      <p class="lede">
+        Select a published product batch to view its public route and verify the
+        record against the local public-chain gateway.
+      </p>
+      <div class="search-form">
+        <label for="batch-select">Published product batch</label>
+        <div class="select-row">
+          <select id="batch-select" disabled>
+            <option value="">Loading published batches...</option>
+          </select>
+        </div>
+      </div>
+      <p id="search-status" class="status" role="status" aria-live="polite"></p>
+    </header>
+
+    <section id="trace-result" class="trace-result" hidden>
+      <div class="result-heading">
+        <div>
+          <p class="eyebrow">VERIFICATION RESULT</p>
+          <h2 id="product-name"></h2>
+          <p id="batch-summary" class="muted"></p>
+        </div>
+        <span id="verification-badge" class="badge"></span>
+      </div>
+
+      <section class="facts" aria-label="Product details">
+        <article><span>Origin</span><strong id="origin"></strong></article>
+        <article><span>Harvest date</span><strong id="harvest-date"></strong></article>
+        <article><span>Category</span><strong id="category"></strong></article>
+        <article><span>Chain status</span><strong id="chain-status"></strong></article>
+      </section>
+
+      <section class="route-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">TRACE ROUTE</p>
+            <h2>Supplier to Supermarket</h2>
+          </div>
+          <span id="route-state" class="route-state"></span>
+        </div>
+        <div class="route" aria-label="Supply-chain route">
+          <article class="route-node">
+            <span class="route-index">1</span>
+            <p>Supplier</p>
+            <strong id="supplier-location"></strong>
+            <small id="supplier-date"></small>
+          </article>
+          <span class="connector" aria-hidden="true">→</span>
+          <article class="route-node">
+            <span class="route-index">2</span>
+            <p>Logistics</p>
+            <strong id="transport-route"></strong>
+            <small id="transport-condition"></small>
+          </article>
+          <span class="connector" aria-hidden="true">→</span>
+          <article class="route-node">
+            <span class="route-index">3</span>
+            <p>Warehouse</p>
+            <strong id="storage-time"></strong>
+            <small id="storage-condition"></small>
+          </article>
+          <span class="connector" aria-hidden="true">→</span>
+          <article class="route-node">
+            <span class="route-index">4</span>
+            <p>Supermarket</p>
+            <strong id="store-location"></strong>
+            <small id="retail-dates"></small>
+          </article>
+        </div>
+      </section>
+
+      <section id="evidence-section" class="evidence-section" hidden>
+        <p class="eyebrow">PUBLIC EVIDENCE</p>
+        <h2>Referenced files</h2>
+        <div id="evidence-list" class="evidence-list"></div>
+      </section>
+
+      <details class="technical">
+        <summary>Blockchain verification details</summary>
+        <dl id="technical-details"></dl>
+        <div id="check-list" class="check-list"></div>
+      </details>
+    </section>
+  </main>
+  <script src="/js/main.js" defer></script>
+</body>
+</html>

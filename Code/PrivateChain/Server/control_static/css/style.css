@@ -352,6 +352,22 @@ dt {
     color: #91a2b9;
 }
 
+.snapshot-publish-actions {
+    display: grid;
+    grid-template-columns: minmax(15rem, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 1rem;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #26364c;
+}
+
+.snapshot-publish-actions .status {
+    min-height: 1.4rem;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
 .policy-card {
     padding: 0;
     overflow: hidden;
@@ -868,6 +884,10 @@ dt {
     .snapshot-actions {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .snapshot-publish-actions {
+        grid-template-columns: 1fr;
     }
 
     .snapshot-actions button {

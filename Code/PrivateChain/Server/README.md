@@ -14,6 +14,8 @@ User browser -> user_server :8080
 Control browser -> control_server :8081
                 -> preset workflow Canvas
                 -> saved batch chains and CID references
+                -> Snapshot preview and Publish action
+                -> PublicChain service :8082/api/publish
 ```
 
 user_server serves the user-facing static page. control_server owns
@@ -284,8 +286,28 @@ policy.
 
 POST /api/snapshot/preview accepts a batch ID and optional allowlisted CID
 selection. It returns a consumer-safe Manifest, independent Public Merkle Root,
-final private block hash, and private-data exclusion summary. The preview is
-not persisted or published.
+final private block hash, private-data exclusion summary, and a self-contained
+publication candidate. The preview is not persisted or published.
+
+POST /api/snapshot/publish is restricted to the administrator. It forwards an
+exact publication candidate to the independent PublicChain service. The
+service revalidates every identifier hash, the canonical Manifest hash, and
+the Public Merkle Root before submitting a transaction. The default internal
+endpoint is:
+
+```text
+http://127.0.0.1:8082/api/publish
+```
+
+Optional environment variables are:
+
+```text
+PUBLIC_CHAIN_SERVICE_URL=http://127.0.0.1:8082
+PUBLIC_CHAIN_PUBLICATION_TOKEN=local-publication-demo-token
+```
+
+Use the same non-default token in both the control-server and PublicChain
+service environments when overriding the local demonstration value.
 
 ## SQLite schema
 

@@ -8,6 +8,10 @@ implementation and the PublicChain module. It has two responsibilities:
 2. C++ converts that preview into a compact Gateway Payload for the Solidity
    contract owned by `Code/PublicChain`.
 
+It also serializes a publication candidate containing the exact canonical
+Manifest and its ordered public fields. This lets the independent PublicChain
+service rebuild and verify every hash before a transaction is submitted.
+
 This module does not deploy contracts or submit transactions.
 
 ## Module layout
@@ -58,8 +62,8 @@ SnapshotGateway admission checks
         +-- destination chain
         +-- source-network nonce replay protection
         +-- snapshot and batch lifecycle
-        v
-Future public-chain consumer application
+v
+Public-chain customer application
 ```
 
 ## Public snapshot eligibility
@@ -112,6 +116,12 @@ consumer-visible Manifest only and does not reuse a private Merkle root.
 
 `build_gateway_payload()` converts a `Preview` and a `GatewayContext` into the
 fixed values needed by `SnapshotGateway.publishSnapshot()`.
+
+`publication_candidate_json()` packages the preview for the local publication
+service. It includes the canonical Manifest, parsed Manifest, ordered public
+fields, Keccak identifier hashes, Manifest hash, SHA-256 Public Root, and final
+private block hash. Destination-chain settings and the publication nonce are
+assigned by the PublicChain service at transaction time.
 
 | Payload field | Source and encoding |
 | --- | --- |
@@ -210,25 +220,26 @@ ctest --test-dir build-snapshot
 
 Solidity and relayer tests are documented in `../PublicChain/README.md`.
 
-## Existing control-server preview
+## Control-server integration
 
 The current administrator preview endpoints remain:
 
 ```text
 GET  /api/snapshot/eligible-batches
 POST /api/snapshot/preview
+POST /api/snapshot/publish
 ```
 
-They still generate an in-memory Manifest preview and do not publish it. The
-local PublicChain scripts currently demonstrate deployment, payload submission,
-and chain queries independently.
+The preview endpoint generates an in-memory Manifest and publication candidate.
+The publish endpoint is administrator-only and forwards that candidate to the
+independent PublicChain service. Snapshot field selection and Manifest creation
+remain owned by this module.
 
 ## Deferred work
 
-- relayer persistence and nonce allocation;
+- durable relayer job and nonce persistence;
 - wallet and key custody;
-- control-server integration with the local PublicChain relayer;
 - transaction confirmation and retry handling;
-- public consumer API and QR-code pages;
+- QR-code entry into the customer page;
 - periodic and incremental snapshot policies; and
 - optional cross-chain messaging protocol adapters.
