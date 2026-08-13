@@ -344,6 +344,14 @@ std::optional<std::unordered_map<std::string, std::string>> parse_form(
     return fields;
 }
 
+std::string form_field_value(
+    const std::unordered_map<std::string, std::string>& fields,
+    const std::string& name)
+{
+    const auto item = fields.find(name);
+    return item == fields.end() ? "" : item->second;
+}
+
 std::string json_escape(const std::string& value)
 {
     std::ostringstream escaped;
@@ -1776,6 +1784,8 @@ int main(int argc, char* argv[])
         }
 
         if(!thread_pool.submit([&, client_fd]() {
+        try
+        {
         HttpRequest request;
         if(!read_request(client_fd, request))
         {
@@ -2466,11 +2476,12 @@ int main(int argc, char* argv[])
                     else if(current_index == 0 && !required_value("product"))
                         validation_error = "product is required for a new batch";
                     else if(current_index == 0 &&
-                            !normalize_product_code(trim(fields->at("product"))))
+                            !normalize_product_code(
+                                trim(form_field_value(*fields, "product"))))
                         validation_error =
                             "product must contain at least one letter or number";
                     else if(fields->find("confirmed") == fields->end() ||
-                            fields->at("confirmed") != "true")
+                            form_field_value(*fields, "confirmed") != "true")
                         validation_error = "Information must be confirmed";
                     else
                     {
@@ -2615,10 +2626,16 @@ int main(int argc, char* argv[])
                                 else
                                 {
                                     std::string signed_batch_id = "SERVER_ALLOCATED";
-                                    std::string signed_product = trim(fields->at("product"));
-                                    if(current_index != 0)
+                                    std::string signed_product;
+                                    if(current_index == 0)
                                     {
-                                        signed_batch_id = trim(fields->at("batchId"));
+                                        signed_product = trim(
+                                            form_field_value(*fields, "product"));
+                                    }
+                                    else
+                                    {
+                                        signed_batch_id = trim(
+                                            form_field_value(*fields, "batchId"));
                                         const auto batch = find_supply_chain_batch(
                                             database_path.string(), signed_batch_id);
                                         if(!batch)
@@ -2707,7 +2724,8 @@ int main(int argc, char* argv[])
                         }
 
                         const auto generated_batch_id = next_batch_id_for_product(
-                            batches, trim(fields->at("product")));
+                            batches,
+                            trim(form_field_value(*fields, "product")));
                         if(!generated_batch_id)
                         {
                             status = "409 Conflict";
@@ -2721,7 +2739,7 @@ int main(int argc, char* argv[])
                     }
                     else
                     {
-                        batch_id = trim(fields->at("batchId"));
+                        batch_id = trim(form_field_value(*fields, "batchId"));
                     }
                     const SupplyChainRecord* parent =
                         latest_batch_record(stored_records, batch_id);
@@ -2772,10 +2790,14 @@ int main(int argc, char* argv[])
                         if(current_index == 0)
                         {
                             batch.batch_id = batch_id;
-                            batch.product = trim(fields->at("product"));
-                            batch.harvest_date = fields->at("harvestDate");
-                            batch.farm_location = fields->at("farmLocation");
-                            batch.certificate_id = fields->at("certificateId");
+                            batch.product = trim(
+                                form_field_value(*fields, "product"));
+                            batch.harvest_date = form_field_value(
+                                *fields, "harvestDate");
+                            batch.farm_location = form_field_value(
+                                *fields, "farmLocation");
+                            batch.certificate_id = form_field_value(
+                                *fields, "certificateId");
                             batch.created_by_uid = user->uid;
                             batch.current_stage = stage_for_role(user->role);
                             batch.status = current_index == static_cast<int>(workflow.size()) - 1
@@ -2819,17 +2841,18 @@ int main(int argc, char* argv[])
                             database_record.batch_id = batch.batch_id;
                             database_record.product = batch.product;
                             if(user->role == "supplier")
-                                database_record.location_summary = fields->at("farmLocation");
+                                database_record.location_summary = form_field_value(
+                                    *fields, "farmLocation");
                             else if(user->role == "logistics")
-                                database_record.location_summary =
-                                    fields->at("pickupLocation") + " -> " +
-                                    fields->at("deliveryLocation");
+                                database_record.location_summary = form_field_value(
+                                    *fields, "pickupLocation") + " -> " +
+                                    form_field_value(*fields, "deliveryLocation");
                             else if(user->role == "warehouse")
                                 database_record.location_summary =
-                                    fields->at("storageZoneRackId");
+                                    form_field_value(*fields, "storageZoneRackId");
                             else
                                 database_record.location_summary =
-                                    fields->at("storeLocationId");
+                                    form_field_value(*fields, "storeLocationId");
                             database_record.batch_harvest_date = batch.harvest_date;
                             database_record.batch_farm_location = batch.farm_location;
                             database_record.certificate_id = batch.certificate_id;
@@ -2948,6 +2971,31 @@ int main(int argc, char* argv[])
         std::cout << log_line;
         log_to_file(log_line);
         close(client_fd);
+        }
+        catch(const std::exception& error)
+        {
+            std::cerr << "Request handling failed: " << error.what() << '\n';
+            send_response(
+                client_fd,
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                json_error("Internal server error while processing the request"),
+                true,
+                CORS_HEADERS);
+            close(client_fd);
+        }
+        catch(...)
+        {
+            std::cerr << "Request handling failed with an unknown exception\n";
+            send_response(
+                client_fd,
+                "500 Internal Server Error",
+                "application/json; charset=utf-8",
+                json_error("Internal server error while processing the request"),
+                true,
+                CORS_HEADERS);
+            close(client_fd);
+        }
         }))
         {
             send_response(client_fd, "503 Service Unavailable",

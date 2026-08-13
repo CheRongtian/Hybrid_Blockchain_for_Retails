@@ -33,6 +33,24 @@ const confirmationError = document.querySelector("#confirmation-error");
 const signatureStatus = document.querySelector("#signature-status");
 const controlApiBase = "http://127.0.0.1:8081/api";
 const sessionKey = "supply-chain-user-session";
+const CONTROL_REQUEST_TIMEOUT_MS = 30000;
+const RECORD_REQUEST_TIMEOUT_MS = 60000;
+const IPFS_UPLOAD_TIMEOUT_MS = 120000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = CONTROL_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+        if (error.name === "AbortError") {
+            throw new Error("The server did not respond in time. Check the control server.");
+        }
+        throw error;
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+}
 
 const roleLabels = {
     supplier: "Supplier",
@@ -460,11 +478,11 @@ async function uploadSelectedFiles() {
         const upload = new FormData();
         upload.append("category", attachmentCategory.value);
         upload.append("file", file);
-        const response = await fetch(controlApiBase + "/ipfs/files", {
+        const response = await fetchWithTimeout(controlApiBase + "/ipfs/files", {
             method: "POST",
             headers: { Authorization: "Bearer " + session.token },
             body: upload
-        });
+        }, IPFS_UPLOAD_TIMEOUT_MS);
         const result = await response.json();
         if (response.status === 401) {
             clearSession();
@@ -626,9 +644,13 @@ async function createDigitalConfirmation(role) {
     if (!updateTypedNameState()) throw new Error(confirmationError.textContent);
 
     const name = typedConfirmationName.value.trim();
-    const challengeResponse = await fetch(controlApiBase + "/confirmation/challenge", {
+    const challengeResponse = await fetchWithTimeout(
+        controlApiBase + "/confirmation/challenge",
+        {
         headers: { Authorization: "Bearer " + session.token }
-    });
+        },
+        CONTROL_REQUEST_TIMEOUT_MS
+    );
     const challengeResult = await challengeResponse.json();
     if (challengeResponse.status === 401) {
         clearSession();
@@ -713,14 +735,14 @@ form.addEventListener("submit", async (event) => {
         signatureStatus.textContent = "Digital signature ready. Server verification is required.";
         signatureStatus.className = "signature-status pending";
 
-        const response = await fetch(controlApiBase + "/records", {
+        const response = await fetchWithTimeout(controlApiBase + "/records", {
             method: "POST",
             headers: {
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
                 Authorization: "Bearer " + session.token
             },
             body: buildRecordPayload(role, confirmation).toString()
-        });
+        }, RECORD_REQUEST_TIMEOUT_MS);
 
         const result = await response.json();
         if (response.status === 401) {
@@ -766,6 +788,10 @@ form.addEventListener("submit", async (event) => {
     } catch (error) {
         statusLine.textContent = error.message;
         statusLine.className = "request-status error";
+        if (signatureStatus.classList.contains("pending")) {
+            signatureStatus.textContent = error.message;
+            signatureStatus.className = "signature-status error";
+        }
         if (session) submitRecord.disabled = false;
     }
 });
