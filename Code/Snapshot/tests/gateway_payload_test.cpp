@@ -3,10 +3,10 @@
 #include <cassert>
 #include <iostream>
 
-using schnucks::snapshot::GatewayContext;
-using schnucks::snapshot::Preview;
-using schnucks::snapshot::build_gateway_payload;
-using schnucks::snapshot::keccak256_hex;
+using supermarket::snapshot::GatewayContext;
+using supermarket::snapshot::Preview;
+using supermarket::snapshot::build_gateway_payload;
+using supermarket::snapshot::keccak256_hex;
 
 int main()
 {
@@ -16,7 +16,7 @@ int main()
            "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
 
     Preview preview;
-    preview.protocol = "Schnucks-Trace-v1";
+    preview.protocol = "Supermarket-Trace-v1";
     preview.snapshot_id = "SNAP-BATCH-0001-V0001";
     preview.snapshot_version = 1;
     preview.batch_id = "BATCH-0001";
@@ -25,7 +25,7 @@ int main()
     preview.final_private_block_hash = std::string(64, 'b');
 
     GatewayContext context;
-    context.source_network = "schnucks-private-local-v1";
+    context.source_network = "supermarket-private-local-v1";
     context.destination_chain_id = 31337;
     context.nonce = 1;
 

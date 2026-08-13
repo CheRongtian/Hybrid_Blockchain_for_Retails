@@ -117,11 +117,11 @@ std::optional<std::map<std::string, std::string>> parse_flat_string_object(
 }
 }
 
-schnucks::snapshot::BatchInput make_snapshot_batch_input(
+supermarket::snapshot::BatchInput make_snapshot_batch_input(
     const SupplyChainBatch& batch,
     const std::vector<SupplyChainRecord>& records)
 {
-    schnucks::snapshot::BatchInput input;
+    supermarket::snapshot::BatchInput input;
     input.batch_id = batch.batch_id;
     input.product = batch.product;
     input.harvest_date = batch.harvest_date;
@@ -132,7 +132,7 @@ schnucks::snapshot::BatchInput make_snapshot_batch_input(
     for(const SupplyChainRecord& record : records)
     {
         if(record.batch_id != batch.batch_id) continue;
-        schnucks::snapshot::StageInput stage;
+        supermarket::snapshot::StageInput stage;
         stage.block_id = record.block_id;
         stage.parent_block_id = record.parent_block_id;
         stage.parent_block_hash = record.parent_block_hash;
@@ -156,7 +156,7 @@ schnucks::snapshot::BatchInput make_snapshot_batch_input(
 
         for(const IpfsReference& reference : record.ipfs_refs)
         {
-            stage.evidence.push_back(schnucks::snapshot::EvidenceInput{
+            stage.evidence.push_back(supermarket::snapshot::EvidenceInput{
                 record.stage, reference.category, reference.cid
             });
         }
@@ -164,8 +164,8 @@ schnucks::snapshot::BatchInput make_snapshot_batch_input(
     }
 
     std::sort(input.stages.begin(), input.stages.end(),
-              [](const schnucks::snapshot::StageInput& left,
-                 const schnucks::snapshot::StageInput& right) {
+              [](const supermarket::snapshot::StageInput& left,
+                 const supermarket::snapshot::StageInput& right) {
                   return left.block_id < right.block_id;
               });
     return input;

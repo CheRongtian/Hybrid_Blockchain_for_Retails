@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-schnucks::snapshot::BatchInput make_snapshot_batch_input(
+supermarket::snapshot::BatchInput make_snapshot_batch_input(
     const SupplyChainBatch& batch,
     const std::vector<SupplyChainRecord>& records);
 

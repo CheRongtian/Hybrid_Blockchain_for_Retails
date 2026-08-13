@@ -1034,17 +1034,17 @@ std::string string_array_json(const std::vector<std::string>& values)
 }
 
 std::string snapshot_evidence_json(
-    const schnucks::snapshot::BatchInput& batch)
+    const supermarket::snapshot::BatchInput& batch)
 {
     std::ostringstream json;
     json << '[';
     bool first = true;
-    for(const schnucks::snapshot::StageInput& stage : batch.stages)
+    for(const supermarket::snapshot::StageInput& stage : batch.stages)
     {
-        for(const schnucks::snapshot::EvidenceInput& evidence : stage.evidence)
+        for(const supermarket::snapshot::EvidenceInput& evidence : stage.evidence)
         {
             const auto* policy =
-                schnucks::snapshot::find_evidence_policy(evidence.category);
+                supermarket::snapshot::find_evidence_policy(evidence.category);
             if(!policy || evidence.cid.empty()) continue;
             if(!first) json << ',';
             first = false;
@@ -1070,9 +1070,9 @@ std::string eligible_snapshot_batches_json(
     bool first = true;
     for(const SupplyChainBatch& batch : batches)
     {
-        const schnucks::snapshot::BatchInput input =
+        const supermarket::snapshot::BatchInput input =
             make_snapshot_batch_input(batch, records);
-        const auto eligibility = schnucks::snapshot::evaluate_eligibility(input);
+        const auto eligibility = supermarket::snapshot::evaluate_eligibility(input);
         if(!eligibility.eligible) continue;
         if(!first) json << ',';
         first = false;
@@ -1087,7 +1087,7 @@ std::string eligible_snapshot_batches_json(
     return json.str();
 }
 
-std::string snapshot_preview_json(const schnucks::snapshot::Preview& preview)
+std::string snapshot_preview_json(const supermarket::snapshot::Preview& preview)
 {
     std::ostringstream json;
     json << "{\"snapshotId\":\"" << json_escape(preview.snapshot_id)
@@ -1107,7 +1107,7 @@ std::string snapshot_preview_json(const schnucks::snapshot::Preview& preview)
 
 bool parse_snapshot_evidence_selection(
     const std::string& encoded,
-    std::vector<schnucks::snapshot::EvidenceInput>& selections,
+    std::vector<supermarket::snapshot::EvidenceInput>& selections,
     std::string& error)
 {
     selections.clear();
@@ -1127,7 +1127,7 @@ bool parse_snapshot_evidence_selection(
             error = "Malformed public evidence selection";
             return false;
         }
-        selections.push_back(schnucks::snapshot::EvidenceInput{
+        selections.push_back(supermarket::snapshot::EvidenceInput{
             trim(pieces[0]), trim(pieces[1]), trim(pieces[2])
         });
     }
@@ -2316,7 +2316,7 @@ int main(int argc, char* argv[])
                     }
                     else
                     {
-                        std::vector<schnucks::snapshot::EvidenceInput>
+                        std::vector<supermarket::snapshot::EvidenceInput>
                             selected_evidence;
                         const auto selected_field = fields->find("selectedEvidence");
                         std::string selection_error;
@@ -2336,7 +2336,7 @@ int main(int argc, char* argv[])
                             const auto input = make_snapshot_batch_input(
                                 *batch, records);
                             std::string preview_error;
-                            const auto preview = schnucks::snapshot::build_preview(
+                            const auto preview = supermarket::snapshot::build_preview(
                                 input, selected_evidence, preview_error);
                             if(!preview)
                             {

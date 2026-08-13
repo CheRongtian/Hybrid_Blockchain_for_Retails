@@ -1,25 +1,19 @@
 # Snapshot Gateway
 
-This module is the disclosure and admission boundary between the private
-supply-chain implementation and a future public-chain implementation. It has
-two separate responsibilities:
+This module is the disclosure boundary between the private supply-chain
+implementation and the PublicChain module. It has two responsibilities:
 
 1. C++ selects consumer-safe fields from one completed private batch and
    builds a canonical Public Manifest with an independent Public Merkle Root.
-2. Solidity validates a compact publication request and records its hashes,
-   provenance, lifecycle, and publisher on the destination chain.
+2. C++ converts that preview into a compact Gateway Payload for the Solidity
+   contract owned by `Code/PublicChain`.
 
-No public-chain deployment, wallet integration, or transaction submission is
-included at this stage.
+This module does not deploy contracts or submit transactions.
 
 ## Module layout
 
 ```text
 Snapshot/
-├── contracts/
-│   ├── SnapshotGateway.sol
-│   └── test/
-│       └── SnapshotGatewayTest.sol
 ├── examples/
 │   └── gateway_payload.example.json
 ├── include/
@@ -78,7 +72,7 @@ A batch can enter the snapshot layer only when:
 - the supermarket stage completes the preset route; and
 - all required consumer-facing fields are available.
 
-The first protocol is `Schnucks-Trace-v1`, with snapshot schema version `1`.
+The first protocol is `Supermarket-Trace-v1`, with snapshot schema version `1`.
 
 ## Public Manifest
 
@@ -154,10 +148,10 @@ The payload builder requires a caller-supplied source network name,
 destination chain ID, and nonce. These values belong to the future relayer or
 publication service and are deliberately absent from snapshot field policy.
 
-## Solidity gateway
+## Public-chain gateway boundary
 
-`SnapshotGateway.sol` is dependency-free Solidity. Its publication checks
-cover:
+`../PublicChain/contracts/SnapshotGateway.sol` consumes this module's Gateway
+Payload. Its publication checks cover:
 
 - authorized publisher accounts;
 - an administrator-approved source network;
@@ -189,7 +183,7 @@ record from the current pointer while preserving its immutable history entry.
 The contract exposes individual snapshot lookup, current snapshot lookup by
 raw batch ID, and ordered batch history.
 
-## Events
+### Events
 
 The gateway emits events for:
 
@@ -202,18 +196,7 @@ The gateway emits events for:
 The original batch ID and snapshot ID are emitted for public consumers. The
 stored record uses `bytes32` hashes for compact indexing.
 
-## Tests
-
-`contracts/test/SnapshotGatewayTest.sol` is a self-contained Solidity test
-harness with no external testing-library import. It covers:
-
-- valid publication and queries;
-- unauthorized publishers;
-- duplicate snapshot IDs and nonce replay;
-- empty hash fields, unsupported versions, and wrong destination chains;
-- replacement and ordered history;
-- recall and revocation; and
-- role permissions and pause behavior.
+## C++ tests
 
 `tests/gateway_payload_test.cpp` checks standard Ethereum Keccak-256 vectors
 and the `bytes32` normalization performed by the C++ payload builder. It is an
@@ -225,8 +208,7 @@ cmake --build build-snapshot
 ctest --test-dir build-snapshot
 ```
 
-The commands are documented for later use; this change does not deploy a
-contract or contact an external chain.
+Solidity and relayer tests are documented in `../PublicChain/README.md`.
 
 ## Existing control-server preview
 
@@ -237,15 +219,15 @@ GET  /api/snapshot/eligible-batches
 POST /api/snapshot/preview
 ```
 
-They still generate an in-memory Manifest preview and do not publish it. A
-future relayer endpoint can call `build_gateway_payload()`, assign the source
-network and nonce, sign a transaction, and call the Solidity gateway.
+They still generate an in-memory Manifest preview and do not publish it. The
+local PublicChain scripts currently demonstrate deployment, payload submission,
+and chain queries independently.
 
 ## Deferred work
 
 - relayer persistence and nonce allocation;
 - wallet and key custody;
-- contract deployment and network configuration;
+- control-server integration with the local PublicChain relayer;
 - transaction confirmation and retry handling;
 - public consumer API and QR-code pages;
 - periodic and incremental snapshot policies; and

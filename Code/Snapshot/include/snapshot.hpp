@@ -1,12 +1,12 @@
-#ifndef SCHNUCKS_PUBLIC_SNAPSHOT_HPP
-#define SCHNUCKS_PUBLIC_SNAPSHOT_HPP
+#ifndef SUPERMARKET_PUBLIC_SNAPSHOT_HPP
+#define SUPERMARKET_PUBLIC_SNAPSHOT_HPP
 
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 struct EvidenceInput
 {

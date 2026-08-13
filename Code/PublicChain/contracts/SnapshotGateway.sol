@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 contract SnapshotGateway {
     bytes32 public constant SUPPORTED_PROTOCOL_HASH =
-        keccak256("Schnucks-Trace-v1");
+        keccak256("Supermarket-Trace-v1");
     uint32 public constant SUPPORTED_SNAPSHOT_VERSION = 1;
 
     enum SnapshotStatus {

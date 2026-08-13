@@ -1,5 +1,5 @@
-#ifndef SCHNUCKS_SNAPSHOT_GATEWAY_PAYLOAD_HPP
-#define SCHNUCKS_SNAPSHOT_GATEWAY_PAYLOAD_HPP
+#ifndef SUPERMARKET_SNAPSHOT_GATEWAY_PAYLOAD_HPP
+#define SUPERMARKET_SNAPSHOT_GATEWAY_PAYLOAD_HPP
 
 #include "snapshot.hpp"
 
@@ -7,7 +7,7 @@
 #include <optional>
 #include <string>
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 struct GatewayContext
 {

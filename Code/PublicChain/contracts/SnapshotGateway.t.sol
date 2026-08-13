@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "../SnapshotGateway.sol";
+import "./SnapshotGateway.sol";
 
 contract SnapshotGatewayActor {
     function publish(
@@ -211,13 +211,13 @@ contract SnapshotGatewayTest {
         uint256 nonce
     ) private view returns (SnapshotGateway.PublishRequest memory) {
         return SnapshotGateway.PublishRequest({
-            protocol: "Schnucks-Trace-v1",
+            protocol: "Supermarket-Trace-v1",
             snapshotId: snapshotId,
             batchId: batchId,
             publicRoot: keccak256(abi.encodePacked("public-root", snapshotId)),
             manifestHash: keccak256(abi.encodePacked("manifest", snapshotId)),
             sourceBlockHash: keccak256(abi.encodePacked("source", snapshotId)),
-            sourceNetworkId: keccak256("schnucks-private-local-v1"),
+            sourceNetworkId: keccak256("supermarket-private-local-v1"),
             destinationChainId: block.chainid,
             nonce: nonce,
             snapshotVersion: 1
@@ -227,7 +227,7 @@ contract SnapshotGatewayTest {
     function _gateway() private returns (SnapshotGateway gateway) {
         gateway = new SnapshotGateway();
         gateway.setSourceNetwork(
-            keccak256("schnucks-private-local-v1"),
+            keccak256("supermarket-private-local-v1"),
             true
         );
     }

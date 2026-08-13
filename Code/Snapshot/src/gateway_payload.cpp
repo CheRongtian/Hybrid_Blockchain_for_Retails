@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 namespace
 {

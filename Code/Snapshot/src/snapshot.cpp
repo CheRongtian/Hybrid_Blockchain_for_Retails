@@ -16,11 +16,11 @@
 #include <set>
 #include <sstream>
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 namespace
 {
-constexpr const char* SNAPSHOT_PROTOCOL = "Schnucks-Trace-v1";
+constexpr const char* SNAPSHOT_PROTOCOL = "Supermarket-Trace-v1";
 constexpr int SNAPSHOT_VERSION = 1;
 
 const std::vector<std::string>& expected_stages()

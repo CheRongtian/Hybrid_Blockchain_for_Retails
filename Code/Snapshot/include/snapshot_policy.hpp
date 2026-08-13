@@ -1,10 +1,10 @@
-#ifndef SCHNUCKS_SNAPSHOT_POLICY_HPP
-#define SCHNUCKS_SNAPSHOT_POLICY_HPP
+#ifndef SUPERMARKET_SNAPSHOT_POLICY_HPP
+#define SUPERMARKET_SNAPSHOT_POLICY_HPP
 
 #include <string>
 #include <vector>
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 struct EvidencePolicy
 {

@@ -1,6 +1,6 @@
 #include "snapshot_policy.hpp"
 
-namespace schnucks::snapshot
+namespace supermarket::snapshot
 {
 const std::vector<EvidencePolicy>& public_evidence_policy()
 {

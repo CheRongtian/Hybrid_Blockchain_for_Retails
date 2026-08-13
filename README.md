@@ -7,9 +7,9 @@ three architectural modules:
 Private Chain -> Public Snapshot -> Public Chain -> Consumer QR Verification
 ```
 
-The private-chain module is currently runnable. Consumer-safe snapshot preview
-generation is implemented locally. Snapshot publication and public-chain
-anchoring are the next implementation stages.
+The private-chain module is runnable. Consumer-safe snapshot generation and a
+local EVM publication prototype are implemented independently. Connecting the
+control server to the local relayer is the next integration stage.
 
 ## Current architecture
 
@@ -34,10 +34,10 @@ Snapshot                         preview implemented
   +-- selected existing evidence CIDs
           |
           v
-PublicChain                      planned
-  +-- EVM snapshot anchor
-  +-- immutable publication metadata
-  +-- consumer QR verification
+PublicChain                      local prototype implemented
+  +-- Hardhat EVM node
+  +-- SnapshotGateway contract
+  +-- deploy, publish, and query scripts
 ```
 
 Private operational records and public consumer data have separate Merkle
@@ -58,7 +58,7 @@ Blockchain Structure/
 │   │   ├── ConMemPool/               # Concurrent allocator
 │   │   └── Database/                 # Local SQLite data
 │   ├── Snapshot/                    # Public snapshot preview module
-│   ├── PublicChain/                 # EVM anchor and QR flow (planned)
+│   ├── PublicChain/                 # Local EVM gateway and relayer scripts
 │   ├── CMakeLists.txt               # Central C++ build entry
 │   ├── PrCsample.sol                # Historical Solidity sample
 │   ├── SNsample.sol                 # Early snapshot contract sample
@@ -127,13 +127,14 @@ verifiable tree for each event.
   signatures, confirmation policies, and CID metadata;
 - local Kubo/IPFS upload integration through returned CIDs;
 - administrator chain and Merkle Tree visualization;
-- completed-batch public Manifest and Public Root preview;
+- completed-batch public Manifest, Public Root, and Gateway Payload;
+- local Hardhat EVM gateway, deployment, publication, and query scripts;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
 Handwritten-signature capture and face confirmation are policy placeholders.
-Inspection Agency, saved/published snapshots, EVM deployment, relaying, and the
-consumer QR page are pending.
+Inspection Agency, control-server relaying, durable publication records,
+public-testnet deployment, and the consumer QR page are pending.
 
 ## Requirements
 
@@ -142,6 +143,12 @@ consumer QR page are pending.
 - OpenSSL;
 - SQLite3;
 - local Kubo/IPFS when file upload is used.
+
+The independent PublicChain prototype additionally requires Node.js 22 LTS
+and npm. An Apple M3 Mac with 18 GB memory is sufficient for the local Hardhat
+node and C++ demo servers. See
+[Public-chain setup](Code/PublicChain/README.md#apple-silicon-environment) for
+the Homebrew commands and local EVM workflow.
 
 The current local Kubo API configuration expects:
 
@@ -211,10 +218,11 @@ through the HTTP/API flow and stored in SQLite.
 
 `Code/PrCsample.sol` is a historical generic record-storage experiment.
 `Code/SNsample.sol` is an early snapshot-anchor sketch. Both remain unchanged
-at the `Code` root for reference. The production snapshot format and public
-contract will be implemented in `Code/Snapshot` and `Code/PublicChain` without
-turning either sample directly into runtime code.
+at the `Code` root for reference. The production snapshot format is implemented
+in `Code/Snapshot`, and the public gateway is implemented in
+`Code/PublicChain`; neither historical sample is part of the runtime.
 
-The next architectural milestone is snapshot publication: persist a reviewed
-preview as a versioned snapshot, decide how its public Manifest is distributed,
-and prepare the resulting anchor data for an EVM contract.
+The production gateway contract now lives only at
+`Code/PublicChain/contracts/SnapshotGateway.sol`. The next architectural
+milestone is connecting the control server to the local relayer, persisting
+transaction status, and then building the consumer query/QR flow.
