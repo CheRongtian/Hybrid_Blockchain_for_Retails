@@ -18,6 +18,7 @@ endif()
 add_library(
     snapshot
     STATIC
+    src/gateway_payload.cpp
     src/snapshot.cpp
     src/snapshot_policy.cpp
 )
@@ -33,4 +34,19 @@ target_link_libraries(snapshot PUBLIC MerkleTree::merkle_tree)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(snapshot PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+option(SNAPSHOT_BUILD_TESTS "Build Snapshot module tests" OFF)
+
+if(SNAPSHOT_BUILD_TESTS)
+    enable_testing()
+    add_executable(
+        snapshot_gateway_payload_test
+        tests/gateway_payload_test.cpp
+    )
+    target_link_libraries(snapshot_gateway_payload_test PRIVATE Snapshot::snapshot)
+    add_test(
+        NAME snapshot_gateway_payload_test
+        COMMAND snapshot_gateway_payload_test
+    )
 endif()

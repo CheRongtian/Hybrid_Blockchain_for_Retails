@@ -1,0 +1,15 @@
+{
+  "protocol": "Schnucks-Trace-v1",
+  "snapshotId": "SNAP-BATCH-ORANGES-0001-20260813T012527Z-V0001",
+  "batchId": "BATCH-ORANGES-0001",
+  "protocolHash": "0xf6d63c8e8596d7efea912da9939acfc9329942d1ef8f2b2c0186e563e1b21c1e",
+  "snapshotIdHash": "0xf10453ba1f45efbac590ed03e8d253bb7daae1f568a44009b2f884eac43e2ebf",
+  "batchIdHash": "0x2d0c395bf8206b084fa53d318a3c9d8ce79aed69234b7f52f526dc2cd334af0f",
+  "publicRoot": "0xbbb17db995a73098f19ac8971a008f975076f18318d4f5818d692c287e61d107",
+  "manifestHash": "0x259e25c1c5314143c89fa7bc2d11e7b54bad32ad0d57d34437c731270e411a62",
+  "sourceBlockHash": "0x7f3abcae875735a4be1287dc365a60fdd7b7794ae5fa8638429c2597765f941f",
+  "sourceNetworkId": "0xc1c8866b0bbf128ab69bbc98fd18a53e26e1dc33ebdc3458d42281b024379428",
+  "destinationChainId": 31337,
+  "nonce": 1,
+  "snapshotVersion": 1
+}

@@ -124,7 +124,16 @@ function syncStoreLocationId() {
     storeLocationId.value = /^[0-9]{4}$/.test(number) ? "STORE-" + number : "";
 }
 
+function resetSubmissionState() {
+    statusLine.textContent = "";
+    statusLine.className = "request-status";
+    signatureStatus.textContent = "";
+    signatureStatus.className = "signature-status";
+    resultCard.hidden = true;
+}
+
 function showSession(result) {
+    resetSubmissionState();
     session = result;
     loginCard.hidden = true;
     recordCard.hidden = false;
@@ -162,12 +171,11 @@ function clearSession() {
     localStorage.removeItem(sessionKey);
     loginCard.hidden = false;
     recordCard.hidden = true;
-    resultCard.hidden = true;
+    resetSubmissionState();
     confirmationPolicy = null;
     confirmationMethods.replaceChildren();
     confirmationPanel.hidden = true;
     confirmationError.textContent = "";
-    signatureStatus.textContent = "";
     form.reset();
     clearAttachmentState();
 }
