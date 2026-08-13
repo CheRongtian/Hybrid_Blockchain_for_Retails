@@ -163,6 +163,48 @@ dt {
     margin-bottom: 1rem;
 }
 
+.workflow-toolbar {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 1fr) repeat(4, auto);
+    align-items: end;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+}
+
+.workflow-toolbar label {
+    display: grid;
+    gap: 0.4rem;
+    color: #91a2b9;
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.workflow-toolbar select {
+    min-width: 0;
+    padding: 0.72rem 0.75rem;
+    border: 1px solid #30445f;
+    border-radius: 0.6rem;
+    color: #e5edf8;
+    background: #080f1c;
+    font: inherit;
+}
+
+.workflow-toolbar button {
+    white-space: nowrap;
+}
+
+.workflow-toolbar .workflow-secondary {
+    border: 1px solid #30445f;
+    background: #102238;
+    color: #dce7f5;
+}
+
+.workflow-help {
+    margin: 0.9rem 0 0;
+    color: #91a2b9;
+    font-size: 0.86rem;
+}
+
 .policy-card {
     margin-bottom: 1rem;
 }
@@ -504,6 +546,18 @@ dt {
 
 .workflow-card .status {
     margin: 0.8rem 0 0;
+}
+
+@media (max-width: 72rem) {
+    .workflow-toolbar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 42rem) {
+    .workflow-toolbar {
+        grid-template-columns: 1fr;
+    }
 }
 
 .chain-card {

@@ -70,6 +70,77 @@ function renderEvidence(evidence) {
   }
 }
 
+function routeStageDetails(stage, manifest) {
+  if (stage.stage === "supplier") {
+    return {
+      title: "Supplier",
+      primary: stage.location || manifest.origin.farm_location,
+      secondary: `Harvested ${stage.harvest_date || manifest.origin.harvest_date}`,
+    };
+  }
+  if (stage.stage === "logistics") {
+    return {
+      title: "Logistics",
+      primary: `${stage.pickup_location} → ${stage.delivery_location}`,
+      secondary: `${measurement(stage.temperature)} · ${measurement(stage.humidity)}`,
+    };
+  }
+  if (stage.stage === "warehouse") {
+    return {
+      title: "Warehouse",
+      primary: `${stage.inbound_local_time} → ${stage.outbound_local_time}`,
+      secondary: `${measurement(stage.temperature)} · ${measurement(stage.humidity)}`,
+    };
+  }
+  return {
+    title: "Supermarket",
+    primary: stage.store_location_id || manifest.retail.store_location_id,
+    secondary: `Shelved ${stage.shelf_placement_date || manifest.retail.shelf_placement_date} · ` +
+      `Sell by ${stage.sell_by_date || manifest.retail.sell_by_date}`,
+  };
+}
+
+function renderRoute(manifest) {
+  const route = document.querySelector("#trace-route");
+  route.replaceChildren();
+  const stages = Array.isArray(manifest.route) && manifest.route.length > 0
+    ? manifest.route
+    : [
+        {
+          stage: "supplier",
+          location: manifest.origin.farm_location,
+          harvest_date: manifest.origin.harvest_date,
+        },
+        { stage: "logistics", ...(manifest.transport || {}) },
+        { stage: "warehouse", ...(manifest.storage || {}) },
+        { stage: "supermarket", ...(manifest.retail || {}) },
+      ];
+
+  stages.forEach((stage, index) => {
+    if (index > 0) {
+      const connector = document.createElement("span");
+      connector.className = "connector";
+      connector.setAttribute("aria-hidden", "true");
+      connector.textContent = "→";
+      route.append(connector);
+    }
+    const details = routeStageDetails(stage, manifest);
+    const card = document.createElement("article");
+    card.className = "route-node";
+    const sequence = document.createElement("span");
+    sequence.className = "route-index";
+    sequence.textContent = String(index + 1);
+    const title = document.createElement("p");
+    title.textContent = details.title;
+    const primary = document.createElement("strong");
+    primary.textContent = details.primary || "Not disclosed";
+    const secondary = document.createElement("small");
+    secondary.textContent = details.secondary || "Not disclosed";
+    card.append(sequence, title, primary, secondary);
+    route.append(card);
+  });
+}
+
 function renderTrace(trace) {
   const manifest = trace.manifest;
   const badge = document.querySelector("#verification-badge");
@@ -84,19 +155,7 @@ function renderTrace(trace) {
   text("#harvest-date", manifest.origin.harvest_date);
   text("#category", manifest.batch.category);
   text("#chain-status", trace.status);
-  text("#supplier-location", manifest.origin.farm_location);
-  text("#supplier-date", `Harvested ${manifest.origin.harvest_date}`);
-  text("#transport-route",
-    `${manifest.transport.pickup_location} → ${manifest.transport.delivery_location}`);
-  text("#transport-condition",
-    `${measurement(manifest.transport.temperature)} · ${measurement(manifest.transport.humidity)}`);
-  text("#storage-time",
-    `${manifest.storage.inbound_local_time} → ${manifest.storage.outbound_local_time}`);
-  text("#storage-condition",
-    `${measurement(manifest.storage.temperature)} · ${measurement(manifest.storage.humidity)}`);
-  text("#store-location", manifest.retail.store_location_id);
-  text("#retail-dates",
-    `Shelved ${manifest.retail.shelf_placement_date} · Sell by ${manifest.retail.sell_by_date}`);
+  renderRoute(manifest);
   text("#route-state", manifest.verification.route_completed ? "Route completed" : "Route incomplete");
   renderEvidence(trace.evidence);
   renderTechnical(trace.technical);

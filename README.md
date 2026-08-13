@@ -90,16 +90,18 @@ and planned responsibilities. This README remains the project entry point.
 
 ## Implemented private-chain flow
 
-The current route is fixed:
+The default route template is:
 
 ```text
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The Supplier creates a product batch. Each later participant selects an
-existing batch when that participant's role is the next required stage. Batch
-master data is inherited along the same route instead of being entered again.
-The Supermarket is the required final stage.
+The administrator can edit and save the default template or a batch-specific
+route from the control Canvas. A route may contain repeated Logistics and
+Warehouse stages or connect Supplier directly to Supermarket. Supplier remains
+the required first stage and Supermarket remains the required final stage.
+Each later participant selects an existing batch when that participant's role
+is the next required stage. Batch master data is inherited along the route.
 
 Each supply-chain event creates one block with its own Merkle Tree:
 
@@ -121,7 +123,7 @@ verifiable tree for each event.
 - independent user and administrator HTTP servers;
 - account authentication, logout, and optional persistent sessions;
 - role-specific forms for Supplier, Logistics, Warehouse, and Supermarket;
-- fixed route-order enforcement;
+- administrator-defined default and per-batch route-order enforcement;
 - generated and validated identifiers;
 - per-role administrator confirmation policies;
 - typed-name confirmation with browser ECDSA P-256 signing and C++ OpenSSL

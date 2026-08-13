@@ -38,6 +38,29 @@ struct SupplyChainBatch
     std::string current_stage;
     std::string status = "in_progress";
     std::string created_at;
+    std::string route_id;
+    std::string route_node_id;
+    int route_step_index = -1;
+};
+
+struct SupplyRouteNode
+{
+    std::string route_id;
+    std::string node_id;
+    std::string node_type;
+    std::string label;
+    std::string role;
+    std::string username;
+    int position_x = 0;
+    int position_y = 0;
+    int step_index = -1;
+};
+
+struct SupplyRouteEdge
+{
+    std::string route_id;
+    std::string from_node_id;
+    std::string to_node_id;
 };
 
 struct IpfsReference
@@ -98,6 +121,11 @@ struct SupplyChainRecord
     std::string signature_public_key_hash;
     std::string signed_payload_hash;
     bool signature_verified = false;
+    std::string route_id;
+    std::string route_node_id;
+    int route_step_index = -1;
+    std::string transport_shipment_id;
+    std::string transport_vehicle_container_id;
 };
 
 struct BlockEdge

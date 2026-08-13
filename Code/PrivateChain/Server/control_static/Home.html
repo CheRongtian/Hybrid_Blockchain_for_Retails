@@ -46,13 +46,39 @@
             <section class="record-card workflow-card" aria-labelledby="workflow-title">
                 <header>
                     <div>
-                        <p class="eyebrow">PRESET WORKFLOW</p>
+                        <p class="eyebrow">ROUTE WORKFLOW</p>
                         <h2 id="workflow-title">Supply Chain Route</h2>
                     </div>
-                    <span class="badge pending">Fixed route</span>
+                    <span id="workflow-route-badge" class="badge pending">Loading route</span>
                 </header>
-                <canvas id="workflow-canvas" aria-label="Preset supply chain route"></canvas>
-                <p id="workflow-status" class="status" aria-live="polite">Loading preset route...</p>
+                <div class="workflow-toolbar">
+                    <label>
+                        Route scope
+                        <select id="workflow-batch-select">
+                            <option value="">Default route</option>
+                        </select>
+                    </label>
+                    <label>
+                        Add route node
+                        <select id="workflow-node-type">
+                            <option value="transport">Transport</option>
+                            <option value="warehouse">Warehouse</option>
+                        </select>
+                    </label>
+                    <button id="workflow-add-node" type="button">Add node</button>
+                    <button id="workflow-delete-node" class="workflow-secondary" type="button" disabled>
+                        Delete selected
+                    </button>
+                    <button id="workflow-reset-route" class="workflow-secondary" type="button">
+                        Reload route
+                    </button>
+                    <button id="workflow-save" type="button">Save route</button>
+                </div>
+                <p class="workflow-help">
+                    Select one node, then select another node to connect them. The route must start at Supplier and end at Supermarket.
+                </p>
+                <canvas id="workflow-canvas" aria-label="Editable supply chain route"></canvas>
+                <p id="workflow-status" class="status" aria-live="polite">Loading route...</p>
             </section>
 
             <details class="record-card policy-card">

@@ -102,20 +102,26 @@ PrivateChain/ConMemPool/concurrency_mempool.cpp
 
 The standalone allocator tests remain outside the control-server target.
 
-## Fixed workflow
+## Configurable workflow
 
-The current route is fixed:
+The initial route template is:
 
 ```
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The server accepts a new block only when the authenticated role is the next
-stage for that batch. Supplier creates the batch master data. The server
-generates the batch ID from the normalized product name and a product-specific
-four-digit sequence. Later stages select an existing batch and inherit its
-product, harvest date, farm location, certificate ID, and generated batch ID.
-Supermarket completes the route.
+The administrator can edit this template or select an existing batch and save
+a batch-specific route from the control Canvas. A valid route is a connected
+sequence that starts with Supplier and ends with Supermarket. It may contain
+repeated Logistics and Warehouse nodes, or connect Supplier directly to
+Supermarket. The server accepts a new block only when the authenticated role is
+the next node on that batch's saved route.
+
+Supplier creates the batch master data. The server generates the batch ID from
+the normalized product name and a product-specific four-digit sequence. Later
+stages select an existing batch and inherit its product, harvest date, farm
+location, certificate ID, and generated batch ID. Supermarket completes the
+route.
 
 Examples:
 
@@ -138,8 +144,9 @@ carries multiple batches. The ID format is validated by the server; shipment
 and storage identifiers are not encoded with a batch ID.
 
 The route topology is separate from transport event facts. Logistics records
-pickup and delivery locations inside its own event data; those fields do not
-change the preset route.
+shipment and vehicle identifiers as event data. Its delivery location is
+derived from the next configured route node. The same shipment or vehicle can
+be linked to records from multiple batches.
 
 ## Role-specific event fields
 
@@ -152,8 +159,8 @@ The current user page presents fields for the authenticated role:
 | Warehouse | Storage Lot ID, Inbound/Outbound Time, Temperature/Humidity Summary, Storage Zone/Rack ID |
 | Supermarket | Shelf Placement Date, Expiration/Sell-by Date, Store Location ID |
 
-The active four-stage route does not yet add the Inspection Agency role from
-the appendix.
+The current route editor supports Supplier, Logistics, Warehouse, and
+Supermarket. It does not yet add the Inspection Agency role from the appendix.
 
 ## IPFS API
 
@@ -282,16 +289,20 @@ stage, and CID count.
 
 ### Control endpoints
 
-GET /api/workflow returns the fixed route for the Canvas.
+GET /api/workflow returns the default route or the route selected by batchId.
+
+POST /api/workflow validates and saves the Canvas node/edge sequence. An empty
+batchId updates the default route; a batchId creates or updates that batch's
+route assignment.
 
 GET /api/chains returns saved records and block edges for the administrator
 control page.
 
 GET /api/records returns saved verification records for the administrator.
 
-GET /api/snapshot/eligible-batches returns completed batches whose four stages,
-parent links, Merkle results, and signatures pass the Snapshot eligibility
-policy.
+GET /api/snapshot/eligible-batches returns completed batches whose configured
+route, parent links, Merkle results, and signatures pass the Snapshot
+eligibility policy.
 
 POST /api/snapshot/preview accepts a batch ID and optional allowlisted CID
 selection. It returns a consumer-safe Manifest, independent Public Merkle Root,
@@ -322,8 +333,9 @@ service environments when overriding the local demonstration value.
 
 The control server creates or upgrades these tables:
 
-The v6 schema stores batch master data, blocks, edges, Merkle leaves,
-attachments, users, persistent sessions, and per-role confirmation policies.
+The v7 schema stores batch master data, blocks, edges, Merkle leaves,
+attachments, users, persistent sessions, per-role confirmation policies,
+route definitions, route nodes, route edges, and transport-to-batch links.
 The v5 global confirmation policy is migrated to separate Supplier, Logistics,
 Warehouse, and Supermarket rows without changing stored business records.
 
@@ -420,7 +432,8 @@ remain in memory for up to eight hours.
 
 ## Scope limits
 
-- The active route is fixed to four stages.
+- Route editing currently supports a linear per-batch sequence with Supplier
+  and Supermarket as required endpoints.
 - ECDSA P-256 typed-name confirmation is implemented. Handwritten capture, face
   capture, Inspection Agency, and third-party verification are deferred.
 - Public snapshot preview generation is provided through the sibling Snapshot

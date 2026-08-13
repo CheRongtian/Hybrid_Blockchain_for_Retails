@@ -23,14 +23,6 @@ namespace
 constexpr const char* SNAPSHOT_PROTOCOL = "Supermarket-Trace-v1";
 constexpr int SNAPSHOT_VERSION = 1;
 
-const std::vector<std::string>& expected_stages()
-{
-    static const std::vector<std::string> stages = {
-        "supplier", "logistics", "warehouse", "supermarket"
-    };
-    return stages;
-}
-
 std::string trim(std::string value)
 {
     const std::size_t first = value.find_first_not_of(" \t\r\n");
@@ -105,16 +97,6 @@ std::string timestamp_id_component(const std::string& timestamp)
         if(ch != '-' && ch != ':') component += ch;
     }
     return component;
-}
-
-const StageInput* find_stage(const BatchInput& input,
-                             const std::string& stage)
-{
-    for(const StageInput& item : input.stages)
-    {
-        if(item.stage == stage) return &item;
-    }
-    return nullptr;
 }
 
 std::string event_value(const StageInput& stage, const std::string& name)
@@ -196,15 +178,6 @@ std::string measurement_json(const Measurement& measurement,
            ",\"unit\":" + json_string(unit) + "}";
 }
 
-int stage_rank(const std::string& stage)
-{
-    const auto& stages = expected_stages();
-    const auto item = std::find(stages.begin(), stages.end(), stage);
-    return item == stages.end()
-        ? static_cast<int>(stages.size())
-        : static_cast<int>(std::distance(stages.begin(), item));
-}
-
 std::string public_leaf_input(const PublicField& field)
 {
     return field.name + ":" + std::to_string(field.value.size()) + ":" +
@@ -232,66 +205,68 @@ Eligibility evaluate_eligibility(const BatchInput& input)
     if(input.status != "completed")
         result.errors.push_back("The batch has not completed the route");
 
-    const auto& stages = expected_stages();
-    if(input.stages.size() != stages.size())
-    {
-        result.errors.push_back("The batch must contain exactly four route stages");
-    }
+    if(input.stages.size() < 2)
+        result.errors.push_back("The batch route must contain at least two stages");
+    if(!input.stages.empty() && input.stages.front().stage != "supplier")
+        result.errors.push_back("The route must start with a Supplier stage");
+    if(!input.stages.empty() && input.stages.back().stage != "supermarket")
+        result.errors.push_back("The route must end with a Supermarket stage");
 
-    for(std::size_t index = 0; index < stages.size(); ++index)
+    for(std::size_t index = 0; index < input.stages.size(); ++index)
     {
-        const StageInput* stage = find_stage(input, stages[index]);
-        if(!stage)
-        {
-            result.errors.push_back("Missing " + stages[index] + " stage");
-            continue;
-        }
+        const StageInput& stage = input.stages[index];
+        const bool supported = stage.stage == "supplier" ||
+            stage.stage == "logistics" || stage.stage == "warehouse" ||
+            stage.stage == "supermarket";
+        if(!supported)
+            result.errors.push_back("Unsupported route stage: " + stage.stage);
 
-        if(!stage->verified)
-            result.errors.push_back(stages[index] + " Merkle verification failed");
-        if(!stage->signature_verified)
-            result.errors.push_back(stages[index] + " signature verification failed");
-        if(stage->block_hash.empty())
-            result.errors.push_back(stages[index] + " block hash is missing");
+        const std::string label = stage.stage + " block " +
+                                  std::to_string(stage.block_id);
+        if(!stage.verified)
+            result.errors.push_back(label + " Merkle verification failed");
+        if(!stage.signature_verified)
+            result.errors.push_back(label + " signature verification failed");
+        if(stage.block_hash.empty())
+            result.errors.push_back(label + " hash is missing");
 
         if(index == 0)
         {
-            if(stage->parent_block_id != -1 || stage->parent_block_hash != "GENESIS")
+            if(stage.parent_block_id != -1 || stage.parent_block_hash != "GENESIS")
                 result.errors.push_back("Supplier stage is not the genesis block");
         }
         else
         {
-            const StageInput* parent = find_stage(input, stages[index - 1]);
-            if(parent && (stage->parent_block_id != parent->block_id ||
-                          stage->parent_block_hash != parent->block_hash))
+            const StageInput& parent = input.stages[index - 1];
+            if(stage.parent_block_id != parent.block_id ||
+               stage.parent_block_hash != parent.block_hash)
             {
-                result.errors.push_back(stages[index] +
-                                        " does not link to the previous stage");
+                result.errors.push_back(label + " does not link to the previous stage");
             }
         }
-    }
 
-    if(const StageInput* logistics = find_stage(input, "logistics"))
-    {
-        for(const char* field : {
-                "pickupLocation", "deliveryLocation", "departureTime",
-                "arrivalTime", "temperature", "temperatureUnit", "humidity"})
-            require_value(*logistics, field, result.errors);
-    }
-    if(const StageInput* warehouse = find_stage(input, "warehouse"))
-    {
-        for(const char* field : {
-                "inboundTime", "outboundTime", "temperature",
-                "temperatureUnit", "humidity"})
-            require_value(*warehouse, field, result.errors);
-    }
-    if(const StageInput* supermarket = find_stage(input, "supermarket"))
-    {
-        for(const char* field : {
-                "shelfPlacementDate", "expirationSellByDate", "storeLocationId"})
-            require_value(*supermarket, field, result.errors);
-        if(supermarket->chain_status != "completed")
-            result.errors.push_back("The Supermarket block is not marked completed");
+        if(stage.stage == "logistics")
+        {
+            for(const char* field : {
+                    "pickupLocation", "deliveryLocation", "departureTime",
+                    "arrivalTime", "temperature", "temperatureUnit", "humidity"})
+                require_value(stage, field, result.errors);
+        }
+        else if(stage.stage == "warehouse")
+        {
+            for(const char* field : {
+                    "inboundTime", "outboundTime", "temperature",
+                    "temperatureUnit", "humidity"})
+                require_value(stage, field, result.errors);
+        }
+        else if(stage.stage == "supermarket")
+        {
+            for(const char* field : {
+                    "shelfPlacementDate", "expirationSellByDate", "storeLocationId"})
+                require_value(stage, field, result.errors);
+            if(stage.chain_status != "completed")
+                result.errors.push_back("The Supermarket block is not marked completed");
+        }
     }
 
     result.eligible = result.errors.empty();
@@ -311,34 +286,40 @@ std::optional<Preview> build_preview(
         return std::nullopt;
     }
 
-    const StageInput& logistics = *find_stage(input, "logistics");
-    const StageInput& warehouse = *find_stage(input, "warehouse");
-    const StageInput& supermarket = *find_stage(input, "supermarket");
-    const auto logistics_temperature = parse_measurement(
-        event_value(logistics, "temperature"), -1000.0, 1000.0);
-    const auto logistics_humidity = parse_measurement(
-        event_value(logistics, "humidity"), 0.0, 100.0);
-    const auto warehouse_temperature = parse_measurement(
-        event_value(warehouse, "temperature"), -1000.0, 1000.0);
-    const auto warehouse_humidity = parse_measurement(
-        event_value(warehouse, "humidity"), 0.0, 100.0);
-    if(!logistics_temperature || !logistics_humidity ||
-       !warehouse_temperature || !warehouse_humidity)
+    const StageInput& supermarket = input.stages.back();
+
+    struct PublicRouteStage
     {
-        error = "A public temperature or humidity summary is malformed";
-        return std::nullopt;
-    }
-    const std::string logistics_temperature_unit =
-        event_value(logistics, "temperatureUnit");
-    const std::string warehouse_temperature_unit =
-        event_value(warehouse, "temperatureUnit");
-    if((logistics_temperature_unit != "C" &&
-        logistics_temperature_unit != "F") ||
-       (warehouse_temperature_unit != "C" &&
-        warehouse_temperature_unit != "F"))
+        const StageInput* stage = nullptr;
+        std::optional<Measurement> temperature;
+        std::optional<Measurement> humidity;
+        std::string temperature_unit;
+    };
+    std::vector<PublicRouteStage> route_stages;
+    route_stages.reserve(input.stages.size());
+    for(const StageInput& stage : input.stages)
     {
-        error = "A public temperature unit must be C or F";
-        return std::nullopt;
+        PublicRouteStage item;
+        item.stage = &stage;
+        if(stage.stage == "logistics" || stage.stage == "warehouse")
+        {
+            item.temperature = parse_measurement(
+                event_value(stage, "temperature"), -1000.0, 1000.0);
+            item.humidity = parse_measurement(
+                event_value(stage, "humidity"), 0.0, 100.0);
+            item.temperature_unit = event_value(stage, "temperatureUnit");
+            if(!item.temperature || !item.humidity)
+            {
+                error = "A public temperature or humidity summary is malformed";
+                return std::nullopt;
+            }
+            if(item.temperature_unit != "C" && item.temperature_unit != "F")
+            {
+                error = "A public temperature unit must be C or F";
+                return std::nullopt;
+            }
+        }
+        route_stages.push_back(std::move(item));
     }
 
     std::map<std::string, PublicEvidence> available_evidence;
@@ -377,9 +358,7 @@ std::optional<Preview> build_preview(
     }
     std::sort(public_evidence.begin(), public_evidence.end(),
               [](const PublicEvidence& left, const PublicEvidence& right) {
-                  const int left_rank = stage_rank(left.stage);
-                  const int right_rank = stage_rank(right.stage);
-                  if(left_rank != right_rank) return left_rank < right_rank;
+                  if(left.stage != right.stage) return left.stage < right.stage;
                   if(left.type != right.type) return left.type < right.type;
                   return left.cid < right.cid;
               });
@@ -411,31 +390,52 @@ std::optional<Preview> build_preview(
     add_field("origin.harvest_date", input.harvest_date);
     add_field("origin.farm_location", input.farm_location);
     add_field("compliance.certificate_id", input.certificate_id);
-    add_field("transport.pickup_location", event_value(logistics, "pickupLocation"));
-    add_field("transport.delivery_location", event_value(logistics, "deliveryLocation"));
-    add_field("transport.departure_local_time", event_value(logistics, "departureTime"));
-    add_field("transport.arrival_local_time", event_value(logistics, "arrivalTime"));
-    add_field("transport.time_zone", "unspecified");
-    add_field("transport.temperature.minimum", logistics_temperature->minimum);
-    add_field("transport.temperature.maximum", logistics_temperature->maximum);
-    add_field("transport.temperature.unit", logistics_temperature_unit);
-    add_field("transport.humidity.minimum", logistics_humidity->minimum);
-    add_field("transport.humidity.maximum", logistics_humidity->maximum);
-    add_field("transport.humidity.unit", "percent_rh");
-    add_field("storage.inbound_local_time", event_value(warehouse, "inboundTime"));
-    add_field("storage.outbound_local_time", event_value(warehouse, "outboundTime"));
-    add_field("storage.time_zone", "unspecified");
-    add_field("storage.temperature.minimum", warehouse_temperature->minimum);
-    add_field("storage.temperature.maximum", warehouse_temperature->maximum);
-    add_field("storage.temperature.unit", warehouse_temperature_unit);
-    add_field("storage.humidity.minimum", warehouse_humidity->minimum);
-    add_field("storage.humidity.maximum", warehouse_humidity->maximum);
-    add_field("storage.humidity.unit", "percent_rh");
     add_field("retail.store_location_id", event_value(supermarket, "storeLocationId"));
     add_field("retail.shelf_placement_date", event_value(supermarket, "shelfPlacementDate"));
     add_field("retail.sell_by_date", event_value(supermarket, "expirationSellByDate"));
-    for(std::size_t index = 0; index < expected_stages().size(); ++index)
-        add_field("verification.route." + std::to_string(index), expected_stages()[index]);
+    for(std::size_t index = 0; index < route_stages.size(); ++index)
+    {
+        const StageInput& stage = *route_stages[index].stage;
+        const std::string prefix = "route." + std::to_string(index) + ".";
+        add_field(prefix + "stage", stage.stage);
+        add_field(prefix + "block_id", std::to_string(stage.block_id));
+        if(stage.stage == "supplier")
+        {
+            add_field(prefix + "location", input.farm_location);
+            add_field(prefix + "harvest_date", input.harvest_date);
+        }
+        else if(stage.stage == "logistics")
+        {
+            add_field(prefix + "pickup_location", event_value(stage, "pickupLocation"));
+            add_field(prefix + "delivery_location", event_value(stage, "deliveryLocation"));
+            add_field(prefix + "departure_local_time", event_value(stage, "departureTime"));
+            add_field(prefix + "arrival_local_time", event_value(stage, "arrivalTime"));
+            add_field(prefix + "temperature.minimum", route_stages[index].temperature->minimum);
+            add_field(prefix + "temperature.maximum", route_stages[index].temperature->maximum);
+            add_field(prefix + "temperature.unit", route_stages[index].temperature_unit);
+            add_field(prefix + "humidity.minimum", route_stages[index].humidity->minimum);
+            add_field(prefix + "humidity.maximum", route_stages[index].humidity->maximum);
+            add_field(prefix + "humidity.unit", "percent_rh");
+        }
+        else if(stage.stage == "warehouse")
+        {
+            add_field(prefix + "inbound_local_time", event_value(stage, "inboundTime"));
+            add_field(prefix + "outbound_local_time", event_value(stage, "outboundTime"));
+            add_field(prefix + "temperature.minimum", route_stages[index].temperature->minimum);
+            add_field(prefix + "temperature.maximum", route_stages[index].temperature->maximum);
+            add_field(prefix + "temperature.unit", route_stages[index].temperature_unit);
+            add_field(prefix + "humidity.minimum", route_stages[index].humidity->minimum);
+            add_field(prefix + "humidity.maximum", route_stages[index].humidity->maximum);
+            add_field(prefix + "humidity.unit", "percent_rh");
+        }
+        else if(stage.stage == "supermarket")
+        {
+            add_field(prefix + "store_location_id", event_value(stage, "storeLocationId"));
+            add_field(prefix + "shelf_placement_date", event_value(stage, "shelfPlacementDate"));
+            add_field(prefix + "sell_by_date", event_value(stage, "expirationSellByDate"));
+        }
+        add_field("verification.route." + std::to_string(index), stage.stage);
+    }
     add_field("verification.route_completed", "true");
     add_field("verification.all_stages_verified", "true");
     add_field("verification.all_signatures_verified", "true");
@@ -478,36 +478,74 @@ std::optional<Preview> build_preview(
         << ",\"farm_location\":" << json_string(input.farm_location) << "}"
         << ",\"compliance\":{\"certificate_id\":"
         << json_string(input.certificate_id) << "}"
-        << ",\"transport\":{\"pickup_location\":"
-        << json_string(event_value(logistics, "pickupLocation"))
-        << ",\"delivery_location\":"
-        << json_string(event_value(logistics, "deliveryLocation"))
-        << ",\"departure_local_time\":"
-        << json_string(event_value(logistics, "departureTime"))
-        << ",\"arrival_local_time\":"
-        << json_string(event_value(logistics, "arrivalTime"))
-        << ",\"time_zone\":\"unspecified\",\"temperature\":"
-        << measurement_json(*logistics_temperature,
-                            logistics_temperature_unit)
-        << ",\"humidity\":"
-        << measurement_json(*logistics_humidity, "percent_rh") << "}"
-        << ",\"storage\":{\"inbound_local_time\":"
-        << json_string(event_value(warehouse, "inboundTime"))
-        << ",\"outbound_local_time\":"
-        << json_string(event_value(warehouse, "outboundTime"))
-        << ",\"time_zone\":\"unspecified\",\"temperature\":"
-        << measurement_json(*warehouse_temperature,
-                            warehouse_temperature_unit)
-        << ",\"humidity\":"
-        << measurement_json(*warehouse_humidity, "percent_rh") << "}"
+        << ",\"route\":[";
+    for(std::size_t index = 0; index < route_stages.size(); ++index)
+    {
+        if(index > 0) manifest << ',';
+        const StageInput& stage = *route_stages[index].stage;
+        manifest << "{\"sequence\":" << index + 1
+                 << ",\"stage\":" << json_string(stage.stage)
+                 << ",\"block_id\":" << stage.block_id;
+        if(stage.stage == "supplier")
+        {
+            manifest << ",\"location\":" << json_string(input.farm_location)
+                     << ",\"harvest_date\":" << json_string(input.harvest_date);
+        }
+        else if(stage.stage == "logistics")
+        {
+            manifest << ",\"pickup_location\":"
+                     << json_string(event_value(stage, "pickupLocation"))
+                     << ",\"delivery_location\":"
+                     << json_string(event_value(stage, "deliveryLocation"))
+                     << ",\"departure_local_time\":"
+                     << json_string(event_value(stage, "departureTime"))
+                     << ",\"arrival_local_time\":"
+                     << json_string(event_value(stage, "arrivalTime"))
+                     << ",\"time_zone\":\"unspecified\",\"temperature\":"
+                     << measurement_json(*route_stages[index].temperature,
+                                         route_stages[index].temperature_unit)
+                     << ",\"humidity\":"
+                     << measurement_json(*route_stages[index].humidity, "percent_rh");
+        }
+        else if(stage.stage == "warehouse")
+        {
+            manifest << ",\"inbound_local_time\":"
+                     << json_string(event_value(stage, "inboundTime"))
+                     << ",\"outbound_local_time\":"
+                     << json_string(event_value(stage, "outboundTime"))
+                     << ",\"time_zone\":\"unspecified\",\"temperature\":"
+                     << measurement_json(*route_stages[index].temperature,
+                                         route_stages[index].temperature_unit)
+                     << ",\"humidity\":"
+                     << measurement_json(*route_stages[index].humidity, "percent_rh");
+        }
+        else if(stage.stage == "supermarket")
+        {
+            manifest << ",\"store_location_id\":"
+                     << json_string(event_value(stage, "storeLocationId"))
+                     << ",\"shelf_placement_date\":"
+                     << json_string(event_value(stage, "shelfPlacementDate"))
+                     << ",\"sell_by_date\":"
+                     << json_string(event_value(stage, "expirationSellByDate"));
+        }
+        manifest << '}';
+    }
+    manifest
+        << "]"
         << ",\"retail\":{\"store_location_id\":"
         << json_string(event_value(supermarket, "storeLocationId"))
         << ",\"shelf_placement_date\":"
         << json_string(event_value(supermarket, "shelfPlacementDate"))
         << ",\"sell_by_date\":"
         << json_string(event_value(supermarket, "expirationSellByDate")) << "}"
-        << ",\"verification\":{\"route\":[\"supplier\",\"logistics\","
-           "\"warehouse\",\"supermarket\"],\"route_completed\":true,"
+        << ",\"verification\":{\"route\":[";
+    for(std::size_t index = 0; index < input.stages.size(); ++index)
+    {
+        if(index > 0) manifest << ',';
+        manifest << json_string(input.stages[index].stage);
+    }
+    manifest
+        << "],\"route_completed\":true,"
            "\"all_stages_verified\":true,\"all_signatures_verified\":true,"
            "\"final_private_block_hash\":"
         << json_string(preview.final_private_block_hash) << "}"

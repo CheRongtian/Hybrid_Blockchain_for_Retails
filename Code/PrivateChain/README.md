@@ -24,15 +24,17 @@ Detailed references:
 - [MerkleTree](MerkleTree/README.md)
 - [Database](Database/README.md)
 
-## Current route
+## Configurable route
 
 ```text
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The Supplier creates a new product batch. Later roles select a batch whose
-next stage matches their authenticated role. The Supermarket completes the
-current route.
+This sequence is the initial route template. The control Canvas can save a
+different default route or a route for one batch. Repeated Logistics and
+Warehouse stages and direct Supplier-to-Supermarket delivery are supported.
+The Supplier creates a new product batch, later roles follow that batch's
+saved route, and the Supermarket completes it.
 
 Each batch is represented as an outer linked block chain:
 

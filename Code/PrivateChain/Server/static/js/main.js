@@ -18,6 +18,7 @@ const batchProduct = document.querySelector("#batch-product");
 const batchHarvestDate = document.querySelector("#batch-harvest-date");
 const batchFarmLocation = document.querySelector("#batch-farm-location");
 const batchStatus = document.querySelector("#batch-status");
+const deliveryLocationInput = document.querySelector("[name=deliveryLocation]");
 const attachmentCategory = document.querySelector("#attachment-category");
 const ipfsFiles = document.querySelector("#ipfs-files");
 const attachmentList = document.querySelector("#attachment-list");
@@ -377,9 +378,18 @@ function updateBatchSummary() {
     batchProduct.value = batch?.product || "";
     batchHarvestDate.value = batch?.harvestDate || "";
     batchFarmLocation.value = batch?.farmLocation || "";
-    submitRecord.disabled = !batch;
+    if (deliveryLocationInput) {
+        deliveryLocationInput.value = batch?.nextDestinationLabel || "";
+        deliveryLocationInput.readOnly = true;
+    }
+    const destination = batch?.nextDestinationLabel
+        ? " Destination: " + batch.nextDestinationLabel + "."
+        : "";
+    submitRecord.disabled = !batch ||
+        (currentRole() === "logistics" && !batch?.nextDestinationLabel);
     batchStatus.textContent = batch
-        ? "Next route stage: " + (roleLabels[batch.nextStage] || batch.nextStage) + "."
+        ? "Next route stage: " + (batch.nextNodeLabel ||
+            roleLabels[batch.nextStage] || batch.nextStage) + "." + destination
         : "Select a batch waiting for your route stage.";
     batchStatus.className = batch ? "request-status success" : "request-status pending";
 }
@@ -447,6 +457,9 @@ function configureRole() {
         });
     });
     storeLocationNumber.required = role === "supermarket";
+    if (deliveryLocationInput) {
+        deliveryLocationInput.readOnly = role !== "logistics";
+    }
 
     populateAttachmentCategories(role);
     setCurrentStage(role);

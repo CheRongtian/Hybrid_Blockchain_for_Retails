@@ -4,15 +4,17 @@
 
 #include <ctime>
 #include <iostream>
+#include <unordered_set>
 #include <unordered_map>
 #include <utility>
 
 namespace
 {
-constexpr int DATABASE_SCHEMA_VERSION = 6;
+constexpr int DATABASE_SCHEMA_VERSION = 7;
 constexpr int OLDER_DATABASE_SCHEMA_VERSION = 3;
 constexpr int PREVIOUS_DATABASE_SCHEMA_VERSION = 4;
 constexpr int ROLE_POLICY_DATABASE_SCHEMA_VERSION = 5;
+constexpr int ROUTE_DATABASE_SCHEMA_VERSION = 6;
 
 std::string column_text(sqlite3_stmt* statement, int column)
 {
@@ -104,7 +106,7 @@ bool read_schema_version(sqlite3* db, int& version)
 bool write_schema_version(sqlite3* db)
 {
     return execute_sql(db,
-                       "PRAGMA user_version = 6;",
+                       "PRAGMA user_version = 7;",
                        "Set database schema version failed");
 }
 
@@ -256,8 +258,8 @@ bool insert_batch_if_missing(sqlite3* db, const SupplyChainRecord& record)
     const char* sql =
         "INSERT OR IGNORE INTO batches ("
         "batch_id, product, harvest_date, farm_location, certificate_id, "
-        "created_by_uid, current_stage, status"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
+        "created_by_uid, current_stage, status, route_id"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
     {
@@ -274,7 +276,8 @@ bool insert_batch_if_missing(sqlite3* db, const SupplyChainRecord& record)
         bind_text(statement, 5, record.certificate_id) &&
         bind_text(statement, 6, record.uid) &&
         bind_text(statement, 7, record.stage) &&
-        bind_text(statement, 8, record.chain_status);
+        bind_text(statement, 8, record.chain_status) &&
+        bind_text(statement, 9, record.route_id);
     const bool succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
     if(!succeeded)
         std::cerr << "Insert batch failed: " << sqlite3_errmsg(db) << '\n';
@@ -285,7 +288,8 @@ bool insert_batch_if_missing(sqlite3* db, const SupplyChainRecord& record)
 bool update_batch_state(sqlite3* db, const SupplyChainRecord& record)
 {
     const char* sql =
-        "UPDATE batches SET current_stage = ?, status = ? WHERE batch_id = ?;";
+        "UPDATE batches SET current_stage = ?, status = ?, route_id = ? "
+        "WHERE batch_id = ?;";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
     {
@@ -297,7 +301,8 @@ bool update_batch_state(sqlite3* db, const SupplyChainRecord& record)
     const bool bound =
         bind_text(statement, 1, record.stage) &&
         bind_text(statement, 2, record.chain_status) &&
-        bind_text(statement, 3, record.batch_id);
+        bind_text(statement, 3, record.route_id) &&
+        bind_text(statement, 4, record.batch_id);
     const bool succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
     if(!succeeded)
         std::cerr << "Update batch failed: " << sqlite3_errmsg(db) << '\n';
@@ -328,6 +333,7 @@ bool init_database(const std::string& db_path)
        schema_version != OLDER_DATABASE_SCHEMA_VERSION &&
        schema_version != PREVIOUS_DATABASE_SCHEMA_VERSION &&
        schema_version != ROLE_POLICY_DATABASE_SCHEMA_VERSION &&
+       schema_version != ROUTE_DATABASE_SCHEMA_VERSION &&
        schema_version != DATABASE_SCHEMA_VERSION)
     {
         std::cerr << "Unsupported database schema version: " << schema_version
@@ -354,7 +360,8 @@ bool init_database(const std::string& db_path)
         "created_by_uid TEXT NOT NULL,"
         "current_stage TEXT NOT NULL,"
         "status TEXT NOT NULL DEFAULT 'in_progress',"
-        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "route_id TEXT NOT NULL DEFAULT ''"
         ");"
         "CREATE TABLE IF NOT EXISTS supply_chain_records ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -385,6 +392,9 @@ bool init_database(const std::string& db_path)
         "signature_public_key_hash TEXT NOT NULL DEFAULT '',"
         "signed_payload_hash TEXT NOT NULL DEFAULT '',"
         "signature_verified INTEGER NOT NULL DEFAULT 0 CHECK (signature_verified IN (0, 1)),"
+        "route_id TEXT NOT NULL DEFAULT '',"
+        "route_node_id TEXT NOT NULL DEFAULT '',"
+        "route_step_index INTEGER NOT NULL DEFAULT -1,"
         "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
         ");"
         "CREATE TABLE IF NOT EXISTS users ("
@@ -439,6 +449,39 @@ bool init_database(const std::string& db_path)
         "face INTEGER NOT NULL DEFAULT 0 CHECK (face IN (0, 1)),"
         "updated_by_uid TEXT NOT NULL DEFAULT '',"
         "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE TABLE IF NOT EXISTS route_definitions ("
+        "route_id TEXT PRIMARY KEY,"
+        "batch_id TEXT NOT NULL DEFAULT '',"
+        "name TEXT NOT NULL,"
+        "is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),"
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE TABLE IF NOT EXISTS route_nodes ("
+        "route_id TEXT NOT NULL,"
+        "node_id TEXT NOT NULL,"
+        "node_type TEXT NOT NULL,"
+        "label TEXT NOT NULL,"
+        "role TEXT NOT NULL,"
+        "username TEXT NOT NULL DEFAULT '',"
+        "position_x INTEGER NOT NULL DEFAULT 0,"
+        "position_y INTEGER NOT NULL DEFAULT 0,"
+        "step_index INTEGER NOT NULL DEFAULT -1,"
+        "PRIMARY KEY (route_id, node_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS route_edges ("
+        "route_id TEXT NOT NULL,"
+        "from_node_id TEXT NOT NULL,"
+        "to_node_id TEXT NOT NULL,"
+        "PRIMARY KEY (route_id, from_node_id, to_node_id)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS transport_batch_links ("
+        "shipment_id TEXT NOT NULL,"
+        "vehicle_container_id TEXT NOT NULL,"
+        "batch_id TEXT NOT NULL,"
+        "block_id INTEGER NOT NULL,"
+        "PRIMARY KEY (shipment_id, batch_id, block_id)"
         ");";
 
     if(!execute_sql(db, schema_sql, "Create database schema failed") ||
@@ -460,6 +503,14 @@ bool init_database(const std::string& db_path)
                               "TEXT NOT NULL DEFAULT ''") ||
        !add_column_if_missing(db, "supply_chain_records", "signature_verified",
                               "INTEGER NOT NULL DEFAULT 0") ||
+       !add_column_if_missing(db, "batches", "route_id",
+                              "TEXT NOT NULL DEFAULT ''") ||
+       !add_column_if_missing(db, "supply_chain_records", "route_id",
+                              "TEXT NOT NULL DEFAULT ''") ||
+       !add_column_if_missing(db, "supply_chain_records", "route_node_id",
+                              "TEXT NOT NULL DEFAULT ''") ||
+       !add_column_if_missing(db, "supply_chain_records", "route_step_index",
+                              "INTEGER NOT NULL DEFAULT -1") ||
        !migrate_confirmation_policies(db) ||
        !execute_sql(db,
                     "UPDATE users SET display_name = username "
@@ -472,7 +523,7 @@ bool init_database(const std::string& db_path)
     }
 
     sqlite3_close(db);
-    return true;
+    return ensure_default_workflow(db_path);
 }
 
 bool load_confirmation_policy(const std::string& db_path,
@@ -959,7 +1010,7 @@ std::optional<SupplyChainBatch> find_supply_chain_batch(
 
     const char* sql =
         "SELECT batch_id, product, harvest_date, farm_location, certificate_id, "
-        "created_by_uid, current_stage, status, created_at "
+        "created_by_uid, current_stage, status, created_at, route_id "
         "FROM batches WHERE batch_id = ? LIMIT 1;";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
@@ -986,6 +1037,7 @@ std::optional<SupplyChainBatch> find_supply_chain_batch(
     batch.current_stage = column_text(statement, 6);
     batch.status = column_text(statement, 7);
     batch.created_at = column_text(statement, 8);
+    batch.route_id = column_text(statement, 9);
     sqlite3_finalize(statement);
     sqlite3_close(db);
     return batch;
@@ -1005,7 +1057,7 @@ bool load_supply_chain_batches(const std::string& db_path,
 
     const char* sql =
         "SELECT batch_id, product, harvest_date, farm_location, certificate_id, "
-        "created_by_uid, current_stage, status, created_at "
+        "created_by_uid, current_stage, status, created_at, route_id "
         "FROM batches ORDER BY created_at ASC, batch_id ASC;";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
@@ -1027,7 +1079,10 @@ bool load_supply_chain_batches(const std::string& db_path,
             column_text(statement, 5),
             column_text(statement, 6),
             column_text(statement, 7),
-            column_text(statement, 8)
+            column_text(statement, 8),
+            column_text(statement, 9),
+            "",
+            -1
         });
     }
 
@@ -1037,6 +1092,406 @@ bool load_supply_chain_batches(const std::string& db_path,
     sqlite3_finalize(statement);
     sqlite3_close(db);
     return succeeded;
+}
+
+namespace
+{
+std::string workflow_route_id(const std::string& batch_id)
+{
+    return batch_id.empty() ? "route-default" : "route-" + batch_id;
+}
+
+std::vector<SupplyRouteNode> default_route_nodes()
+{
+    return {
+        {"route-default", "supplier-1", "supplier", "Supplier", "supplier",
+         "supplier01", 80, 150, 0},
+        {"route-default", "transport-1", "transport", "Transport 1", "logistics",
+         "logistics01", 300, 150, 1},
+        {"route-default", "warehouse-1", "warehouse", "Warehouse", "warehouse",
+         "warehouse01", 520, 150, 2},
+        {"route-default", "supermarket-1", "supermarket", "Supermarket",
+         "supermarket", "supermarket01", 740, 150, 3}
+    };
+}
+
+std::vector<SupplyRouteEdge> default_route_edges()
+{
+    return {
+        {"route-default", "supplier-1", "transport-1"},
+        {"route-default", "transport-1", "warehouse-1"},
+        {"route-default", "warehouse-1", "supermarket-1"}
+    };
+}
+
+bool route_node_ids_are_unique(const std::vector<SupplyRouteNode>& nodes)
+{
+    std::unordered_set<std::string> ids;
+    for(const SupplyRouteNode& node : nodes)
+    {
+        if(node.node_id.empty() || node.label.empty() || node.role.empty() ||
+           !ids.insert(node.node_id).second)
+            return false;
+    }
+    return !nodes.empty();
+}
+}
+
+bool ensure_default_workflow(const std::string& db_path)
+{
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
+                    "Begin default workflow setup failed"))
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
+    const auto nodes = default_route_nodes();
+    const auto edges = default_route_edges();
+    const char* definition_sql =
+        "INSERT OR IGNORE INTO route_definitions "
+        "(route_id, batch_id, name, is_default) VALUES "
+        "('route-default', '', 'Default supply route', 1);";
+    bool succeeded = execute_sql(db, definition_sql,
+                                 "Create default workflow failed");
+
+    const char* node_sql =
+        "INSERT OR IGNORE INTO route_nodes "
+        "(route_id, node_id, node_type, label, role, username, position_x, "
+        "position_y, step_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
+    for(const SupplyRouteNode& node : nodes)
+    {
+        sqlite3_stmt* statement = nullptr;
+        if(!succeeded || sqlite3_prepare_v2(db, node_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            if(statement) sqlite3_finalize(statement);
+            break;
+        }
+        const bool bound =
+            bind_text(statement, 1, "route-default") &&
+            bind_text(statement, 2, node.node_id) &&
+            bind_text(statement, 3, node.node_type) &&
+            bind_text(statement, 4, node.label) &&
+            bind_text(statement, 5, node.role) &&
+            bind_text(statement, 6, node.username) &&
+            sqlite3_bind_int(statement, 7, node.position_x) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 8, node.position_y) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 9, node.step_index) == SQLITE_OK;
+        succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        if(!succeeded) break;
+    }
+
+    const char* edge_sql =
+        "INSERT OR IGNORE INTO route_edges "
+        "(route_id, from_node_id, to_node_id) VALUES (?, ?, ?);";
+    for(const SupplyRouteEdge& edge : edges)
+    {
+        sqlite3_stmt* statement = nullptr;
+        if(!succeeded || sqlite3_prepare_v2(db, edge_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            if(statement) sqlite3_finalize(statement);
+            break;
+        }
+        const bool bound =
+            bind_text(statement, 1, "route-default") &&
+            bind_text(statement, 2, edge.from_node_id) &&
+            bind_text(statement, 3, edge.to_node_id);
+        succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        if(!succeeded) break;
+    }
+
+    if(succeeded)
+    {
+        succeeded = execute_sql(
+            db,
+            "UPDATE batches SET route_id = 'route-default' WHERE route_id = '';",
+            "Bind existing batches to default workflow failed");
+    }
+
+    if(!succeeded || !execute_sql(db, "COMMIT;",
+                                  "Commit default workflow setup failed"))
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback default workflow setup failed");
+        sqlite3_close(db);
+        return false;
+    }
+    sqlite3_close(db);
+    return true;
+}
+
+bool ensure_batch_workflow(const std::string& db_path,
+                           const std::string& batch_id,
+                           std::string& route_id)
+{
+    route_id.clear();
+    if(batch_id.empty()) return false;
+
+    const auto batch = find_supply_chain_batch(db_path, batch_id);
+    if(!batch) return false;
+    if(!batch->route_id.empty())
+    {
+        route_id = batch->route_id;
+        return true;
+    }
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        if(db) sqlite3_close(db);
+        return false;
+    }
+    const char* sql = "UPDATE batches SET route_id = 'route-default' "
+                      "WHERE batch_id = ? AND route_id = '';";
+    sqlite3_stmt* statement = nullptr;
+    const bool prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK;
+    const bool succeeded = prepared && bind_text(statement, 1, batch_id) &&
+        sqlite3_step(statement) == SQLITE_DONE;
+    if(!succeeded)
+        std::cerr << "Bind batch workflow failed: " << sqlite3_errmsg(db) << '\n';
+    if(statement) sqlite3_finalize(statement);
+    sqlite3_close(db);
+    if(!succeeded) return false;
+    route_id = "route-default";
+    return true;
+}
+
+bool load_workflow_route(const std::string& db_path,
+                         const std::string& batch_id,
+                         std::string& route_id,
+                         std::vector<SupplyRouteNode>& nodes,
+                         std::vector<SupplyRouteEdge>& edges)
+{
+    route_id.clear();
+    nodes.clear();
+    edges.clear();
+
+    if(!batch_id.empty() && !ensure_batch_workflow(db_path, batch_id, route_id))
+        return false;
+    if(batch_id.empty()) route_id = "route-default";
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    const char* node_sql =
+        "SELECT node_id, node_type, label, role, username, position_x, "
+        "position_y, step_index FROM route_nodes WHERE route_id = ? "
+        "ORDER BY step_index ASC, position_x ASC, node_id ASC;";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, node_sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare workflow node query failed: " << sqlite3_errmsg(db) << '\n';
+        sqlite3_close(db);
+        return false;
+    }
+    bool succeeded = bind_text(statement, 1, route_id);
+    int result = SQLITE_ROW;
+    while(succeeded && (result = sqlite3_step(statement)) == SQLITE_ROW)
+    {
+        nodes.push_back(SupplyRouteNode{
+            route_id,
+            column_text(statement, 0),
+            column_text(statement, 1),
+            column_text(statement, 2),
+            column_text(statement, 3),
+            column_text(statement, 4),
+            sqlite3_column_int(statement, 5),
+            sqlite3_column_int(statement, 6),
+            sqlite3_column_int(statement, 7)
+        });
+    }
+    succeeded = succeeded && result == SQLITE_DONE;
+    sqlite3_finalize(statement);
+
+    const char* edge_sql =
+        "SELECT from_node_id, to_node_id FROM route_edges WHERE route_id = ? "
+        "ORDER BY from_node_id ASC, to_node_id ASC;";
+    if(succeeded && sqlite3_prepare_v2(db, edge_sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare workflow edge query failed: " << sqlite3_errmsg(db) << '\n';
+        succeeded = false;
+    }
+    if(succeeded)
+    {
+        succeeded = bind_text(statement, 1, route_id);
+        result = SQLITE_ROW;
+        while(succeeded && (result = sqlite3_step(statement)) == SQLITE_ROW)
+        {
+            edges.push_back(SupplyRouteEdge{
+                route_id,
+                column_text(statement, 0),
+                column_text(statement, 1)
+            });
+        }
+        succeeded = succeeded && result == SQLITE_DONE;
+        sqlite3_finalize(statement);
+    }
+    sqlite3_close(db);
+    return succeeded && route_node_ids_are_unique(nodes);
+}
+
+bool save_workflow_route(const std::string& db_path,
+                         const std::string& batch_id,
+                         const std::vector<SupplyRouteNode>& nodes,
+                         const std::vector<SupplyRouteEdge>& edges,
+                         std::string& route_id,
+                         std::string& error)
+{
+    error.clear();
+    route_id = workflow_route_id(batch_id);
+    if(!route_node_ids_are_unique(nodes))
+    {
+        error = "Workflow contains an invalid or duplicate node ID";
+        return false;
+    }
+
+    std::unordered_set<std::string> node_ids;
+    for(const SupplyRouteNode& node : nodes) node_ids.insert(node.node_id);
+    for(const SupplyRouteEdge& edge : edges)
+    {
+        if(node_ids.count(edge.from_node_id) == 0 ||
+           node_ids.count(edge.to_node_id) == 0 ||
+           edge.from_node_id == edge.to_node_id)
+        {
+            error = "Workflow contains an edge for an unknown node";
+            return false;
+        }
+    }
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        error = "Cannot open the workflow database";
+        if(db) sqlite3_close(db);
+        return false;
+    }
+    bool succeeded = execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
+                                 "Begin workflow save failed");
+    const char* definition_sql =
+        "INSERT INTO route_definitions "
+        "(route_id, batch_id, name, is_default) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(route_id) DO UPDATE SET batch_id = excluded.batch_id, "
+        "name = excluded.name, is_default = excluded.is_default, "
+        "updated_at = CURRENT_TIMESTAMP;";
+    sqlite3_stmt* statement = nullptr;
+    if(succeeded && sqlite3_prepare_v2(db, definition_sql, -1, &statement, nullptr) == SQLITE_OK)
+    {
+        const bool bound =
+            bind_text(statement, 1, route_id) &&
+            bind_text(statement, 2, batch_id) &&
+            bind_text(statement, 3, batch_id.empty() ? "Default supply route" :
+                      "Batch " + batch_id + " route") &&
+            sqlite3_bind_int(statement, 4, batch_id.empty() ? 1 : 0) == SQLITE_OK;
+        succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+    }
+    else if(succeeded)
+    {
+        succeeded = false;
+    }
+
+    if(succeeded)
+    {
+        sqlite3_stmt* delete_statement = nullptr;
+        succeeded = sqlite3_prepare_v2(
+            db, "DELETE FROM route_nodes WHERE route_id = ?;", -1,
+            &delete_statement, nullptr) == SQLITE_OK &&
+            bind_text(delete_statement, 1, route_id) &&
+            sqlite3_step(delete_statement) == SQLITE_DONE;
+        if(delete_statement) sqlite3_finalize(delete_statement);
+    }
+    if(succeeded)
+    {
+        sqlite3_stmt* delete_statement = nullptr;
+        succeeded = sqlite3_prepare_v2(
+            db, "DELETE FROM route_edges WHERE route_id = ?;", -1,
+            &delete_statement, nullptr) == SQLITE_OK &&
+            bind_text(delete_statement, 1, route_id) &&
+            sqlite3_step(delete_statement) == SQLITE_DONE;
+        if(delete_statement) sqlite3_finalize(delete_statement);
+    }
+
+    const char* node_sql =
+        "INSERT INTO route_nodes (route_id, node_id, node_type, label, role, "
+        "username, position_x, position_y, step_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
+    for(const SupplyRouteNode& node : nodes)
+    {
+        if(!succeeded || sqlite3_prepare_v2(db, node_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            if(statement) sqlite3_finalize(statement);
+            break;
+        }
+        const bool bound =
+            bind_text(statement, 1, route_id) &&
+            bind_text(statement, 2, node.node_id) &&
+            bind_text(statement, 3, node.node_type) &&
+            bind_text(statement, 4, node.label) &&
+            bind_text(statement, 5, node.role) &&
+            bind_text(statement, 6, node.username) &&
+            sqlite3_bind_int(statement, 7, node.position_x) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 8, node.position_y) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 9, node.step_index) == SQLITE_OK;
+        succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        if(!succeeded) break;
+    }
+
+    const char* edge_sql =
+        "INSERT INTO route_edges (route_id, from_node_id, to_node_id) VALUES (?, ?, ?);";
+    for(const SupplyRouteEdge& edge : edges)
+    {
+        if(!succeeded || sqlite3_prepare_v2(db, edge_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            if(statement) sqlite3_finalize(statement);
+            break;
+        }
+        const bool bound =
+            bind_text(statement, 1, route_id) &&
+            bind_text(statement, 2, edge.from_node_id) &&
+            bind_text(statement, 3, edge.to_node_id);
+        succeeded = bound && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        if(!succeeded) break;
+    }
+
+    if(succeeded && !batch_id.empty())
+    {
+        sqlite3_stmt* batch_statement = nullptr;
+        succeeded = sqlite3_prepare_v2(
+            db, "UPDATE batches SET route_id = ? WHERE batch_id = ?;", -1,
+            &batch_statement, nullptr) == SQLITE_OK &&
+            bind_text(batch_statement, 1, route_id) &&
+            bind_text(batch_statement, 2, batch_id) &&
+            sqlite3_step(batch_statement) == SQLITE_DONE;
+        if(batch_statement) sqlite3_finalize(batch_statement);
+    }
+
+    if(!succeeded || !execute_sql(db, "COMMIT;", "Commit workflow save failed"))
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback workflow save failed");
+        sqlite3_close(db);
+        error = "Failed to save workflow to the database";
+        return false;
+    }
+    sqlite3_close(db);
+    return true;
 }
 
 bool insert_supply_chain_record(const std::string& db_path,
@@ -1074,8 +1529,9 @@ bool insert_supply_chain_block(const std::string& db_path,
         "event_data, canonical_record, root_hash, verified, block_hash, "
         "chain_status, confirmation_method, confirmation_name, "
         "signature_algorithm, signature, signature_public_key_hash, "
-        "signed_payload_hash, signature_verified"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "signed_payload_hash, signature_verified, route_id, route_node_id, "
+        "route_step_index"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, record_sql, -1, &statement, nullptr) != SQLITE_OK)
     {
@@ -1113,7 +1569,10 @@ bool insert_supply_chain_block(const std::string& db_path,
         bind_text(statement, 24, record.signature) &&
         bind_text(statement, 25, record.signature_public_key_hash) &&
         bind_text(statement, 26, record.signed_payload_hash) &&
-        sqlite3_bind_int(statement, 27, record.signature_verified ? 1 : 0) == SQLITE_OK;
+        sqlite3_bind_int(statement, 27, record.signature_verified ? 1 : 0) == SQLITE_OK &&
+        bind_text(statement, 28, record.route_id) &&
+        bind_text(statement, 29, record.route_node_id) &&
+        sqlite3_bind_int(statement, 30, record.route_step_index) == SQLITE_OK;
     const bool inserted = bound && sqlite3_step(statement) == SQLITE_DONE;
     if(!inserted)
         std::cerr << "Insert record failed: " << sqlite3_errmsg(db) << '\n';
@@ -1201,6 +1660,42 @@ bool insert_supply_chain_block(const std::string& db_path,
         }
     }
 
+    if(record.role == "logistics" &&
+       !record.transport_shipment_id.empty() &&
+       !record.transport_vehicle_container_id.empty())
+    {
+        const char* transport_sql =
+            "INSERT OR IGNORE INTO transport_batch_links "
+            "(shipment_id, vehicle_container_id, batch_id, block_id) "
+            "VALUES (?, ?, ?, ?);";
+        sqlite3_stmt* transport_statement = nullptr;
+        if(sqlite3_prepare_v2(db, transport_sql, -1, &transport_statement, nullptr) != SQLITE_OK)
+        {
+            std::cerr << "Prepare transport batch link insert failed: "
+                      << sqlite3_errmsg(db) << '\n';
+            execute_sql(db, "ROLLBACK;", "Rollback record transaction failed");
+            sqlite3_close(db);
+            return false;
+        }
+        const bool transport_bound =
+            bind_text(transport_statement, 1, record.transport_shipment_id) &&
+            bind_text(transport_statement, 2, record.transport_vehicle_container_id) &&
+            bind_text(transport_statement, 3, record.batch_id) &&
+            sqlite3_bind_int(transport_statement, 4, record.block_id) == SQLITE_OK;
+        const bool linked = transport_bound &&
+            sqlite3_step(transport_statement) == SQLITE_DONE;
+        if(!linked)
+            std::cerr << "Insert transport batch link failed: "
+                      << sqlite3_errmsg(db) << '\n';
+        sqlite3_finalize(transport_statement);
+        if(!linked)
+        {
+            execute_sql(db, "ROLLBACK;", "Rollback record transaction failed");
+            sqlite3_close(db);
+            return false;
+        }
+    }
+
     const char* edge_sql =
         "INSERT INTO block_edges (from_block_id, to_block_id, batch_id, relation) "
         "VALUES (?, ?, ?, ?);";
@@ -1266,7 +1761,8 @@ bool load_supply_chain_records(const std::string& db_path,
         "event_data, canonical_record, root_hash, verified, block_hash, "
         "chain_status, confirmation_method, confirmation_name, "
         "signature_algorithm, signature, signature_public_key_hash, "
-        "signed_payload_hash, signature_verified, created_at "
+        "signed_payload_hash, signature_verified, route_id, route_node_id, "
+        "route_step_index, created_at "
         "FROM supply_chain_records "
         "ORDER BY block_id ASC;";
     sqlite3_stmt* statement = nullptr;
@@ -1309,7 +1805,10 @@ bool load_supply_chain_records(const std::string& db_path,
         record.signature_public_key_hash = column_text(statement, 24);
         record.signed_payload_hash = column_text(statement, 25);
         record.signature_verified = sqlite3_column_int(statement, 26) != 0;
-        record.created_at = column_text(statement, 27);
+        record.route_id = column_text(statement, 27);
+        record.route_node_id = column_text(statement, 28);
+        record.route_step_index = sqlite3_column_int(statement, 29);
+        record.created_at = column_text(statement, 30);
         records.push_back(std::move(record));
     }
 

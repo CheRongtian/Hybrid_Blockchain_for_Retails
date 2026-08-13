@@ -48,6 +48,21 @@ std::optional<SupplyChainBatch> find_supply_chain_batch(
     const std::string& batch_id);
 bool load_supply_chain_batches(const std::string& db_path,
                                std::vector<SupplyChainBatch>& batches);
+bool ensure_default_workflow(const std::string& db_path);
+bool ensure_batch_workflow(const std::string& db_path,
+                           const std::string& batch_id,
+                           std::string& route_id);
+bool load_workflow_route(const std::string& db_path,
+                         const std::string& batch_id,
+                         std::string& route_id,
+                         std::vector<SupplyRouteNode>& nodes,
+                         std::vector<SupplyRouteEdge>& edges);
+bool save_workflow_route(const std::string& db_path,
+                         const std::string& batch_id,
+                         const std::vector<SupplyRouteNode>& nodes,
+                         const std::vector<SupplyRouteEdge>& edges,
+                         std::string& route_id,
+                         std::string& error);
 bool insert_supply_chain_record(const std::string& db_path,
                                 const SupplyChainRecord& record);
 bool insert_supply_chain_block(const std::string& db_path,
