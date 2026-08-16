@@ -125,7 +125,7 @@ verifiable tree for each event.
 - role-specific forms for Supplier, Logistics, Warehouse, and Supermarket;
 - administrator-defined default and per-batch route-order enforcement;
 - generated and validated identifiers;
-- per-role administrator confirmation policies;
+- route-stage account assignment with role-specific confirmation policies;
 - typed-name confirmation with browser ECDSA P-256 signing and C++ OpenSSL
   verification;
 - per-block Merkle leaves, roots, proofs, and verification;
@@ -141,7 +141,11 @@ verifiable tree for each event.
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
-Handwritten-signature capture and face confirmation are policy placeholders.
+The control panel stores confirmation choices separately for Supplier, Logistics,
+Warehouse, and Supermarket. Each role must keep at least one method enabled.
+Typed-name confirmation is implemented in this demo; handwritten and face
+confirmation can be configured, but their capture and verification flows remain
+deferred.
 Inspection Agency, production key custody, durable relayer jobs, public-testnet
  deployment and QR-code entry are pending.
 
@@ -181,6 +185,16 @@ The three project scripts remain separate because they represent three
 different application roles. A port error usually means that the corresponding
 service is already running; close the old process or reuse the existing page
 instead of starting a second copy.
+
+The administrator workflow editor is a lightweight static SVG/DOM Canvas. It
+supports node dragging, output-to-input handle connections, connection
+selection and deletion, background panning, trackpad pinch zoom, zoom controls,
+fit-to-route, explicit left-to-right auto-arrangement, and Undo/Redo. Adding a
+node creates an unconnected, free-positioned stage without changing the current
+route, pan, or zoom. The administrator assigns an unused active account with the
+matching role, positions the node, and connects it manually. The editor continues
+using the existing workflow API and SQLite data; no new frontend framework or
+graph database is required.
 
 ### One-time Kubo setup on macOS
 
@@ -241,7 +255,7 @@ Control page:         http://127.0.0.1:8081/
 Customer trace page:  http://127.0.0.1:8082/
 ```
 
-The user and control scripts ensure that the Homebrew Kubo service is running
+The user and control scripts check that the Homebrew Kubo service is available
 on IPFS API port 5002. The customer script starts a local Hardhat node on port
 8545 in the background when no process is listening, deploys SnapshotGateway
 after that fresh start, and then starts the customer service. If Hardhat is
@@ -250,7 +264,17 @@ already running, the customer script reuses its current deployment.
 The scripts remain independent. There is no combined start command. Hardhat
 is local in-memory state, so a newly started node requires a new deployment;
 the private SQLite database is unaffected. IPFS runs as a Homebrew background
-service and does not require an additional terminal.
+service and does not require an additional terminal. If a start script reports
+`launchctl bootstrap ... exit 5`, check whether an IPFS daemon already owns port
+5002 before restarting Homebrew:
+
+```bash
+lsof -nP -iTCP:5002 -sTCP:LISTEN
+ipfs id
+```
+
+An active listener can be reused. If there is no listener, repair the service
+with `brew services restart kubo` and confirm port 5002 before retrying.
 
 In the administrator control page, generate a completed-batch snapshot and
 select **Publish to Local Public Chain**. The control server forwards the
@@ -268,7 +292,11 @@ The customer does not type a Batch ID. QR-code behavior is deferred.
 | --- | --- | --- |
 | Supplier | `supplier01` | `supplier123` |
 | Logistics | `logistics01` | `logistics123` |
+| Logistics | `logistics02` | `logistics123` |
+| Logistics | `logistics03` | `logistics123` |
 | Warehouse | `warehouse01` | `warehouse123` |
+| Warehouse | `warehouse02` | `warehouse123` |
+| Warehouse | `warehouse03` | `warehouse123` |
 | Supermarket | `supermarket01` | `supermarket123` |
 | Administrator | `admin01` | `admin123` |
 

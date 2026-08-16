@@ -45,7 +45,6 @@ add_executable(
 target_link_libraries(
     control_server
     PRIVATE
-    MerkleTree::merkle_tree
     Snapshot::snapshot
     ${SQLite3_LIBRARIES}
     OpenSSL::Crypto

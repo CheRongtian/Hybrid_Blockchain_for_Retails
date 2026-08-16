@@ -124,17 +124,33 @@ The administrator can edit this template or select an existing batch and save
 a batch-specific route from the control Canvas. A valid route is a connected
 sequence that starts with Supplier and ends with Supermarket. It may contain
 repeated Logistics and Warehouse nodes, or connect Supplier directly to
-Supermarket. The server accepts a new block only when the authenticated role is
-the next node on that batch's saved route.
+Supermarket. The server accepts a new block only when the authenticated role and
+username match the next node on that batch's saved route. Each route node is
+assigned to one active account whose role matches the node type. The same
+account cannot occupy multiple nodes in one route.
 
 The Canvas supports the following editing actions:
 
 - drag a route node to set its position;
-- select one node and then another node to add a connection;
-- click a connection and choose **Remove connection**;
-- choose **Auto arrange** to rebuild a compact layout;
-- select an intermediate node and edit its display label; and
+- drag the output handle on one node to the input handle on another node;
+- click a connection and choose **Remove connection**, or press Delete;
+- drag the empty Canvas background or use a two-finger scroll to pan the route;
+- use trackpad pinch, **+**, **-**, or the wheel to zoom, and **Fit route** to recenter it;
+- add an unconnected Logistics or Warehouse node in an available area of the
+  current viewport, assign an unused matching account, then drag and connect it
+  manually; existing connections, node positions, canvas size, pan, and zoom
+  remain unchanged;
+- use **Undo** and **Redo**, including Command/Ctrl+Z and Command/Ctrl+Y;
+- choose **Auto arrange** to rebuild a compact left-to-right layout; and
 - save only a connected route that starts at Supplier and ends at Supermarket.
+
+The Canvas is a lightweight static SVG/DOM editor. It does not add a frontend
+framework or a separate graph database. Node positions and connections continue
+to use the existing `/api/workflow` endpoint and SQLite records. Editing a node,
+adding a node, or changing a connection preserves the current pan and zoom. Auto
+arrangement and **Fit route** are explicit view-changing actions. New nodes are
+intentionally free-positioned so the administrator can place them without forcing
+the route into a single horizontal row.
 
 The browser reports duplicate connections, invalid endpoints, cycles, and
 disconnected nodes immediately. The server validates the same route rules when
@@ -214,8 +230,20 @@ ps aux | rg '[i]pfs daemon'
 lsof -nP -iTCP:5002 -sTCP:LISTEN
 ```
 
-If a Kubo daemon is already listening on port 5002, reuse it. If only the
-Homebrew service registration is stale, run `brew services restart kubo`.
+If a Kubo daemon is already listening on port 5002, reuse it. The launch scripts
+check the Homebrew service state before starting, so a stale service entry can
+still produce a `launchctl bootstrap ... exit 5` message. In that case, inspect
+the listener first; do not start a second daemon on the same API port:
+
+```bash
+lsof -nP -iTCP:5002 -sTCP:LISTEN
+ipfs id
+```
+
+If `ipfs id` works and port 5002 is listening, leave that daemon running and
+start the requested C++ server directly. If no daemon is listening, repair the
+Homebrew service registration with `brew services restart kubo`, then confirm
+port 5002 before starting the server.
 
 After that setup, the control server only needs:
 
@@ -262,22 +290,23 @@ POST /api/auth/logout invalidates a token.
 
 ### Confirmation policy
 
-GET /api/confirmation-policy returns all four role policies to an administrator.
-An authenticated route user receives only the policy for that user's role.
+GET /api/confirmation-policy returns one policy for each route role. The control
+panel edits Supplier, Logistics, Warehouse, and Supermarket independently. Each
+role must keep at least one method enabled before the policy can be saved. An
+authenticated route user receives the policy for that user's role.
 
-POST /api/confirmation-policy is restricted to the administrator and accepts
-role-prefixed `TypedName`, `Handwritten`, and `Face` fields for Supplier,
-Logistics, Warehouse, and Supermarket. At least one confirmation method must
-remain enabled for each role.
+Typed-name confirmation is implemented in this demo. Handwritten and face
+confirmation can be enabled as configuration options, but their capture and
+verification flows remain deferred.
 
 GET /api/confirmation/challenge creates a short-lived, single-use challenge
 for the authenticated user.
 
 ### Batch selection
 
-GET /api/batches returns batch master data and the next required route stage.
-The user page uses this endpoint for Logistics, Warehouse, and Supermarket
-selection.
+GET /api/batches returns batch master data, the next required route stage, and
+the username assigned to that stage. The user page only offers a batch when both
+the role and assigned username match the authenticated account.
 
 ### File upload
 
@@ -460,7 +489,7 @@ linked block chain.
 
 ## Authentication
 
-The five local demonstration accounts are documented in the repository-level
+The local demonstration accounts are documented in the repository-level
 README. Passwords are stored as salted PBKDF2 hashes. Both pages provide logout
 and an unchecked remember-me option. Persistent sessions store token hashes in
 SQLite and survive control-server restarts for 30 days; temporary sessions

@@ -4,6 +4,7 @@
 #include <cctype>
 #include <map>
 #include <optional>
+#include <unordered_set>
 #include <utility>
 
 namespace
@@ -115,11 +116,50 @@ std::optional<std::map<std::string, std::string>> parse_flat_string_object(
     }
     return std::nullopt;
 }
+
+const SupplyRouteNode* route_node_for_record(
+    const std::vector<SupplyRouteNode>& route_nodes,
+    const SupplyChainRecord& record)
+{
+    if(!record.route_node_id.empty())
+    {
+        for(const SupplyRouteNode& node : route_nodes)
+        {
+            if(node.node_id == record.route_node_id) return &node;
+        }
+    }
+
+    for(const SupplyRouteNode& node : route_nodes)
+    {
+        if(node.role == record.role && !node.username.empty() &&
+           node.username == record.confirmed_by &&
+           (record.route_step_index < 0 ||
+            node.step_index == record.route_step_index))
+            return &node;
+    }
+
+    for(const SupplyRouteNode& node : route_nodes)
+    {
+        if(node.role == record.role && !node.username.empty() &&
+           node.username == record.confirmed_by)
+            return &node;
+    }
+
+    for(const SupplyRouteNode& node : route_nodes)
+    {
+        if(node.role == record.role &&
+           (record.route_step_index < 0 ||
+            node.step_index == record.route_step_index))
+            return &node;
+    }
+    return nullptr;
+}
 }
 
 supermarket::snapshot::BatchInput make_snapshot_batch_input(
     const SupplyChainBatch& batch,
-    const std::vector<SupplyChainRecord>& records)
+    const std::vector<SupplyChainRecord>& records,
+    const std::vector<SupplyRouteNode>& route_nodes)
 {
     supermarket::snapshot::BatchInput input;
     input.batch_id = batch.batch_id;
@@ -128,6 +168,15 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
     input.farm_location = batch.farm_location;
     input.certificate_id = batch.certificate_id;
     input.status = batch.status;
+
+    std::unordered_set<std::string> recorded_route_nodes;
+
+    for(const SupplyRouteNode& node : route_nodes)
+    {
+        input.route_nodes.push_back(supermarket::snapshot::RouteNodeInput{
+            node.node_id, node.label, node.role, node.username, node.step_index
+        });
+    }
 
     for(const SupplyChainRecord& record : records)
     {
@@ -141,6 +190,19 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
         stage.chain_status = record.chain_status;
         stage.verified = record.verified;
         stage.signature_verified = record.signature_verified;
+        stage.route_node_id = record.route_node_id;
+        stage.route_step_index = record.route_step_index;
+
+        const SupplyRouteNode* route_node =
+            route_node_for_record(route_nodes, record);
+        if(route_node)
+        {
+            stage.route_node_id = route_node->node_id;
+            stage.route_node_label = route_node->label;
+            stage.route_node_username = route_node->username;
+            stage.route_step_index = route_node->step_index;
+            recorded_route_nodes.insert(route_node->node_id);
+        }
 
         const auto fields = parse_flat_string_object(record.event_data);
         if(fields)
@@ -166,7 +228,22 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
     std::sort(input.stages.begin(), input.stages.end(),
               [](const supermarket::snapshot::StageInput& left,
                  const supermarket::snapshot::StageInput& right) {
+                  if(left.route_step_index >= 0 && right.route_step_index >= 0 &&
+                     left.route_step_index != right.route_step_index)
+                      return left.route_step_index < right.route_step_index;
                   return left.block_id < right.block_id;
               });
+
+    if(!route_nodes.empty())
+    {
+        const bool route_complete =
+            recorded_route_nodes.size() == route_nodes.size() &&
+            std::all_of(
+                route_nodes.begin(), route_nodes.end(),
+                [&](const SupplyRouteNode& node) {
+                    return recorded_route_nodes.count(node.node_id) != 0;
+                });
+        input.status = route_complete ? "completed" : "in_progress";
+    }
     return input;
 }

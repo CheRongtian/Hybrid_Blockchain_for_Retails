@@ -13,20 +13,27 @@ const workflowStatus = document.querySelector("#workflow-status");
 const workflowRouteBadge = document.querySelector("#workflow-route-badge");
 const workflowBatchSelect = document.querySelector("#workflow-batch-select");
 const workflowNodeType = document.querySelector("#workflow-node-type");
+const workflowNodeAccount = document.querySelector("#workflow-node-account");
 const workflowAddNode = document.querySelector("#workflow-add-node");
 const workflowDeleteNode = document.querySelector("#workflow-delete-node");
 const workflowDeleteEdge = document.querySelector("#workflow-delete-edge");
 const workflowAutoLayout = document.querySelector("#workflow-auto-layout");
 const workflowResetRoute = document.querySelector("#workflow-reset-route");
+const workflowUndo = document.querySelector("#workflow-undo");
+const workflowRedo = document.querySelector("#workflow-redo");
 const workflowSave = document.querySelector("#workflow-save");
-const workflowNodeEditor = document.querySelector("#workflow-node-editor");
-const workflowNodeLabel = document.querySelector("#workflow-node-label");
-const workflowApplyNodeLabel = document.querySelector("#workflow-apply-node-label");
-const confirmationPolicyForm = document.querySelector("#confirmation-policy-form");
+const workflowScene = document.querySelector("#workflow-scene");
+const workflowEdgeLayer = document.querySelector("#workflow-edge-layer");
+const workflowNodeLayer = document.querySelector("#workflow-node-layer");
+const workflowZoomOut = document.querySelector("#workflow-zoom-out");
+const workflowFitView = document.querySelector("#workflow-fit-view");
+const workflowZoomIn = document.querySelector("#workflow-zoom-in");
+const workflowZoomLevel = document.querySelector("#workflow-zoom-level");
 const rolePolicyList = document.querySelector("#role-policy-list");
 const policyRoleCount = document.querySelector("#policy-role-count");
-const policyStatus = document.querySelector("#policy-status");
+const confirmationPolicyForm = document.querySelector("#confirmation-policy-form");
 const savePolicyButton = document.querySelector("#save-policy-button");
+const policyStatus = document.querySelector("#policy-status");
 const snapshotPreviewForm = document.querySelector("#snapshot-preview-form");
 const snapshotBatchSelect = document.querySelector("#snapshot-batch-select");
 const snapshotBatchCount = document.querySelector("#snapshot-batch-count");
@@ -43,20 +50,21 @@ const snapshotExcludedFields = document.querySelector("#snapshot-excluded-fields
 const publishSnapshotButton = document.querySelector("#publish-snapshot-button");
 const snapshotPublishStatus = document.querySelector("#snapshot-publish-status");
 const sessionKey = "supply-chain-control-session";
-const policyRoles = [
-    ["supplier", "Supplier"],
-    ["logistics", "Logistics"],
-    ["warehouse", "Warehouse"],
-    ["supermarket", "Supermarket"]
-];
 let session = null;
 let workflowData = null;
 let workflowBatchId = "";
 let workflowSelectedNodeId = "";
 let workflowSelectedEdgeIndex = -1;
 let workflowPointerState = null;
+let workflowViewport = { x: 0, y: 0, zoom: 1 };
+let workflowViewportReady = false;
+let workflowLayoutInitialized = false;
+let workflowSceneBounds = { minX: 0, minY: 0, width: 900, height: 320 };
+let workflowHistory = { past: [], future: [] };
+let workflowWheelState = { pendingDelta: 0, anchor: null, frame: 0 };
 let snapshotBatches = [];
 let publicationCandidate = null;
+let confirmationPolicies = [];
 
 function showSession(result) {
     session = result;
@@ -79,6 +87,17 @@ function readSavedSession() {
     return sessionStorage.getItem(sessionKey);
 }
 
+async function readJsonResponse(response) {
+    const text = await response.text();
+    try {
+        return text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error(
+            "The control server returned malformed JSON. Rebuild the server and refresh the page."
+        );
+    }
+}
+
 function clearSession() {
     session = null;
     sessionStorage.removeItem(sessionKey);
@@ -91,8 +110,14 @@ function clearSession() {
     workflowSelectedNodeId = "";
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;
+    workflowViewport = { x: 0, y: 0, zoom: 1 };
+    workflowViewportReady = false;
+    workflowLayoutInitialized = false;
+    workflowHistory = { past: [], future: [] };
+    workflowWheelState = { pendingDelta: 0, anchor: null, frame: 0 };
     workflowBatchSelect.value = "";
-    workflowCanvas.replaceChildren();
+    workflowEdgeLayer.replaceChildren();
+    workflowNodeLayer.replaceChildren();
     snapshotBatches = [];
     snapshotBatchSelect.replaceChildren();
     snapshotEvidenceList.replaceChildren();
@@ -132,7 +157,7 @@ async function login(event) {
             },
             body: new URLSearchParams(new FormData(loginForm)).toString()
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (!response.ok) throw new Error(result.error || `Login failed: ${response.status}`);
         if (result.user.role !== "admin") throw new Error("This account does not have control-panel access.");
 
@@ -155,7 +180,7 @@ async function restoreSession() {
         const response = await fetch("/api/auth/me", {
             headers: { Authorization: `Bearer ${stored.token}` }
         });
-        const user = await response.json();
+        const user = await readJsonResponse(response);
         if (!response.ok || user.role !== "admin") throw new Error("Session expired");
         showSession({ token: stored.token, user });
         loadDashboard();
@@ -169,66 +194,102 @@ function setPolicyStatus(message, state = "") {
     policyStatus.className = state ? `status ${state}` : "status";
 }
 
-function policyOption(role, suffix, label) {
+function policyOption(nodeId, suffix, label, enabled) {
     const wrapper = document.createElement("label");
     wrapper.className = "policy-option";
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.name = role + suffix;
+    input.name = `policy-${nodeId}-${suffix}`;
+    input.dataset.nodeId = nodeId;
+    input.dataset.policySuffix = suffix;
     input.value = "true";
-    input.setAttribute("aria-label", `${role} ${label}`);
+    input.checked = Boolean(enabled);
+    input.setAttribute("aria-label", `${nodeId} ${label}`);
     const text = document.createElement("span");
     text.textContent = label;
     wrapper.append(input, text);
     return wrapper;
 }
 
-function renderConfirmationPolicies(policies) {
-    const policiesByRole = new Map(
-        policies.map((policy) => [policy.role, policy])
-    );
+function renderConfirmationPolicies(policies = confirmationPolicies) {
+    confirmationPolicies = policies.filter((policy) => policy.nodeId);
     rolePolicyList.replaceChildren();
     const header = document.createElement("div");
     header.className = "policy-matrix-header";
-    for (const label of ["Role", "Typed name", "Handwritten", "Face"]) {
+    for (const label of ["Route node / account", "Typed name", "Handwritten", "Face"]) {
         const cell = document.createElement("span");
         cell.textContent = label;
         header.append(cell);
     }
     rolePolicyList.append(header);
-    for (const [role, label] of policyRoles) {
-        const policy = policiesByRole.get(role) || {};
+    for (const policy of confirmationPolicies) {
+        const nodeId = policy.nodeId;
+        const label = policy.nodeLabel || nodeId;
         const row = document.createElement("div");
         row.className = "role-policy";
-        const roleName = document.createElement("strong");
+        row.dataset.nodeId = nodeId;
+        const roleName = document.createElement("div");
         roleName.className = "policy-role-name";
-        roleName.textContent = label;
-        const typed = policyOption(role, "TypedName", "Typed name");
-        const handwritten = policyOption(role, "Handwritten", "Handwritten");
-        const face = policyOption(role, "Face", "Face");
-        typed.querySelector("input").checked = Boolean(policy.typedName);
-        handwritten.querySelector("input").checked = Boolean(policy.handwritten);
-        face.querySelector("input").checked = Boolean(policy.face);
+        const name = document.createElement("strong");
+        name.textContent = label;
+        const account = document.createElement("small");
+        account.className = "policy-account";
+        account.textContent = `${policy.role || "route"} · ${policy.username || "unassigned"}`;
+        roleName.append(name, account);
+        const typed = policyOption(nodeId, "typedName", "Typed name", policy.typedName);
+        const handwritten = policyOption(
+            nodeId, "handwritten", "Handwritten (configuration only)", policy.handwritten
+        );
+        const face = policyOption(
+            nodeId, "face", "Face (configuration only)", policy.face
+        );
         row.append(roleName, typed, handwritten, face);
         rolePolicyList.append(row);
     }
-    policyRoleCount.textContent = `${policiesByRole.size} roles configured`;
+    policyRoleCount.textContent = `${confirmationPolicies.length} route nodes configured`;
+}
+
+function hasSameRouteNodeIds(policies, nodes) {
+    const expected = new Set((nodes || []).map((node) => node.id).filter(Boolean));
+    const actual = new Set((policies || []).map((policy) => policy.nodeId).filter(Boolean));
+    return expected.size === actual.size &&
+        [...expected].every((nodeId) => actual.has(nodeId));
 }
 
 async function loadConfirmationPolicy() {
     if (!session) return;
+    confirmationPolicies = [];
+    rolePolicyList.replaceChildren();
+    policyRoleCount.textContent = "Loading route-node policies";
     try {
-        const response = await fetch("/api/confirmation-policy", {
+        const query = new URLSearchParams();
+        if (workflowBatchId) {
+            query.set("batchId", workflowBatchId);
+        } else if (workflowData?.routeId) {
+            query.set("routeId", workflowData.routeId);
+        }
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        const response = await fetch("/api/confirmation-policy" + suffix, {
             headers: { Authorization: `Bearer ${session.token}` }
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-        renderConfirmationPolicies(result.policies || []);
-        setPolicyStatus("Role policies loaded.", "success");
+        if (!Array.isArray(result.policies)) {
+            throw new Error("The route-node policy response is malformed.");
+        }
+        if (workflowData?.nodes?.length &&
+            !hasSameRouteNodeIds(result.policies, workflowData.nodes)) {
+            throw new Error("The server returned an incomplete route-node policy set.");
+        }
+        renderConfirmationPolicies(result.policies);
+        setPolicyStatus(
+            "Enable at least one confirmation method for every route node. Typed name is available in this demo; handwritten and face are configuration-only.",
+            "success"
+        );
     } catch (error) {
         setPolicyStatus(error.message, "error");
     }
@@ -237,14 +298,30 @@ async function loadConfirmationPolicy() {
 async function saveConfirmationPolicy(event) {
     event.preventDefault();
     if (!session) return;
-    for (const [role, label] of policyRoles) {
-        const methods = confirmationPolicyForm.querySelectorAll(
-            `input[name^="${role}"]:checked`
-        );
-        if (methods.length === 0) {
+
+    const rows = [...rolePolicyList.querySelectorAll(".role-policy")];
+    const policies = [];
+    for (const row of rows) {
+        const nodeId = row.dataset.nodeId || "";
+        const enabled = [...row.querySelectorAll("input[data-policy-suffix]:checked")];
+        if (!nodeId || enabled.length === 0) {
+            const label = row.querySelector(".policy-role-name strong")?.textContent || nodeId;
             setPolicyStatus(`Enable at least one method for ${label}.`, "error");
             return;
         }
+        const methods = new Map(
+            enabled.map((input) => [input.dataset.policySuffix, "true"])
+        );
+        policies.push([
+            nodeId,
+            methods.get("typedName") || "false",
+            methods.get("handwritten") || "false",
+            methods.get("face") || "false"
+        ].join("|"));
+    }
+    if (policies.length === 0) {
+        setPolicyStatus("Load a route before saving route-node policies.", "error");
+        return;
     }
 
     savePolicyButton.disabled = true;
@@ -256,16 +333,24 @@ async function saveConfirmationPolicy(event) {
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
                 Authorization: `Bearer ${session.token}`
             },
-            body: new URLSearchParams(new FormData(confirmationPolicyForm)).toString()
+            body: new URLSearchParams({
+                batchId: workflowBatchId,
+                routeId: workflowData?.routeId || "",
+                policies: policies.join(";")
+            }).toString()
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
-        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-        renderConfirmationPolicies(result.policies || []);
-        setPolicyStatus("Role confirmation policies saved.", "success");
+        if (!response.ok) throw new Error(result.error || "Unable to save confirmation policy.");
+        if (!Array.isArray(result.policies) ||
+            !hasSameRouteNodeIds(result.policies, rows.map((row) => ({ id: row.dataset.nodeId })))) {
+            throw new Error("The server returned an incomplete saved policy set.");
+        }
+        renderConfirmationPolicies(result.policies);
+        setPolicyStatus("Route-node confirmation policies saved.", "success");
     } catch (error) {
         setPolicyStatus(error.message, "error");
     } finally {
@@ -586,34 +671,6 @@ function renderChainGraph(graph) {
     });
 }
 
-function drawRoundedRect(context, x, y, width, height, radius) {
-    const corner = Math.min(radius, width / 2, height / 2);
-    context.beginPath();
-    context.moveTo(x + corner, y);
-    context.arcTo(x + width, y, x + width, y + height, corner);
-    context.arcTo(x + width, y + height, x, y + height, corner);
-    context.arcTo(x, y + height, x, y, corner);
-    context.arcTo(x, y, x + width, y, corner);
-    context.closePath();
-}
-
-function drawArrow(context, fromX, fromY, toX, toY) {
-    const angle = Math.atan2(toY - fromY, toX - fromX);
-    const size = 9;
-    context.beginPath();
-    context.moveTo(toX, toY);
-    context.lineTo(
-        toX - size * Math.cos(angle - Math.PI / 6),
-        toY - size * Math.sin(angle - Math.PI / 6)
-    );
-    context.lineTo(
-        toX - size * Math.cos(angle + Math.PI / 6),
-        toY - size * Math.sin(angle + Math.PI / 6)
-    );
-    context.closePath();
-    context.fill();
-}
-
 function routeOrder(workflow) {
     const nodes = workflow.nodes || [];
     const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -639,26 +696,103 @@ function routeOrder(workflow) {
     return ordered;
 }
 
+function workflowInteger(value, fallback = 0) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.round(numeric) : fallback;
+}
+
+function normalizeWorkflowPositions(workflow = workflowData) {
+    if (!workflow) return;
+    for (const node of workflow.nodes || []) {
+        node.x = workflowInteger(node.x);
+        node.y = workflowInteger(node.y);
+    }
+}
+
 function normalizeWorkflow(workflow) {
     return {
         routeId: workflow.routeId || "",
+        accounts: (workflow.accounts || []).map((account) => ({ ...account })),
         nodes: (workflow.nodes || []).map((node) => ({
             id: node.id,
             nodeType: node.nodeType || "transport",
             label: node.label || node.id,
             role: node.role || "logistics",
             username: node.username || "",
-            x: Number.isFinite(Number(node.x)) ? Number(node.x) : 0,
-            y: Number.isFinite(Number(node.y)) ? Number(node.y) : 0,
-            stepIndex: Number.isFinite(Number(node.stepIndex))
-                ? Number(node.stepIndex)
-                : -1
+            x: workflowInteger(node.x),
+            y: workflowInteger(node.y),
+            stepIndex: workflowInteger(node.stepIndex, -1)
         })),
         edges: (workflow.edges || []).map((edge) => ({
             from: edge.from,
             to: edge.to
         }))
     };
+}
+
+function workflowSnapshot(workflow = workflowData) {
+    if (!workflow) return "";
+    return JSON.stringify({
+        routeId: workflow.routeId || "",
+        accounts: (workflow.accounts || []).map((account) => ({ ...account })),
+        nodes: (workflow.nodes || []).map((node) => ({ ...node })),
+        edges: (workflow.edges || []).map((edge) => ({ ...edge }))
+    });
+}
+
+function updateWorkflowHistoryControls() {
+    workflowUndo.disabled = workflowHistory.past.length === 0;
+    workflowRedo.disabled = workflowHistory.future.length === 0;
+}
+
+function resetWorkflowHistory() {
+    workflowHistory = { past: [], future: [] };
+    updateWorkflowHistoryControls();
+}
+
+function captureWorkflowHistory() {
+    const snapshot = workflowSnapshot();
+    if (!snapshot) return;
+    workflowHistory.past.push(snapshot);
+    workflowHistory.past = workflowHistory.past.slice(-40);
+    workflowHistory.future = [];
+    updateWorkflowHistoryControls();
+}
+
+function captureWorkflowDragHistory(snapshot) {
+    if (!snapshot || snapshot === workflowSnapshot()) return;
+    workflowHistory.past.push(snapshot);
+    workflowHistory.past = workflowHistory.past.slice(-40);
+    workflowHistory.future = [];
+    updateWorkflowHistoryControls();
+}
+
+function restoreWorkflowSnapshot(snapshot) {
+    if (!snapshot) return;
+    workflowData = normalizeWorkflow(JSON.parse(snapshot));
+    workflowLayoutInitialized = true;
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
+    renderWorkflow(workflowData);
+}
+
+function undoWorkflowEdit() {
+    if (!workflowData || workflowHistory.past.length === 0) return;
+    const current = workflowSnapshot();
+    const previous = workflowHistory.past.pop();
+    workflowHistory.future.push(current);
+    restoreWorkflowSnapshot(previous);
+    updateWorkflowHistoryControls();
+}
+
+function redoWorkflowEdit() {
+    if (!workflowData || workflowHistory.future.length === 0) return;
+    const current = workflowSnapshot();
+    const next = workflowHistory.future.pop();
+    workflowHistory.past.push(current);
+    restoreWorkflowSnapshot(next);
+    updateWorkflowHistoryControls();
 }
 
 function workflowValidation(workflow) {
@@ -669,6 +803,7 @@ function workflowValidation(workflow) {
     }
 
     const byId = new Map();
+    const assignedAccounts = new Set();
     let supplier = null;
     let supermarket = null;
     for (const node of nodes) {
@@ -678,6 +813,27 @@ function workflowValidation(workflow) {
         if (!["supplier", "logistics", "warehouse", "supermarket"].includes(node.role)) {
             return { valid: false, error: "The route contains an unsupported node role." };
         }
+        if (!node.username) {
+            return { valid: false, error: `${node.label} needs an assigned account.` };
+        }
+        const account = (workflow.accounts || []).find((candidate) =>
+            candidate.active !== false &&
+            candidate.username === node.username &&
+            candidate.role === node.role
+        );
+        if ((workflow.accounts || []).length > 0 && !account) {
+            return {
+                valid: false,
+                error: `${node.username} cannot operate the ${node.label} stage.`
+            };
+        }
+        if (assignedAccounts.has(node.username)) {
+            return {
+                valid: false,
+                error: `${node.username} is already assigned to another route stage.`
+            };
+        }
+        assignedAccounts.add(node.username);
         if (node.role === "supplier") supplier = supplier ? null : node;
         if (node.role === "supermarket") supermarket = supermarket ? null : node;
         byId.set(node.id, node);
@@ -735,114 +891,292 @@ function workflowValidation(workflow) {
     return { valid: true, error: "" };
 }
 
-function workflowCanvasLayout(workflow, width, force = false) {
+const WORKFLOW_NODE_WIDTH = 184;
+const WORKFLOW_NODE_HEIGHT = 108;
+const WORKFLOW_MARGIN = 72;
+const WORKFLOW_NODE_GAP = 88;
+const WORKFLOW_MIN_ZOOM = 0.45;
+const WORKFLOW_MAX_ZOOM = 1.25;
+const WORKFLOW_ZOOM_BUTTON_STEP = 0.05;
+
+function workflowCanvasLayout(workflow, force = false) {
     const ordered = routeOrder(workflow);
-    const nodeWidth = 164;
-    const nodeHeight = 96;
-    const margin = 28;
-    const columnGap = 34;
-    const rowGap = 42;
-    const columns = Math.max(
-        1,
-        Math.floor((width - margin * 2 + columnGap) / (nodeWidth + columnGap))
-    );
-    const hasSavedLayout = ordered.length > 0 && ordered.every((node) =>
-        Number.isFinite(node.x) && Number.isFinite(node.y) &&
-        (node.x !== 0 || node.y !== 0)
-    );
-    const savedLayoutFits = hasSavedLayout && ordered.every((node) =>
-        node.x >= 0 && node.y >= 0 &&
-        node.x + nodeWidth <= width && node.y + nodeHeight <= 600
+    const hasSavedLayout = workflowLayoutInitialized || ordered.some((node) =>
+        node.x !== 0 || node.y !== 0
     );
 
-    if (force || !savedLayoutFits) {
+    if (force || !hasSavedLayout) {
+        const sceneHeight = 320;
         ordered.forEach((node, index) => {
-            const column = index % columns;
-            const row = Math.floor(index / columns);
-            node.x = margin + column * (nodeWidth + columnGap);
-            node.y = margin + row * (nodeHeight + rowGap);
+            node.x = WORKFLOW_MARGIN + index * (WORKFLOW_NODE_WIDTH + WORKFLOW_NODE_GAP);
+            node.y = Math.round((sceneHeight - WORKFLOW_NODE_HEIGHT) / 2);
+            node.stepIndex = index;
+        });
+        workflowLayoutInitialized = true;
+    } else {
+        ordered.forEach((node, index) => {
             node.stepIndex = index;
         });
     }
 
-    const requiredHeight = ordered.length === 0
-        ? 250
-        : Math.max(...ordered.map((node) => node.y + nodeHeight + margin), 250);
+    const contentMinX = ordered.length === 0
+        ? 0
+        : Math.min(...ordered.map((node) => node.x));
+    const contentMinY = ordered.length === 0
+        ? 0
+        : Math.min(...ordered.map((node) => node.y));
+    const contentMaxX = ordered.length === 0
+        ? WORKFLOW_NODE_WIDTH
+        : Math.max(...ordered.map((node) => node.x + WORKFLOW_NODE_WIDTH));
+    const contentMaxY = ordered.length === 0
+        ? WORKFLOW_NODE_HEIGHT
+        : Math.max(...ordered.map((node) => node.y + WORKFLOW_NODE_HEIGHT));
+    const minX = Math.min(0, contentMinX) - WORKFLOW_MARGIN;
+    const minY = Math.min(0, contentMinY) - WORKFLOW_MARGIN;
+    const maxX = contentMaxX + WORKFLOW_MARGIN;
+    const maxY = contentMaxY + WORKFLOW_MARGIN;
+    const bounds = {
+        minX,
+        minY,
+        width: Math.max(900, maxX - minX),
+        height: Math.max(320, maxY - minY)
+    };
     return {
         positions: ordered.map((node) => ({
             node,
-            x: node.x,
-            y: node.y,
-            width: nodeWidth,
-            height: nodeHeight
+            x: node.x - bounds.minX,
+            y: node.y - bounds.minY,
+            width: WORKFLOW_NODE_WIDTH,
+            height: WORKFLOW_NODE_HEIGHT
         })),
-        height: requiredHeight
+        bounds
     };
 }
 
 function workflowPoint(event) {
     const rect = workflowCanvas.getBoundingClientRect();
-    const scale = window.devicePixelRatio || 1;
+    const sceneX = (event.clientX - rect.left - workflowViewport.x) /
+        workflowViewport.zoom;
+    const sceneY = (event.clientY - rect.top - workflowViewport.y) /
+        workflowViewport.zoom;
     return {
-        x: (event.clientX - rect.left) * (workflowCanvas.width / scale) / rect.width,
-        y: (event.clientY - rect.top) * (workflowCanvas.height / scale) / rect.height
+        x: sceneX + workflowSceneBounds.minX,
+        y: sceneY + workflowSceneBounds.minY
     };
 }
 
-function workflowNodeAt(point) {
-    return workflowCanvas._workflowPositions?.find((position) =>
-        point.x >= position.x && point.x <= position.x + position.width &&
-        point.y >= position.y && point.y <= position.y + position.height
-    ) || null;
-}
-
-function distanceToSegment(point, start, end) {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    if (dx === 0 && dy === 0) {
-        return Math.hypot(point.x - start.x, point.y - start.y);
-    }
-    const ratio = Math.max(0, Math.min(1,
-        ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)
-    ));
-    return Math.hypot(
-        point.x - (start.x + ratio * dx),
-        point.y - (start.y + ratio * dy)
+function workflowNodePositionAvailable(x, y, padding = 16) {
+    return !(workflowData?.nodes || []).some((node) =>
+        x < node.x + WORKFLOW_NODE_WIDTH + padding &&
+        x + WORKFLOW_NODE_WIDTH + padding > node.x &&
+        y < node.y + WORKFLOW_NODE_HEIGHT + padding &&
+        y + WORKFLOW_NODE_HEIGHT + padding > node.y
     );
 }
 
-function workflowEdgeAt(point) {
-    if (!workflowData || !workflowCanvas._workflowPositions) return -1;
-    const positionById = new Map(
-        workflowCanvas._workflowPositions.map((position) => [position.node.id, position])
-    );
-    let closest = -1;
-    let closestDistance = 10;
-    workflowData.edges.forEach((edge, index) => {
-        const from = positionById.get(edge.from);
-        const to = positionById.get(edge.to);
-        if (!from || !to) return;
-        const distance = distanceToSegment(
-            point,
-            { x: from.x + from.width, y: from.y + from.height / 2 },
-            { x: to.x, y: to.y + to.height / 2 }
+function workflowNewNodePosition() {
+    const centerX = (workflowCanvas.clientWidth / 2 - workflowViewport.x) /
+        workflowViewport.zoom + workflowSceneBounds.minX;
+    const centerY = (workflowCanvas.clientHeight / 2 - workflowViewport.y) /
+        workflowViewport.zoom + workflowSceneBounds.minY;
+    const stepX = WORKFLOW_NODE_WIDTH + 28;
+    const stepY = WORKFLOW_NODE_HEIGHT + 28;
+    const candidates = [[0, 0]];
+
+    for (let radius = 1; radius <= 4; radius++) {
+        candidates.push(
+            [radius, 0],
+            [-radius, 0],
+            [0, radius],
+            [0, -radius],
+            [radius, radius],
+            [-radius, radius],
+            [radius, -radius],
+            [-radius, -radius]
         );
-        if (distance < closestDistance) {
-            closest = index;
-            closestDistance = distance;
-        }
+    }
+
+    for (const [column, row] of candidates) {
+        const x = Math.round(
+            centerX - WORKFLOW_NODE_WIDTH / 2 + column * stepX
+        );
+        const y = Math.round(
+            centerY - WORKFLOW_NODE_HEIGHT / 2 + row * stepY
+        );
+        if (workflowNodePositionAvailable(x, y)) return { x, y };
+    }
+
+    return {
+        x: Math.round(centerX - WORKFLOW_NODE_WIDTH / 2),
+        y: Math.round(centerY - WORKFLOW_NODE_HEIGHT / 2)
+    };
+}
+
+function workflowSvgElement(tag, attributes = {}) {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) {
+        element.setAttribute(name, value);
+    }
+    return element;
+}
+
+function workflowEdgePath(from, to) {
+    const startX = from.x + from.width;
+    const startY = from.y + from.height / 2;
+    const endX = to.x;
+    const endY = to.y + to.height / 2;
+    const curve = Math.max(46, Math.abs(endX - startX) * 0.45);
+    return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+}
+
+function workflowEdgePoint(from, to, progress = 0.5) {
+    const startX = from.x + from.width;
+    const startY = from.y + from.height / 2;
+    const endX = to.x;
+    const endY = to.y + to.height / 2;
+    const curve = Math.max(46, Math.abs(endX - startX) * 0.45);
+    const control1 = { x: startX + curve, y: startY };
+    const control2 = { x: endX - curve, y: endY };
+    const inverse = 1 - progress;
+    return {
+        x: inverse ** 3 * startX +
+            3 * inverse ** 2 * progress * control1.x +
+            3 * inverse * progress ** 2 * control2.x +
+            progress ** 3 * endX,
+        y: inverse ** 3 * startY +
+            3 * inverse ** 2 * progress * control1.y +
+            3 * inverse * progress ** 2 * control2.y +
+            progress ** 3 * endY
+    };
+}
+
+function workflowPositionMap() {
+    return new Map((workflowData?.nodes || []).map((node) => [node.id, {
+        node,
+        x: node.x,
+        y: node.y,
+        width: WORKFLOW_NODE_WIDTH,
+        height: WORKFLOW_NODE_HEIGHT
+    }]));
+}
+
+function workflowRoleLabel(role) {
+    return String(role || "route").replace(/(^|[-_])([a-z])/g, (_, prefix, letter) =>
+        prefix + letter.toUpperCase()
+    );
+}
+
+function workflowRoleForType(type) {
+    return type === "warehouse" ? "warehouse" : "logistics";
+}
+
+function workflowAccountsForRole(role) {
+    return (workflowData?.accounts || [])
+        .filter((account) => account.active !== false && account.role === role)
+        .sort((left, right) => left.username.localeCompare(right.username));
+}
+
+function nextWorkflowAccount(role) {
+    const used = new Set((workflowData?.nodes || [])
+        .filter((node) => node.role === role)
+        .map((node) => node.username));
+    return workflowAccountsForRole(role).find((account) =>
+        !used.has(account.username)
+    )?.username || "";
+}
+
+function populateWorkflowNodeAccounts(role, preferred = "") {
+    if (!workflowNodeAccount) return "";
+    const accounts = workflowAccountsForRole(role);
+    workflowNodeAccount.replaceChildren();
+    for (const account of accounts) {
+        const option = document.createElement("option");
+        option.value = account.username;
+        option.textContent = `${account.username} · ${account.displayName || account.organizationId}`;
+        workflowNodeAccount.append(option);
+    }
+    const selected = accounts.some((account) => account.username === preferred)
+        ? preferred
+        : (nextWorkflowAccount(role) || accounts[0]?.username || "");
+    workflowNodeAccount.value = selected;
+    workflowNodeAccount.disabled = accounts.length === 0;
+    return selected;
+}
+
+function syncWorkflowNodeAccountControl() {
+    const selectedNode = workflowData?.nodes?.find((node) =>
+        node.id === workflowSelectedNodeId
+    );
+    const role = selectedNode?.role || workflowRoleForType(workflowNodeType.value);
+    populateWorkflowNodeAccounts(role, selectedNode?.username || "");
+}
+
+function createWorkflowNodeElement(position) {
+    const { node, x, y } = position;
+    const element = document.createElement("article");
+    element.className = "workflow-node";
+    element.dataset.nodeId = node.id;
+    element.style.left = `${x}px`;
+    element.style.top = `${y}px`;
+    element.setAttribute("aria-label", `${node.label}, ${workflowRoleLabel(node.role)}`);
+    if (node.id === workflowSelectedNodeId) element.classList.add("selected");
+    if (workflowPointerState?.mode === "node" &&
+        workflowPointerState.nodeId === node.id) {
+        element.classList.add("is-dragging");
+    }
+
+    const title = document.createElement("strong");
+    title.className = "workflow-node-title";
+    title.textContent = node.label;
+    const role = document.createElement("span");
+    role.className = "workflow-node-role";
+    role.textContent = workflowRoleLabel(node.role);
+    const username = document.createElement("span");
+    username.className = "workflow-node-user";
+    username.textContent = node.username || "Unassigned";
+    const state = document.createElement("span");
+    state.className = "workflow-node-state";
+    state.setAttribute("aria-hidden", "true");
+
+    const target = document.createElement("button");
+    target.type = "button";
+    target.className = "workflow-handle workflow-handle-target";
+    target.dataset.handle = "target";
+    target.dataset.nodeId = node.id;
+    target.title = "Incoming connection";
+    target.setAttribute("aria-label", `Connect to ${node.label}`);
+    target.hidden = node.role === "supplier";
+    if (workflowPointerState?.mode === "connect" &&
+        workflowPointerState.targetId === node.id) {
+        target.classList.add(
+            workflowConnectionError(workflowPointerState.sourceId, node.id)
+                ? "is-invalid-target"
+                : "is-connect-target"
+        );
+    }
+
+    const source = document.createElement("button");
+    source.type = "button";
+    source.className = "workflow-handle workflow-handle-source";
+    source.dataset.handle = "source";
+    source.dataset.nodeId = node.id;
+    source.title = "Outgoing connection";
+    source.setAttribute("aria-label", `Connect from ${node.label}`);
+    source.hidden = node.role === "supermarket";
+
+    element.append(title, role, username, state, target, source);
+    element.addEventListener("pointerdown", (event) => {
+        if (event.target.closest(".workflow-handle")) return;
+        startWorkflowNodeDrag(event, node.id);
     });
-    return closest;
-}
-
-function workflowNodeForSelection() {
-    return workflowData?.nodes.find((node) => node.id === workflowSelectedNodeId) || null;
-}
-
-function updateWorkflowEditor() {
-    const selected = workflowNodeForSelection();
-    workflowNodeEditor.hidden = !selected;
-    if (selected) workflowNodeLabel.value = selected.label;
+    target.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    source.addEventListener("pointerdown", (event) => {
+        startWorkflowConnection(event, node.id);
+    });
+    return element;
 }
 
 function workflowConnectionError(fromId, toId) {
@@ -870,97 +1204,210 @@ function workflowConnectionError(fromId, toId) {
     return "";
 }
 
-function drawWorkflowNode(context, position, selected) {
-    const { node, x, y, width, height } = position;
-    drawRoundedRect(context, x, y, width, height, 14);
-    context.fillStyle = selected ? "#102c42" : "#0b1727";
-    context.fill();
-    context.strokeStyle = selected ? "#9acbff" : "#2d4960";
-    context.lineWidth = selected ? 3 : 1.5;
-    context.stroke();
-
-    context.fillStyle = "#e5edf8";
-    context.font = "700 15px system-ui, sans-serif";
-    context.fillText(node.label, x + 13, y + 27);
-    context.fillStyle = "#73cef4";
-    context.font = "600 13px system-ui, sans-serif";
-    context.fillText(node.role, x + 13, y + 50);
-    context.fillStyle = "#91a2b9";
-    context.font = "12px system-ui, sans-serif";
-    context.fillText(node.username || "Unassigned", x + 13, y + 73);
-    context.fillStyle = "#55d6b0";
-    context.beginPath();
-    context.arc(x + width - 16, y + 17, 5, 0, Math.PI * 2);
-    context.fill();
+function applyWorkflowViewport() {
+    workflowScene.style.transform =
+        `translate(${workflowViewport.x}px, ${workflowViewport.y}px) scale(${workflowViewport.zoom})`;
+    workflowZoomLevel.textContent = `${Math.round(workflowViewport.zoom * 100)}%`;
 }
 
-function renderWorkflow(workflow) {
-    workflowData = workflow === workflowData ? workflowData : normalizeWorkflow(workflow);
-    const parentWidth = workflowCanvas.parentElement.clientWidth || 900;
-    const width = Math.max(parentWidth, 640);
-    const layout = workflowCanvasLayout(workflowData, width);
-    const height = Math.max(250, layout.height);
-    const scale = window.devicePixelRatio || 1;
-    workflowCanvas.width = width * scale;
-    workflowCanvas.height = height * scale;
-    workflowCanvas.style.height = height + "px";
+function renderWorkflow(workflow, options = {}) {
+    const isNewWorkflow = workflow !== workflowData;
+    workflowData = isNewWorkflow ? normalizeWorkflow(workflow) : workflowData;
+    if (isNewWorkflow) {
+        workflowLayoutInitialized = false;
+        resetWorkflowHistory();
+    }
+    const previousBounds = workflowSceneBounds;
+    const layout = workflowCanvasLayout(workflowData, options.forceLayout === true);
+    if (workflowViewportReady) {
+        workflowViewport.x +=
+            (layout.bounds.minX - previousBounds.minX) * workflowViewport.zoom;
+        workflowViewport.y +=
+            (layout.bounds.minY - previousBounds.minY) * workflowViewport.zoom;
+    }
+    workflowSceneBounds = layout.bounds;
+    workflowScene.style.width = `${layout.bounds.width}px`;
+    workflowScene.style.height = `${layout.bounds.height}px`;
+    workflowEdgeLayer.setAttribute("width", layout.bounds.width);
+    workflowEdgeLayer.setAttribute("height", layout.bounds.height);
+    workflowEdgeLayer.setAttribute(
+        "viewBox",
+        `0 0 ${layout.bounds.width} ${layout.bounds.height}`
+    );
+    workflowEdgeLayer.replaceChildren();
+    workflowNodeLayer.replaceChildren();
 
-    const context = workflowCanvas.getContext("2d");
-    context.setTransform(scale, 0, 0, scale, 0, 0);
-    context.clearRect(0, 0, width, height);
+    const defs = workflowSvgElement("defs");
+    const marker = workflowSvgElement("marker", {
+        id: "workflow-arrow",
+        markerWidth: "8",
+        markerHeight: "8",
+        refX: "7",
+        refY: "4",
+        orient: "auto",
+        markerUnits: "strokeWidth"
+    });
+    marker.append(workflowSvgElement("path", {
+        d: "M 0 0 L 8 4 L 0 8 z",
+        fill: "#55d6b0"
+    }));
+    defs.append(marker);
+    workflowEdgeLayer.append(defs);
+
     const positions = layout.positions;
-    workflowCanvas._workflowPositions = positions;
     const positionById = new Map(
         positions.map((position) => [position.node.id, position])
     );
-
-    context.lineWidth = 3;
-    context.fillStyle = "#55d6b0";
     for (const [index, edge] of workflowData.edges.entries()) {
         const from = positionById.get(edge.from);
         const to = positionById.get(edge.to);
         if (!from || !to) continue;
-        const fromX = from.x + from.width;
-        const fromY = from.y + from.height / 2;
-        const toX = to.x;
-        const toY = to.y + to.height / 2;
-        context.beginPath();
-        context.moveTo(fromX, fromY);
-        context.lineTo(toX - 10, toY);
-        context.strokeStyle = index === workflowSelectedEdgeIndex ? "#9acbff" : "#55d6b0";
-        context.lineWidth = index === workflowSelectedEdgeIndex ? 5 : 3;
-        context.stroke();
-        drawArrow(context, toX, toY, toX - 10, toY);
-    }
-    for (const position of positions) {
-        drawWorkflowNode(
-            context,
-            position,
-            position.node.id === workflowSelectedNodeId
+        const path = workflowSvgElement("path", {
+            d: workflowEdgePath(from, to),
+            class: "workflow-edge" +
+                (index === workflowSelectedEdgeIndex ? " selected" : ""),
+            "marker-end": "url(#workflow-arrow)"
+        });
+        path.dataset.edgeIndex = String(index);
+        path.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            workflowSelectedNodeId = "";
+            workflowSelectedEdgeIndex = index;
+            renderWorkflow(workflowData);
+        });
+        workflowEdgeLayer.append(path);
+
+        const remove = workflowSvgElement("g", {
+            class: "workflow-edge-delete",
+            role: "button",
+            tabindex: "0",
+            focusable: "true",
+            "pointer-events": "all",
+            "aria-label": `Remove connection from ${from.node.label} to ${to.node.label}`
+        });
+        const removePoint = workflowEdgePoint(from, to);
+        remove.setAttribute("transform", `translate(${removePoint.x} ${removePoint.y})`);
+        remove.dataset.edgeIndex = String(index);
+        remove.append(
+            workflowSvgElement("circle", { cx: "0", cy: "0", r: "11" }),
+            workflowSvgElement("text", {
+                x: "0",
+                y: "0",
+                "aria-hidden": "true"
+            })
         );
+        remove.querySelector("text").textContent = "×";
+        const removeConnection = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            deleteWorkflowEdgeAt(index);
+        };
+        remove.addEventListener("pointerdown", (event) => {
+            event.stopPropagation();
+        });
+        remove.addEventListener("click", removeConnection);
+        remove.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            removeConnection(event);
+        });
+        workflowEdgeLayer.append(remove);
+    }
+
+    if (workflowPointerState?.mode === "connect") {
+        const source = positionById.get(workflowPointerState.sourceId);
+        if (source && workflowPointerState.currentPoint) {
+            const previewTarget = {
+                x: workflowPointerState.currentPoint.x - layout.bounds.minX,
+                y: workflowPointerState.currentPoint.y - layout.bounds.minY -
+                    WORKFLOW_NODE_HEIGHT / 2,
+                width: 0,
+                height: WORKFLOW_NODE_HEIGHT
+            };
+            workflowEdgeLayer.append(workflowSvgElement("path", {
+                d: workflowEdgePath(source, previewTarget),
+                class: "workflow-edge-preview"
+            }));
+        }
+    }
+
+    for (const position of positions) {
+        workflowNodeLayer.append(createWorkflowNodeElement(position));
+    }
+
+    applyWorkflowViewport();
+    if (!workflowViewportReady || options.fitView === true) {
+        fitWorkflowView();
     }
 
     const validation = workflowValidation(workflowData);
+    syncWorkflowNodeAccountControl();
     workflowRouteBadge.textContent = workflowData.routeId || "Route unavailable";
     workflowRouteBadge.className = "badge " + (validation.valid ? "verified" : "pending");
     workflowDeleteNode.disabled = !workflowSelectedNodeId;
     workflowDeleteEdge.disabled = workflowSelectedEdgeIndex < 0;
     workflowSave.disabled = !validation.valid;
-    updateWorkflowEditor();
     workflowStatus.textContent = validation.valid
-        ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes, click a line to remove it, or select two nodes to connect them.`
+        ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes or use the handles to edit the route.`
         : `Route error: ${validation.error}`;
     workflowStatus.className = "status " + (validation.valid ? "success" : "error");
 }
 
+function fitWorkflowView() {
+    if (!workflowData) return;
+    const width = workflowCanvas.clientWidth;
+    const height = workflowCanvas.clientHeight;
+    const bounds = workflowSceneBounds;
+    const nodes = workflowData.nodes || [];
+    if (!width || !height || !bounds.width || !bounds.height || !nodes.length) return;
+    const padding = 36;
+    const contentMinX = Math.min(...nodes.map((node) => node.x));
+    const contentMinY = Math.min(...nodes.map((node) => node.y));
+    const contentMaxX = Math.max(...nodes.map((node) =>
+        node.x + WORKFLOW_NODE_WIDTH
+    ));
+    const contentMaxY = Math.max(...nodes.map((node) =>
+        node.y + WORKFLOW_NODE_HEIGHT
+    ));
+    const sceneMinX = contentMinX - padding - bounds.minX;
+    const sceneMinY = contentMinY - padding - bounds.minY;
+    const sceneWidth = contentMaxX - contentMinX + padding * 2;
+    const sceneHeight = contentMaxY - contentMinY + padding * 2;
+    const zoom = Math.max(
+        WORKFLOW_MIN_ZOOM,
+        Math.min(
+            WORKFLOW_MAX_ZOOM,
+            (width - padding * 2) / sceneWidth,
+            (height - padding * 2) / sceneHeight
+        )
+    );
+    workflowViewport.zoom = zoom;
+    workflowViewport.x = (width - sceneWidth * zoom) / 2 - sceneMinX * zoom;
+    workflowViewport.y = (height - sceneHeight * zoom) / 2 - sceneMinY * zoom;
+    workflowViewportReady = true;
+    applyWorkflowViewport();
+}
+
+function setWorkflowZoom(nextZoom) {
+    if (!workflowData) return;
+    const zoom = Math.max(WORKFLOW_MIN_ZOOM, Math.min(WORKFLOW_MAX_ZOOM, nextZoom));
+    const centerX = workflowCanvas.clientWidth / 2;
+    const centerY = workflowCanvas.clientHeight / 2;
+    const sceneCenterX = (centerX - workflowViewport.x) / workflowViewport.zoom;
+    const sceneCenterY = (centerY - workflowViewport.y) / workflowViewport.zoom;
+    workflowViewport.zoom = zoom;
+    workflowViewport.x = centerX - sceneCenterX * zoom;
+    workflowViewport.y = centerY - sceneCenterY * zoom;
+    workflowViewportReady = true;
+    applyWorkflowViewport();
+}
+
 function recalculateWorkflowLayout(force = true) {
     if (!workflowData) return;
-    const width = Math.max(workflowCanvas.parentElement.clientWidth || 900, 640);
-    const layout = workflowCanvasLayout(workflowData, width, force);
+    workflowCanvasLayout(workflowData, force);
     for (const [index, node] of routeOrder(workflowData).entries()) {
         node.stepIndex = index;
     }
-    return layout;
 }
 
 function workflowNodePayload(node) {
@@ -970,8 +1417,8 @@ function workflowNodePayload(node) {
         node.label,
         node.role,
         node.username,
-        node.x,
-        node.y,
+        workflowInteger(node.x),
+        workflowInteger(node.y),
         node.stepIndex
     ].map((value) => encodeURIComponent(String(value ?? ""))).join("|");
 }
@@ -982,9 +1429,12 @@ async function loadWorkflowScopes() {
         const response = await fetch("/api/batches", {
             headers: { Authorization: "Bearer " + session.token }
         });
-        const batches = await response.json();
+        const batches = await readJsonResponse(response);
         if (!response.ok) {
             throw new Error(batches.error || "Unable to load route scopes.");
+        }
+        if (!Array.isArray(batches)) {
+            throw new Error("The route scope response is malformed.");
         }
         const selected = workflowBatchSelect.value;
         workflowBatchSelect.replaceChildren();
@@ -1016,6 +1466,7 @@ async function saveWorkflow() {
         return;
     }
     recalculateWorkflowLayout(false);
+    normalizeWorkflowPositions(workflowData);
     workflowSave.disabled = true;
     workflowStatus.textContent = "Saving route...";
     workflowStatus.className = "status pending";
@@ -1035,7 +1486,7 @@ async function saveWorkflow() {
             },
             body: body.toString()
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
@@ -1067,7 +1518,7 @@ async function loadWorkflow(batchId = workflowBatchSelect.value) {
         const response = await fetch("/api/workflow" + query, {
             headers: { Authorization: `Bearer ${session.token}` }
         });
-        const workflow = await response.json();
+        const workflow = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
@@ -1075,7 +1526,11 @@ async function loadWorkflow(batchId = workflowBatchSelect.value) {
         if (!response.ok) {
             throw new Error(workflow.error || `Request failed: ${response.status}`);
         }
+        if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
+            throw new Error("The workflow response is malformed.");
+        }
         renderWorkflow(workflow);
+        await loadConfirmationPolicy();
     } catch (error) {
         workflowStatus.textContent = error.message;
         workflowStatus.className = "status error";
@@ -1092,13 +1547,16 @@ async function loadChains() {
         const response = await fetch("/api/chains", {
             headers: { Authorization: `Bearer ${session.token}` }
         });
-        const graph = await response.json();
+        const graph = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) {
             throw new Error(graph.error || `Request failed: ${response.status}`);
+        }
+        if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+            throw new Error("The chain response is malformed.");
         }
 
         list.replaceChildren(...renderChainGraph(graph));
@@ -1179,7 +1637,7 @@ function renderSnapshotBatches(batches) {
     renderSnapshotEvidence();
     setSnapshotStatus(hasBatches
         ? "Select a completed batch and review its public evidence."
-        : "Complete and verify all four route stages before generating a snapshot.",
+        : "Complete and verify every assigned route stage before generating a snapshot.",
         hasBatches ? "success" : "pending");
 }
 
@@ -1192,13 +1650,16 @@ async function loadSnapshotCandidates() {
         const response = await fetch("/api/snapshot/eligible-batches", {
             headers: { Authorization: `Bearer ${session.token}` }
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-        renderSnapshotBatches(result.batches || []);
+        if (!Array.isArray(result.batches)) {
+            throw new Error("The snapshot candidate response is malformed.");
+        }
+        renderSnapshotBatches(result.batches);
     } catch (error) {
         renderSnapshotBatches([]);
         setSnapshotStatus(error.message, "error");
@@ -1243,7 +1704,7 @@ async function publishSnapshot() {
             },
             body: JSON.stringify(publicationCandidate)
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
@@ -1283,7 +1744,7 @@ async function generateSnapshotPreview(event) {
                 selectedEvidence: selectedEvidence.join(",")
             }).toString()
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
@@ -1300,188 +1761,82 @@ async function generateSnapshotPreview(event) {
 
 async function loadDashboard() {
     await loadWorkflowScopes();
+    await loadWorkflow(workflowBatchSelect.value);
     await Promise.all([
-        loadWorkflow(workflowBatchSelect.value),
         loadChains(),
-        loadConfirmationPolicy(),
         loadSnapshotCandidates()
     ]);
 }
 
-window.addEventListener("resize", () => {
-    if (workflowData) renderWorkflow(workflowData);
-});
-
-refreshButton.addEventListener("click", loadDashboard);
-loginForm.addEventListener("submit", login);
-logoutButton.addEventListener("click", logout);
-workflowBatchSelect.addEventListener("change", () => {
-    workflowSelectedNodeId = "";
-    workflowSelectedEdgeIndex = -1;
-    workflowPointerState = null;
-    loadWorkflow(workflowBatchSelect.value);
-});
-workflowCanvas.addEventListener("pointerdown", (event) => {
-    if (!workflowData || !workflowCanvas._workflowPositions) return;
-    const point = workflowPoint(event);
-    const position = workflowNodeAt(point);
-    workflowSelectedEdgeIndex = -1;
-
-    if (position) {
-        if (workflowSelectedNodeId && workflowSelectedNodeId !== position.node.id) {
-            const error = workflowConnectionError(
-                workflowSelectedNodeId,
-                position.node.id
-            );
-            if (error) {
-                renderWorkflow(workflowData);
-                workflowStatus.textContent = `Route error: ${error}`;
-                workflowStatus.className = "status error";
-                return;
-            }
-            workflowData.edges.push({
-                from: workflowSelectedNodeId,
-                to: position.node.id
-            });
-            workflowSelectedNodeId = position.node.id;
-            workflowPointerState = null;
-            renderWorkflow(workflowData);
-            return;
-        }
-
-        workflowSelectedNodeId = position.node.id;
-        workflowPointerState = {
-            pointerId: event.pointerId,
-            nodeId: position.node.id,
-            startX: point.x,
-            startY: point.y,
-            offsetX: point.x - position.x,
-            offsetY: point.y - position.y,
-            dragging: false
-        };
-        workflowCanvas.setPointerCapture(event.pointerId);
-        workflowCanvas.style.cursor = "grabbing";
-        renderWorkflow(workflowData);
-        return;
-    }
-
-    const edgeIndex = workflowEdgeAt(point);
-    if (edgeIndex >= 0) {
-        workflowSelectedNodeId = "";
-        workflowSelectedEdgeIndex = edgeIndex;
-        renderWorkflow(workflowData);
-        return;
-    }
-
-    workflowSelectedNodeId = "";
-    workflowSelectedEdgeIndex = -1;
-    renderWorkflow(workflowData);
-});
-workflowCanvas.addEventListener("pointermove", (event) => {
-    if (!workflowData || !workflowPointerState ||
-        workflowPointerState.pointerId !== event.pointerId) return;
-
-    const point = workflowPoint(event);
-    const moved = Math.hypot(
-        point.x - workflowPointerState.startX,
-        point.y - workflowPointerState.startY
-    );
-    if (!workflowPointerState.dragging && moved < 4) return;
-    workflowPointerState.dragging = true;
-
-    const node = workflowData.nodes.find((item) =>
-        item.id === workflowPointerState.nodeId
-    );
+function startWorkflowNodeDrag(event, nodeId) {
+    if (!workflowData || event.button !== 0) return;
+    const node = workflowData.nodes.find((item) => item.id === nodeId);
     if (!node) return;
-    const layout = workflowCanvas._workflowPositions?.[0];
-    const nodeWidth = layout?.width || 164;
-    const nodeHeight = layout?.height || 96;
-    const scale = window.devicePixelRatio || 1;
-    const canvasWidth = workflowCanvas.width / scale;
-    const canvasHeight = workflowCanvas.height / scale;
-    node.x = Math.max(
-        12,
-        Math.min(Math.max(12, canvasWidth - nodeWidth - 12), point.x - workflowPointerState.offsetX)
-    );
-    node.y = Math.max(
-        12,
-        Math.min(Math.max(12, canvasHeight - nodeHeight - 12), point.y - workflowPointerState.offsetY)
-    );
-    renderWorkflow(workflowData);
     event.preventDefault();
-});
-function finishWorkflowPointer(event) {
-    if (!workflowPointerState || workflowPointerState.pointerId !== event.pointerId) return;
-    if (workflowCanvas.hasPointerCapture(event.pointerId)) {
-        workflowCanvas.releasePointerCapture(event.pointerId);
-    }
-    workflowPointerState = null;
-    workflowCanvas.style.cursor = "crosshair";
-    renderWorkflow(workflowData);
-}
-workflowCanvas.addEventListener("pointerup", finishWorkflowPointer);
-workflowCanvas.addEventListener("pointercancel", finishWorkflowPointer);
-workflowDeleteEdge.addEventListener("click", () => {
-    if (!workflowData || workflowSelectedEdgeIndex < 0) return;
-    workflowData.edges.splice(workflowSelectedEdgeIndex, 1);
-    workflowSelectedEdgeIndex = -1;
-    renderWorkflow(workflowData);
-});
-workflowAutoLayout.addEventListener("click", () => {
-    if (!workflowData) return;
-    workflowSelectedNodeId = "";
-    workflowSelectedEdgeIndex = -1;
-    workflowPointerState = null;
-    recalculateWorkflowLayout(true);
-    renderWorkflow(workflowData);
-});
-workflowApplyNodeLabel.addEventListener("click", () => {
-    const selected = workflowNodeForSelection();
-    const label = workflowNodeLabel.value.trim();
-    if (!selected) return;
-    if (!label) {
-        workflowStatus.textContent = "Route error: the node label cannot be empty.";
-        workflowStatus.className = "status error";
-        return;
-    }
-    selected.label = label;
-    renderWorkflow(workflowData);
-});
-workflowAddNode.addEventListener("click", () => {
-    if (!workflowData) return;
-    const type = workflowNodeType.value;
-    const role = type === "warehouse" ? "warehouse" : "logistics";
-    const prefix = type === "warehouse" ? "warehouse" : "transport";
-    let count = workflowData.nodes.filter((node) => node.nodeType === type).length + 1;
-    let nodeId = prefix + "-" + count;
-    while (workflowData.nodes.some((node) => node.id === nodeId)) {
-        nodeId = prefix + "-" + (++count);
-    }
-    workflowData.nodes.push({
-        id: nodeId,
-        nodeType: type,
-        label: (type === "warehouse" ? "Warehouse " : "Transport ") + count,
-        role,
-        username: role === "warehouse" ? "warehouse01" : "logistics01",
-        x: 0,
-        y: 0,
-        stepIndex: -1
-    });
+    event.stopPropagation();
+    const point = workflowPoint(event);
     workflowSelectedNodeId = nodeId;
     workflowSelectedEdgeIndex = -1;
-    recalculateWorkflowLayout();
+    workflowPointerState = {
+        mode: "node",
+        pointerId: event.pointerId,
+        nodeId,
+        offsetX: point.x - node.x,
+        offsetY: point.y - node.y,
+        moved: false,
+        before: workflowSnapshot()
+    };
+    workflowCanvas.setPointerCapture(event.pointerId);
     renderWorkflow(workflowData);
-});
-workflowDeleteNode.addEventListener("click", () => {
+}
+
+function startWorkflowConnection(event, nodeId) {
+    if (!workflowData || event.button !== 0) return;
+    const node = workflowData.nodes.find((item) => item.id === nodeId);
+    if (!node || node.role === "supermarket") return;
+    event.preventDefault();
+    event.stopPropagation();
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = {
+        mode: "connect",
+        pointerId: event.pointerId,
+        sourceId: nodeId,
+        targetId: "",
+        currentPoint: workflowPoint(event)
+    };
+    workflowCanvas.setPointerCapture(event.pointerId);
+    renderWorkflow(workflowData);
+}
+
+function setWorkflowRouteError(message) {
+    workflowStatus.textContent = `Route error: ${message}`;
+    workflowStatus.className = "status error";
+}
+
+function deleteWorkflowEdgeAt(index) {
+    if (!workflowData || index < 0 || index >= workflowData.edges.length) return;
+    captureWorkflowHistory();
+    workflowData.edges.splice(index, 1);
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    renderWorkflow(workflowData);
+}
+
+function deleteSelectedWorkflowEdge() {
+    deleteWorkflowEdgeAt(workflowSelectedEdgeIndex);
+}
+
+function deleteSelectedWorkflowNode() {
     if (!workflowData || !workflowSelectedNodeId) return;
     const selected = workflowData.nodes.find((node) =>
         node.id === workflowSelectedNodeId
     );
     if (!selected || selected.role === "supplier" || selected.role === "supermarket") {
-        workflowStatus.textContent = "Supplier and Supermarket are required route endpoints.";
-        workflowStatus.className = "status error";
+        setWorkflowRouteError("Supplier and Supermarket are required route endpoints.");
         return;
     }
+    captureWorkflowHistory();
     workflowData.nodes = workflowData.nodes.filter((node) =>
         node.id !== workflowSelectedNodeId
     );
@@ -1491,14 +1846,283 @@ workflowDeleteNode.addEventListener("click", () => {
     workflowSelectedNodeId = "";
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;
-    recalculateWorkflowLayout();
+    renderWorkflow(workflowData);
+}
+
+function finishWorkflowPointer(event) {
+    if (!workflowPointerState || workflowPointerState.pointerId !== event.pointerId) return;
+    const state = workflowPointerState;
+    if (workflowCanvas.hasPointerCapture(event.pointerId)) {
+        workflowCanvas.releasePointerCapture(event.pointerId);
+    }
+
+    if (state.mode === "connect") {
+        const targetElement = document.elementFromPoint(event.clientX, event.clientY)
+            ?.closest(".workflow-handle-target");
+        const targetId = targetElement?.dataset.nodeId || state.targetId;
+        if (targetId) {
+            const error = workflowConnectionError(state.sourceId, targetId);
+            if (error) {
+                setWorkflowRouteError(error);
+            } else {
+                captureWorkflowHistory();
+                workflowData.edges.push({ from: state.sourceId, to: targetId });
+                workflowSelectedNodeId = targetId;
+            }
+        }
+    }
+
+    if (state.mode === "node" && state.moved) {
+        captureWorkflowDragHistory(state.before);
+    }
+    workflowPointerState = null;
+    workflowCanvas.classList.remove("is-panning");
+    renderWorkflow(workflowData);
+}
+
+let workflowResizeFrame = 0;
+function scheduleWorkflowResize() {
+    if (workflowResizeFrame) return;
+    workflowResizeFrame = requestAnimationFrame(() => {
+        workflowResizeFrame = 0;
+        if (workflowData) renderWorkflow(workflowData);
+    });
+}
+
+window.addEventListener("resize", scheduleWorkflowResize);
+if (window.ResizeObserver) {
+    new ResizeObserver(scheduleWorkflowResize).observe(workflowCanvas);
+}
+
+refreshButton.addEventListener("click", loadDashboard);
+loginForm.addEventListener("submit", login);
+logoutButton.addEventListener("click", logout);
+workflowBatchSelect.addEventListener("change", () => {
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
+    workflowViewportReady = false;
+    loadWorkflow(workflowBatchSelect.value);
+});
+
+workflowCanvas.addEventListener("pointerdown", (event) => {
+    if (!workflowData || event.button !== 0) return;
+    if (event.target.closest(".workflow-canvas-controls")) return;
+    if (event.target.closest(".workflow-node") ||
+        event.target.closest(".workflow-edge")) return;
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = {
+        mode: "pan",
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        viewportX: workflowViewport.x,
+        viewportY: workflowViewport.y
+    };
+    workflowCanvas.setPointerCapture(event.pointerId);
+    workflowCanvas.classList.add("is-panning");
+    renderWorkflow(workflowData);
+});
+
+workflowCanvas.addEventListener("pointermove", (event) => {
+    if (!workflowData || !workflowPointerState ||
+        workflowPointerState.pointerId !== event.pointerId) return;
+
+    const state = workflowPointerState;
+    if (state.mode === "pan") {
+        workflowViewport.x = state.viewportX + event.clientX - state.startX;
+        workflowViewport.y = state.viewportY + event.clientY - state.startY;
+        applyWorkflowViewport();
+        event.preventDefault();
+        return;
+    }
+
+    if (state.mode === "node") {
+        const point = workflowPoint(event);
+        const node = workflowData.nodes.find((item) => item.id === state.nodeId);
+        if (!node) return;
+        node.x = Math.round(point.x - state.offsetX);
+        node.y = Math.round(point.y - state.offsetY);
+        state.moved = true;
+        renderWorkflow(workflowData);
+        event.preventDefault();
+        return;
+    }
+
+    if (state.mode === "connect") {
+        state.currentPoint = workflowPoint(event);
+        const targetElement = document.elementFromPoint(event.clientX, event.clientY)
+            ?.closest(".workflow-handle-target");
+        state.targetId = targetElement?.dataset.nodeId || "";
+        renderWorkflow(workflowData);
+        event.preventDefault();
+    }
+});
+
+workflowCanvas.addEventListener("pointerup", finishWorkflowPointer);
+workflowCanvas.addEventListener("pointercancel", finishWorkflowPointer);
+workflowCanvas.addEventListener("wheel", (event) => {
+    if (!workflowData) return;
+    const rect = workflowCanvas.getBoundingClientRect();
+    const cursorX = event.clientX - rect.left;
+    const cursorY = event.clientY - rect.top;
+    const isPinchZoom = event.ctrlKey || event.metaKey;
+    if (!isPinchZoom) {
+        event.preventDefault();
+        workflowViewport.x -= event.deltaX;
+        workflowViewport.y -= event.deltaY;
+        workflowViewportReady = true;
+        applyWorkflowViewport();
+        return;
+    }
+
+    event.preventDefault();
+    const unit = event.deltaMode === 1
+        ? 16
+        : event.deltaMode === 2 ? workflowCanvas.clientHeight : 1;
+    workflowWheelState.pendingDelta = Math.max(
+        -240,
+        Math.min(240, workflowWheelState.pendingDelta + event.deltaY * unit)
+    );
+    workflowWheelState.anchor = { x: cursorX, y: cursorY };
+    if (!workflowWheelState.frame) {
+        workflowWheelState.frame = requestAnimationFrame(() => {
+            workflowWheelState.frame = 0;
+            const delta = workflowWheelState.pendingDelta;
+            workflowWheelState.pendingDelta = 0;
+            const anchor = workflowWheelState.anchor;
+            if (!anchor || !delta) return;
+            const sceneX = (anchor.x - workflowViewport.x) / workflowViewport.zoom;
+            const sceneY = (anchor.y - workflowViewport.y) / workflowViewport.zoom;
+            const nextZoom = workflowViewport.zoom * Math.exp(-delta * 0.0035);
+            workflowViewport.zoom = Math.max(
+                WORKFLOW_MIN_ZOOM,
+                Math.min(WORKFLOW_MAX_ZOOM, nextZoom)
+            );
+            workflowViewport.x = anchor.x - sceneX * workflowViewport.zoom;
+            workflowViewport.y = anchor.y - sceneY * workflowViewport.zoom;
+            workflowViewportReady = true;
+            applyWorkflowViewport();
+        });
+    }
+}, { passive: false });
+
+workflowZoomOut.addEventListener("click", () =>
+    setWorkflowZoom(workflowViewport.zoom - WORKFLOW_ZOOM_BUTTON_STEP));
+workflowZoomIn.addEventListener("click", () =>
+    setWorkflowZoom(workflowViewport.zoom + WORKFLOW_ZOOM_BUTTON_STEP));
+workflowFitView.addEventListener("click", () => fitWorkflowView());
+
+workflowNodeType.addEventListener("change", () => {
+    if (!workflowSelectedNodeId) {
+        populateWorkflowNodeAccounts(workflowRoleForType(workflowNodeType.value));
+    }
+});
+workflowNodeAccount.addEventListener("change", () => {
+    if (!workflowData || !workflowSelectedNodeId || !workflowNodeAccount.value) return;
+    const node = workflowData.nodes.find((candidate) =>
+        candidate.id === workflowSelectedNodeId
+    );
+    if (!node || node.username === workflowNodeAccount.value) return;
+    const account = workflowAccountsForRole(node.role).find((candidate) =>
+        candidate.username === workflowNodeAccount.value
+    );
+    if (!account) {
+        setWorkflowRouteError("The selected account does not match this route stage.");
+        return;
+    }
+    captureWorkflowHistory();
+    node.username = account.username;
+    renderWorkflow(workflowData);
+});
+
+workflowDeleteEdge.addEventListener("click", deleteSelectedWorkflowEdge);
+workflowDeleteNode.addEventListener("click", deleteSelectedWorkflowNode);
+workflowAutoLayout.addEventListener("click", () => {
+    if (!workflowData) return;
+    captureWorkflowHistory();
+    workflowSelectedNodeId = "";
+    workflowSelectedEdgeIndex = -1;
+    workflowPointerState = null;
+    workflowViewportReady = false;
+    recalculateWorkflowLayout(true);
+    renderWorkflow(workflowData, { fitView: true });
+});
+workflowAddNode.addEventListener("click", () => {
+    if (!workflowData) return;
+    const type = workflowNodeType.value;
+    const role = workflowRoleForType(type);
+    const prefix = type === "warehouse" ? "warehouse" : "transport";
+    const usedAccounts = new Set(workflowData.nodes
+        .filter((node) => node.role === role)
+        .map((node) => node.username));
+    const selectedAccount = workflowNodeAccount.value;
+    const username = selectedAccount && !usedAccounts.has(selectedAccount)
+        ? selectedAccount
+        : nextWorkflowAccount(role);
+    if (!username) {
+        setWorkflowRouteError(`No active ${workflowRoleLabel(role)} account is available.`);
+        return;
+    }
+    let count = workflowData.nodes.filter((node) => node.nodeType === type).length + 1;
+    let nodeId = prefix + "-" + count;
+    while (workflowData.nodes.some((node) => node.id === nodeId)) {
+        nodeId = prefix + "-" + (++count);
+    }
+    const node = {
+        id: nodeId,
+        nodeType: type,
+        label: (type === "warehouse" ? "Warehouse " : "Transport ") + count,
+        role,
+        username,
+        x: 0,
+        y: 0,
+        stepIndex: -1
+    };
+
+    captureWorkflowHistory();
+    const position = workflowNewNodePosition();
+
+    node.x = workflowInteger(position.x);
+    node.y = workflowInteger(position.y);
+    workflowData.nodes.push(node);
+    workflowSelectedNodeId = nodeId;
+    workflowSelectedEdgeIndex = -1;
+    workflowLayoutInitialized = true;
     renderWorkflow(workflowData);
 });
 workflowResetRoute.addEventListener("click", () => {
     workflowSelectedNodeId = "";
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;
+    workflowViewportReady = false;
     loadWorkflow(workflowBatchSelect.value);
+});
+workflowUndo.addEventListener("click", undoWorkflowEdit);
+workflowRedo.addEventListener("click", redoWorkflowEdit);
+document.addEventListener("keydown", (event) => {
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoWorkflowEdit();
+        else undoWorkflowEdit();
+        return;
+    }
+    if (modifier && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redoWorkflowEdit();
+        return;
+    }
+    if (event.key !== "Delete" && event.key !== "Backspace") return;
+    if (workflowSelectedEdgeIndex >= 0) {
+        event.preventDefault();
+        deleteSelectedWorkflowEdge();
+    } else if (workflowSelectedNodeId) {
+        event.preventDefault();
+        deleteSelectedWorkflowNode();
+    }
 });
 workflowSave.addEventListener("click", saveWorkflow);
 confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);

@@ -212,6 +212,39 @@ Eligibility evaluate_eligibility(const BatchInput& input)
     if(!input.stages.empty() && input.stages.back().stage != "supermarket")
         result.errors.push_back("The route must end with a Supermarket stage");
 
+    std::vector<RouteNodeInput> ordered_route_nodes = input.route_nodes;
+    std::sort(ordered_route_nodes.begin(), ordered_route_nodes.end(),
+              [](const RouteNodeInput& left, const RouteNodeInput& right) {
+                  if(left.step_index != right.step_index)
+                      return left.step_index < right.step_index;
+                  return left.node_id < right.node_id;
+              });
+    if(ordered_route_nodes.empty())
+    {
+        result.errors.push_back("The batch has no saved route definition");
+    }
+    else if(ordered_route_nodes.size() != input.stages.size())
+    {
+        result.errors.push_back(
+            "The saved route and submitted blocks contain different stage counts");
+    }
+    else
+    {
+        for(std::size_t index = 0; index < input.stages.size(); ++index)
+        {
+            const RouteNodeInput& route_node = ordered_route_nodes[index];
+            const StageInput& stage = input.stages[index];
+            const std::string label = "Route stage " + std::to_string(index + 1);
+            if(stage.route_node_id.empty() || stage.route_node_id != route_node.node_id)
+                result.errors.push_back(label + " is not linked to its saved route node");
+            if(stage.route_step_index >= 0 &&
+               stage.route_step_index != route_node.step_index)
+                result.errors.push_back(label + " has an inconsistent route step");
+            if(route_node.role != stage.stage)
+                result.errors.push_back(label + " role does not match its saved route role");
+        }
+    }
+
     for(std::size_t index = 0; index < input.stages.size(); ++index)
     {
         const StageInput& stage = input.stages[index];
@@ -399,6 +432,9 @@ std::optional<Preview> build_preview(
         const std::string prefix = "route." + std::to_string(index) + ".";
         add_field(prefix + "stage", stage.stage);
         add_field(prefix + "block_id", std::to_string(stage.block_id));
+        add_field(prefix + "route_node_id", stage.route_node_id);
+        add_field(prefix + "route_node_label", stage.route_node_label);
+        add_field(prefix + "route_step_index", std::to_string(stage.route_step_index));
         if(stage.stage == "supplier")
         {
             add_field(prefix + "location", input.farm_location);
@@ -485,7 +521,13 @@ std::optional<Preview> build_preview(
         const StageInput& stage = *route_stages[index].stage;
         manifest << "{\"sequence\":" << index + 1
                  << ",\"stage\":" << json_string(stage.stage)
-                 << ",\"block_id\":" << stage.block_id;
+                 << ",\"block_id\":" << stage.block_id
+                 << ",\"route_node_id\":"
+                 << json_string(stage.route_node_id)
+                 << ",\"route_node_label\":"
+                 << json_string(stage.route_node_label)
+                 << ",\"route_step_index\":"
+                 << stage.route_step_index;
         if(stage.stage == "supplier")
         {
             manifest << ",\"location\":" << json_string(input.farm_location)

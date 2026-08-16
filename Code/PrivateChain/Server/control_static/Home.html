@@ -65,6 +65,12 @@
                             <option value="warehouse">Warehouse</option>
                         </select>
                     </label>
+                    <label>
+                        Route node account
+                        <select id="workflow-node-account">
+                            <option value="">Select account</option>
+                        </select>
+                    </label>
                     <button id="workflow-add-node" type="button">Add node</button>
                     <button id="workflow-delete-node" class="workflow-secondary" type="button" disabled>
                         Delete selected
@@ -78,18 +84,31 @@
                     <button id="workflow-reset-route" class="workflow-secondary" type="button">
                         Reload route
                     </button>
+                    <button id="workflow-undo" class="workflow-secondary" type="button" disabled>
+                        Undo
+                    </button>
+                    <button id="workflow-redo" class="workflow-secondary" type="button" disabled>
+                        Redo
+                    </button>
                     <button id="workflow-save" type="button">Save route</button>
                 </div>
                 <p class="workflow-help">
-                    Select one node, then another node to connect them. Click a connection to select it. Drag nodes to arrange the route.
+                    Drag nodes or the background to navigate. Pinch to zoom. Use handles to connect stages. Click a connection or its × to remove it. New nodes appear without connections; drag them into place and connect them manually.
                 </p>
-                <canvas id="workflow-canvas" aria-label="Editable supply chain route"></canvas>
-                <div id="workflow-node-editor" class="workflow-node-editor" hidden>
-                    <label>
-                        Selected node label
-                        <input id="workflow-node-label" type="text" maxlength="80" autocomplete="off">
-                    </label>
-                    <button id="workflow-apply-node-label" type="button">Apply label</button>
+                <div id="workflow-canvas" class="workflow-canvas" role="application" aria-label="Editable supply chain route">
+                    <div id="workflow-scene" class="workflow-scene">
+                        <svg id="workflow-edge-layer" class="workflow-edge-layer" aria-hidden="true"></svg>
+                        <div id="workflow-node-layer" class="workflow-node-layer"></div>
+                    </div>
+                    <div class="workflow-canvas-controls" aria-label="Canvas controls">
+                        <button id="workflow-zoom-out" type="button" aria-label="Zoom out">−</button>
+                        <span id="workflow-zoom-level" class="workflow-zoom-level" aria-live="polite">100%</span>
+                        <button id="workflow-fit-view" type="button">Fit route</button>
+                        <button id="workflow-zoom-in" type="button" aria-label="Zoom in">+</button>
+                    </div>
+                    <p class="workflow-canvas-tip">
+                        Drag or two-finger scroll to pan · Pinch to zoom · Use × to remove connections
+                    </p>
                 </div>
                 <p id="workflow-status" class="status" aria-live="polite">Loading route...</p>
             </section>
@@ -99,7 +118,7 @@
                     <div>
                         <p class="eyebrow">CONFIRMATION POLICY</p>
                         <h2 id="policy-title">User confirmation methods</h2>
-                        <p>Configure methods by route role.</p>
+                        <p>Configure methods by route node and assigned account.</p>
                     </div>
                     <span id="policy-role-count" class="badge pending">Loading policies</span>
                 </summary>
@@ -107,7 +126,7 @@
                     <form id="confirmation-policy-form" class="policy-form">
                         <div id="role-policy-list" class="role-policy-list"></div>
                         <div class="policy-actions">
-                            <button id="save-policy-button" type="submit">Save Policies</button>
+                            <button id="save-policy-button" type="submit">Save Route Node Policies</button>
                             <p id="policy-status" class="status" role="status" aria-live="polite"></p>
                         </div>
                     </form>

@@ -19,7 +19,11 @@ struct UserAccount
 
 struct ConfirmationPolicy
 {
+    std::string route_id;
+    std::string node_id;
+    std::string node_label;
     std::string role;
+    std::string username;
     bool typed_name = false;
     bool handwritten = false;
     bool face = false;

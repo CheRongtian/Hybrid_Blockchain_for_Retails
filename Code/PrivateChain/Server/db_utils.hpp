@@ -23,6 +23,22 @@ bool load_confirmation_policies(const std::string& db_path,
 bool save_confirmation_policies(
     const std::string& db_path,
     const std::vector<ConfirmationPolicy>& policies);
+bool ensure_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    const std::vector<SupplyRouteNode>& nodes);
+bool load_route_confirmation_policy(const std::string& db_path,
+                                    const std::string& route_id,
+                                    const std::string& node_id,
+                                    ConfirmationPolicy& policy);
+bool load_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    std::vector<ConfirmationPolicy>& policies);
+bool save_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    const std::vector<ConfirmationPolicy>& policies);
 bool insert_user_account(const std::string& db_path,
                          const UserAccount& account);
 bool save_user_public_key(const std::string& db_path,
@@ -30,6 +46,9 @@ bool save_user_public_key(const std::string& db_path,
                           const std::string& public_key);
 std::optional<UserAccount> find_user_account(const std::string& db_path,
                                              const std::string& username);
+bool load_user_accounts(const std::string& db_path,
+                        const std::string& role,
+                        std::vector<UserAccount>& accounts);
 bool create_persistent_auth_session(const std::string& db_path,
                                     const std::string& token_hash,
                                     const std::string& uid,
@@ -57,6 +76,10 @@ bool load_workflow_route(const std::string& db_path,
                          std::string& route_id,
                          std::vector<SupplyRouteNode>& nodes,
                          std::vector<SupplyRouteEdge>& edges);
+bool load_workflow_route_by_id(const std::string& db_path,
+                               const std::string& route_id,
+                               std::vector<SupplyRouteNode>& nodes,
+                               std::vector<SupplyRouteEdge>& edges);
 bool save_workflow_route(const std::string& db_path,
                          const std::string& batch_id,
                          const std::vector<SupplyRouteNode>& nodes,

@@ -110,13 +110,14 @@ let session = null;
 let availableBatches = [];
 let uploadedReferences = [];
 let confirmationPolicy = null;
+let confirmationPolicyRequestId = 0;
 
 function currentRole() {
     return session?.user?.role || "";
 }
 
-function setCurrentStage(role) {
-    currentStage.value = roleLabels[role] || role;
+function setCurrentStage(role, batch = null) {
+    currentStage.value = batch?.nextNodeLabel || roleLabels[role] || role;
 }
 
 function syncStoreLocationId() {
@@ -141,9 +142,7 @@ function showSession(result) {
     identityStatus.textContent =
         "Logged in: " + result.user.username + " · " +
         result.user.role + " · " + result.user.organizationId;
-    setCurrentStage(result.user.role);
     configureRole();
-    loadConfirmationPolicy();
 }
 
 function saveSession(result, remember) {
@@ -157,6 +156,17 @@ function readSavedSession() {
     const remembered = localStorage.getItem(sessionKey);
     if (remembered) return remembered;
     return sessionStorage.getItem(sessionKey);
+}
+
+async function readJsonResponse(response) {
+    const text = await response.text();
+    try {
+        return text ? JSON.parse(text) : {};
+    } catch {
+        throw new Error(
+            "The private-chain server returned malformed JSON. Rebuild the server and refresh the page."
+        );
+    }
 }
 
 function clearAttachmentState() {
@@ -224,8 +234,10 @@ function renderConfirmationPolicy(policy) {
     const available = configured.filter(([, , enabled, implemented]) =>
         enabled && implemented
     );
+    const nodeLabel = policy.nodeLabel || roleLabels[policy.role] || policy.role;
+    const accountLabel = policy.username ? ` (${policy.username})` : "";
     confirmationPolicySummary.textContent =
-        `Select one method enabled for the ${roleLabels[policy.role] || policy.role} role.`;
+        `Select one method enabled for ${nodeLabel}${accountLabel}.`;
 
     for (const [value, label, enabled, implemented] of configured) {
         if (!enabled) continue;
@@ -257,24 +269,61 @@ function renderConfirmationPolicy(policy) {
     }
 }
 
-async function loadConfirmationPolicy() {
+function clearConfirmationPolicy() {
+    confirmationPolicy = null;
+    confirmationMethods.replaceChildren();
+    confirmationPanel.hidden = true;
+    confirmationPolicySummary.textContent = "";
+    setConfirmationError("");
+}
+
+async function loadConfirmationPolicyForBatch(batch = null) {
     if (!session) return;
+    const role = currentRole();
+    if (role !== "supplier" && !batch) {
+        clearConfirmationPolicy();
+        return;
+    }
+
+    const requestId = ++confirmationPolicyRequestId;
+    const query = new URLSearchParams();
+    if (batch?.batchId) {
+        query.set("batchId", batch.batchId);
+    } else {
+        query.set("routeId", "route-default");
+        query.set("role", role);
+        query.set("username", session.user.username);
+    }
     try {
-        const response = await fetch(controlApiBase + "/confirmation-policy", {
-            headers: { Authorization: "Bearer " + session.token }
-        });
-        const policy = await response.json();
+        const response = await fetch(
+            controlApiBase + "/confirmation-policy?" + query.toString(),
+            { headers: { Authorization: "Bearer " + session.token } }
+        );
+        const policy = await readJsonResponse(response);
+        if (requestId !== confirmationPolicyRequestId) return;
         if (response.status === 401) {
             clearSession();
             throw new Error("Your session has expired. Please log in again.");
         }
         if (!response.ok) throw new Error(policy.error || ("Request failed: " + response.status));
+        if (role !== "supplier" && batch &&
+            (policy.nodeId !== batch.nextNodeId ||
+             policy.username !== session.user.username)) {
+            throw new Error("The confirmation policy does not match the assigned route node.");
+        }
         renderConfirmationPolicy(policy);
     } catch (error) {
+        if (requestId !== confirmationPolicyRequestId) return;
         confirmationPanel.hidden = false;
         confirmationPolicySummary.textContent = error.message;
         setConfirmationError(error.message);
     }
+}
+
+async function loadConfirmationPolicy() {
+    return loadConfirmationPolicyForBatch(
+        currentRole() === "supplier" ? null : selectedBatch()
+    );
 }
 
 function formatFileSize(bytes) {
@@ -316,7 +365,7 @@ async function login(event) {
             },
             body: new URLSearchParams(new FormData(loginForm)).toString()
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (!response.ok) {
             throw new Error(result.error || ("Login failed: " + response.status));
         }
@@ -344,7 +393,7 @@ async function restoreSession() {
         const response = await fetch(controlApiBase + "/auth/me", {
             headers: { Authorization: "Bearer " + stored.token }
         });
-        const user = await response.json();
+        const user = await readJsonResponse(response);
         if (!response.ok || !roleConfig[user.role]) throw new Error("Session expired");
         showSession({ token: stored.token, user });
     } catch {
@@ -375,6 +424,7 @@ function selectedBatch() {
 
 function updateBatchSummary() {
     const batch = selectedBatch();
+    setCurrentStage(currentRole(), batch);
     batchProduct.value = batch?.product || "";
     batchHarvestDate.value = batch?.harvestDate || "";
     batchFarmLocation.value = batch?.farmLocation || "";
@@ -402,6 +452,7 @@ function populateBatchSelect() {
         option.textContent = batch.batchId + " · " + batch.product;
         batchSelect.append(option);
     });
+    batchSelect.value = availableBatches[0]?.batchId || "";
     updateBatchSummary();
 }
 
@@ -416,7 +467,7 @@ async function loadBatches(role) {
         const response = await fetch(controlApiBase + "/batches", {
             headers: { Authorization: "Bearer " + session.token }
         });
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401) {
             clearSession();
             throw new Error("Your session has expired. Please log in again.");
@@ -424,9 +475,20 @@ async function loadBatches(role) {
         if (!response.ok) {
             throw new Error(result.error || ("Request failed: " + response.status));
         }
+        if (!Array.isArray(result)) {
+            throw new Error("The route batch response is malformed.");
+        }
 
-        availableBatches = result.filter((batch) => batch.nextStage === role);
+        availableBatches = result.filter((batch) =>
+            typeof batch.batchId === "string" &&
+            typeof batch.nextNodeId === "string" &&
+            batch.nextNodeId.length > 0 &&
+            batch.nextStage === role &&
+            batch.nextNodeUsername === session.user.username &&
+            batch.status !== "completed"
+        );
         populateBatchSelect();
+        await loadConfirmationPolicyForBatch(selectedBatch());
         if (availableBatches.length === 0) {
             batchStatus.textContent = "No batch is waiting for this route stage.";
             batchStatus.className = "request-status pending";
@@ -434,6 +496,7 @@ async function loadBatches(role) {
     } catch (error) {
         availableBatches = [];
         populateBatchSelect();
+        clearConfirmationPolicy();
         batchStatus.textContent = error.message;
         batchStatus.className = "request-status error";
     }
@@ -467,6 +530,7 @@ function configureRole() {
     if (supplier) {
         submitRecord.disabled = false;
         batchStatus.textContent = "";
+        loadConfirmationPolicyForBatch(null);
     } else {
         loadBatches(role);
     }
@@ -504,7 +568,7 @@ async function uploadSelectedFiles() {
             headers: { Authorization: "Bearer " + session.token },
             body: upload
         }, IPFS_UPLOAD_TIMEOUT_MS);
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401) {
             clearSession();
             throw new Error("Your session has expired. Please log in again.");
@@ -672,7 +736,7 @@ async function createDigitalConfirmation(role) {
         },
         CONTROL_REQUEST_TIMEOUT_MS
     );
-    const challengeResult = await challengeResponse.json();
+    const challengeResult = await readJsonResponse(challengeResponse);
     if (challengeResponse.status === 401) {
         clearSession();
         throw new Error("Your session has expired. Please log in again.");
@@ -700,7 +764,12 @@ async function createDigitalConfirmation(role) {
 
 function buildRecordPayload(role, confirmation) {
     const payload = new URLSearchParams();
-    if (role !== "supplier") payload.set("batchId", batchSelect.value);
+    const batch = selectedBatch();
+    if (role !== "supplier") {
+        payload.set("batchId", batchSelect.value);
+        payload.set("routeId", batch?.routeId || "");
+        payload.set("routeNodeId", batch?.nextNodeId || "");
+    }
 
     if (role === "supplier") {
         payload.set("product", productInput.value);
@@ -731,7 +800,10 @@ function buildRecordPayload(role, confirmation) {
 
 loginForm.addEventListener("submit", login);
 logoutButton.addEventListener("click", logout);
-batchSelect.addEventListener("change", updateBatchSummary);
+batchSelect.addEventListener("change", async () => {
+    updateBatchSummary();
+    await loadConfirmationPolicyForBatch(selectedBatch());
+});
 ipfsFiles.addEventListener("change", renderAttachmentList);
 attachmentCategory.addEventListener("change", renderAttachmentList);
 storeLocationNumber.addEventListener("input", syncStoreLocationId);
@@ -765,7 +837,7 @@ form.addEventListener("submit", async (event) => {
             body: buildRecordPayload(role, confirmation).toString()
         }, RECORD_REQUEST_TIMEOUT_MS);
 
-        const result = await response.json();
+        const result = await readJsonResponse(response);
         if (response.status === 401) {
             clearSession();
             throw new Error("Your session has expired. Please log in again.");
@@ -779,14 +851,12 @@ form.addEventListener("submit", async (event) => {
         document.querySelector("#batch-id-result").textContent = result.batchId;
         document.querySelector("#block-id").textContent = result.blockID;
         document.querySelector("#next-stage").textContent =
-            roleLabels[result.nextStage] || "Route complete";
+            result.nextNodeLabel || roleLabels[result.nextStage] || "Route complete";
         document.querySelector("#ipfs-count").textContent = result.ipfsCount;
         resultCard.hidden = false;
         form.reset();
         clearAttachmentState();
-        setCurrentStage(role);
         configureRole();
-        if (confirmationPolicy) renderConfirmationPolicy(confirmationPolicy);
 
         statusLine.textContent = result.verified
             ? (result.signatureVerified

@@ -15,6 +15,15 @@ struct EvidenceInput
     std::string cid;
 };
 
+struct RouteNodeInput
+{
+    std::string node_id;
+    std::string label;
+    std::string role;
+    std::string username;
+    int step_index = -1;
+};
+
 struct StageInput
 {
     int block_id = -1;
@@ -27,6 +36,10 @@ struct StageInput
     std::string chain_status;
     bool verified = false;
     bool signature_verified = false;
+    std::string route_node_id;
+    int route_step_index = -1;
+    std::string route_node_label;
+    std::string route_node_username;
 };
 
 struct BatchInput
@@ -38,6 +51,7 @@ struct BatchInput
     std::string certificate_id;
     std::string status;
     std::vector<StageInput> stages;
+    std::vector<RouteNodeInput> route_nodes;
     std::vector<std::string> source_errors;
 };
 

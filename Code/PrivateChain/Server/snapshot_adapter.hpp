@@ -9,6 +9,7 @@
 
 supermarket::snapshot::BatchInput make_snapshot_batch_input(
     const SupplyChainBatch& batch,
-    const std::vector<SupplyChainRecord>& records);
+    const std::vector<SupplyChainRecord>& records,
+    const std::vector<SupplyRouteNode>& route_nodes);
 
 #endif

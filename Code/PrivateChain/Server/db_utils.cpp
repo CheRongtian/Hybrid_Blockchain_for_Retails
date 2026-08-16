@@ -10,11 +10,12 @@
 
 namespace
 {
-constexpr int DATABASE_SCHEMA_VERSION = 7;
+constexpr int DATABASE_SCHEMA_VERSION = 8;
 constexpr int OLDER_DATABASE_SCHEMA_VERSION = 3;
 constexpr int PREVIOUS_DATABASE_SCHEMA_VERSION = 4;
 constexpr int ROLE_POLICY_DATABASE_SCHEMA_VERSION = 5;
 constexpr int ROUTE_DATABASE_SCHEMA_VERSION = 6;
+constexpr int LEGACY_CURRENT_DATABASE_SCHEMA_VERSION = 7;
 
 std::string column_text(sqlite3_stmt* statement, int column)
 {
@@ -106,7 +107,7 @@ bool read_schema_version(sqlite3* db, int& version)
 bool write_schema_version(sqlite3* db)
 {
     return execute_sql(db,
-                       "PRAGMA user_version = 7;",
+                       "PRAGMA user_version = 8;",
                        "Set database schema version failed");
 }
 
@@ -334,6 +335,7 @@ bool init_database(const std::string& db_path)
        schema_version != PREVIOUS_DATABASE_SCHEMA_VERSION &&
        schema_version != ROLE_POLICY_DATABASE_SCHEMA_VERSION &&
        schema_version != ROUTE_DATABASE_SCHEMA_VERSION &&
+       schema_version != LEGACY_CURRENT_DATABASE_SCHEMA_VERSION &&
        schema_version != DATABASE_SCHEMA_VERSION)
     {
         std::cerr << "Unsupported database schema version: " << schema_version
@@ -449,6 +451,19 @@ bool init_database(const std::string& db_path)
         "face INTEGER NOT NULL DEFAULT 0 CHECK (face IN (0, 1)),"
         "updated_by_uid TEXT NOT NULL DEFAULT '',"
         "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE TABLE IF NOT EXISTS route_node_confirmation_policy ("
+        "route_id TEXT NOT NULL,"
+        "node_id TEXT NOT NULL,"
+        "node_label TEXT NOT NULL DEFAULT '',"
+        "role TEXT NOT NULL,"
+        "username TEXT NOT NULL DEFAULT '',"
+        "typed_name INTEGER NOT NULL DEFAULT 1 CHECK (typed_name IN (0, 1)),"
+        "handwritten INTEGER NOT NULL DEFAULT 0 CHECK (handwritten IN (0, 1)),"
+        "face INTEGER NOT NULL DEFAULT 0 CHECK (face IN (0, 1)),"
+        "updated_by_uid TEXT NOT NULL DEFAULT '',"
+        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "PRIMARY KEY (route_id, node_id)"
         ");"
         "CREATE TABLE IF NOT EXISTS route_definitions ("
         "route_id TEXT PRIMARY KEY,"
@@ -683,6 +698,354 @@ bool save_confirmation_policies(
         db, "COMMIT;", "Commit confirmation policy update failed");
     if(!committed)
         execute_sql(db, "ROLLBACK;", "Rollback confirmation policy update failed");
+    sqlite3_close(db);
+    return committed;
+}
+
+bool ensure_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    const std::vector<SupplyRouteNode>& nodes)
+{
+    if(route_id.empty() || nodes.empty()) return false;
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+    if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
+                    "Begin route confirmation policy setup failed"))
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
+    const char* legacy_sql =
+        "SELECT typed_name, handwritten, face FROM confirmation_policy "
+        "WHERE role = ? LIMIT 1;";
+    const char* insert_sql =
+        "INSERT OR IGNORE INTO route_node_confirmation_policy "
+        "(route_id, node_id, node_label, role, username, typed_name, "
+        "handwritten, face) VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
+    const char* update_sql =
+        "UPDATE route_node_confirmation_policy SET node_label = ?, "
+        "role = ?, username = ? WHERE route_id = ? AND node_id = ?;";
+
+    bool succeeded = true;
+    for(const SupplyRouteNode& node : nodes)
+    {
+        bool typed_name = true;
+        bool handwritten = false;
+        bool face = false;
+
+        sqlite3_stmt* legacy_statement = nullptr;
+        if(sqlite3_prepare_v2(db, legacy_sql, -1, &legacy_statement, nullptr) !=
+           SQLITE_OK)
+        {
+            succeeded = false;
+            break;
+        }
+        if(bind_text(legacy_statement, 1, node.role) &&
+           sqlite3_step(legacy_statement) == SQLITE_ROW)
+        {
+            typed_name = sqlite3_column_int(legacy_statement, 0) != 0;
+            handwritten = sqlite3_column_int(legacy_statement, 1) != 0;
+            face = sqlite3_column_int(legacy_statement, 2) != 0;
+        }
+        sqlite3_finalize(legacy_statement);
+
+        sqlite3_stmt* insert_statement = nullptr;
+        if(!succeeded || sqlite3_prepare_v2(db, insert_sql, -1,
+                                            &insert_statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            if(insert_statement) sqlite3_finalize(insert_statement);
+            break;
+        }
+        const bool inserted =
+            bind_text(insert_statement, 1, route_id) &&
+            bind_text(insert_statement, 2, node.node_id) &&
+            bind_text(insert_statement, 3, node.label) &&
+            bind_text(insert_statement, 4, node.role) &&
+            bind_text(insert_statement, 5, node.username) &&
+            sqlite3_bind_int(insert_statement, 6, typed_name ? 1 : 0) == SQLITE_OK &&
+            sqlite3_bind_int(insert_statement, 7, handwritten ? 1 : 0) == SQLITE_OK &&
+            sqlite3_bind_int(insert_statement, 8, face ? 1 : 0) == SQLITE_OK &&
+            sqlite3_step(insert_statement) == SQLITE_DONE;
+        sqlite3_finalize(insert_statement);
+        if(!inserted)
+        {
+            succeeded = false;
+            break;
+        }
+
+        sqlite3_stmt* update_statement = nullptr;
+        if(sqlite3_prepare_v2(db, update_sql, -1, &update_statement, nullptr) !=
+           SQLITE_OK)
+        {
+            succeeded = false;
+            break;
+        }
+        const bool updated =
+            bind_text(update_statement, 1, node.label) &&
+            bind_text(update_statement, 2, node.role) &&
+            bind_text(update_statement, 3, node.username) &&
+            bind_text(update_statement, 4, route_id) &&
+            bind_text(update_statement, 5, node.node_id) &&
+            sqlite3_step(update_statement) == SQLITE_DONE;
+        sqlite3_finalize(update_statement);
+        if(!updated)
+        {
+            succeeded = false;
+            break;
+        }
+    }
+
+    if(!succeeded)
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy setup failed");
+        sqlite3_close(db);
+        return false;
+    }
+    const bool committed = execute_sql(
+        db, "COMMIT;", "Commit route confirmation policy setup failed");
+    if(!committed)
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy setup failed");
+    sqlite3_close(db);
+    return committed;
+}
+
+bool load_route_confirmation_policy(const std::string& db_path,
+                                    const std::string& route_id,
+                                    const std::string& node_id,
+                                    ConfirmationPolicy& policy)
+{
+    if(route_id.empty() || node_id.empty()) return false;
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    const char* sql =
+        "SELECT route_id, node_id, node_label, role, username, typed_name, "
+        "handwritten, face, updated_by_uid, updated_at "
+        "FROM route_node_confirmation_policy "
+        "WHERE route_id = ? AND node_id = ? LIMIT 1;";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare route confirmation policy query failed: "
+                  << sqlite3_errmsg(db) << '\n';
+        sqlite3_close(db);
+        return false;
+    }
+    if(!bind_text(statement, 1, route_id) || !bind_text(statement, 2, node_id) ||
+       sqlite3_step(statement) != SQLITE_ROW)
+    {
+        sqlite3_finalize(statement);
+        sqlite3_close(db);
+        return false;
+    }
+
+    policy.route_id = column_text(statement, 0);
+    policy.node_id = column_text(statement, 1);
+    policy.node_label = column_text(statement, 2);
+    policy.role = column_text(statement, 3);
+    policy.username = column_text(statement, 4);
+    policy.typed_name = sqlite3_column_int(statement, 5) != 0;
+    policy.handwritten = sqlite3_column_int(statement, 6) != 0;
+    policy.face = sqlite3_column_int(statement, 7) != 0;
+    policy.updated_by_uid = column_text(statement, 8);
+    policy.updated_at = column_text(statement, 9);
+    sqlite3_finalize(statement);
+    sqlite3_close(db);
+    return true;
+}
+
+bool load_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    std::vector<ConfirmationPolicy>& policies)
+{
+    policies.clear();
+    if(route_id.empty()) return false;
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    const char* sql =
+        "SELECT p.route_id, p.node_id, p.node_label, p.role, p.username, "
+        "p.typed_name, p.handwritten, p.face, p.updated_by_uid, p.updated_at "
+        "FROM route_node_confirmation_policy p "
+        "JOIN route_nodes n ON n.route_id = p.route_id AND n.node_id = p.node_id "
+        "WHERE p.route_id = ? ORDER BY n.step_index ASC, p.node_id ASC;";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare route confirmation policy list failed: "
+                  << sqlite3_errmsg(db) << '\n';
+        sqlite3_close(db);
+        return false;
+    }
+    if(!bind_text(statement, 1, route_id))
+    {
+        sqlite3_finalize(statement);
+        sqlite3_close(db);
+        return false;
+    }
+
+    int result = SQLITE_ROW;
+    while((result = sqlite3_step(statement)) == SQLITE_ROW)
+    {
+        ConfirmationPolicy policy;
+        policy.route_id = column_text(statement, 0);
+        policy.node_id = column_text(statement, 1);
+        policy.node_label = column_text(statement, 2);
+        policy.role = column_text(statement, 3);
+        policy.username = column_text(statement, 4);
+        policy.typed_name = sqlite3_column_int(statement, 5) != 0;
+        policy.handwritten = sqlite3_column_int(statement, 6) != 0;
+        policy.face = sqlite3_column_int(statement, 7) != 0;
+        policy.updated_by_uid = column_text(statement, 8);
+        policy.updated_at = column_text(statement, 9);
+        policies.push_back(std::move(policy));
+    }
+    const bool succeeded = result == SQLITE_DONE;
+    if(!succeeded)
+        std::cerr << "Load route confirmation policies failed: "
+                  << sqlite3_errmsg(db) << '\n';
+    sqlite3_finalize(statement);
+    sqlite3_close(db);
+    return succeeded;
+}
+
+bool save_route_confirmation_policies(
+    const std::string& db_path,
+    const std::string& route_id,
+    const std::vector<ConfirmationPolicy>& policies)
+{
+    if(route_id.empty() || policies.empty()) return false;
+    std::unordered_set<std::string> submitted_node_ids;
+    for(const ConfirmationPolicy& policy : policies)
+    {
+        if(policy.route_id != route_id || policy.node_id.empty() ||
+           (!policy.typed_name && !policy.handwritten && !policy.face))
+            return false;
+        if(!submitted_node_ids.insert(policy.node_id).second) return false;
+    }
+
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+    if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
+                    "Begin route confirmation policy update failed"))
+    {
+        sqlite3_close(db);
+        return false;
+    }
+
+    const char* count_sql =
+        "SELECT COUNT(*) FROM route_nodes WHERE route_id = ?;";
+    sqlite3_stmt* count_statement = nullptr;
+    const bool count_prepared =
+        sqlite3_prepare_v2(db, count_sql, -1, &count_statement, nullptr) == SQLITE_OK;
+    const bool count_bound = count_prepared &&
+        bind_text(count_statement, 1, route_id);
+    const bool count_read = count_bound &&
+        sqlite3_step(count_statement) == SQLITE_ROW;
+    const int route_node_count = count_read
+        ? sqlite3_column_int(count_statement, 0)
+        : -1;
+    if(count_statement) sqlite3_finalize(count_statement);
+    if(route_node_count != static_cast<int>(submitted_node_ids.size()))
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy update failed");
+        sqlite3_close(db);
+        return false;
+    }
+
+    const char* node_sql =
+        "SELECT 1 FROM route_nodes WHERE route_id = ? AND node_id = ? LIMIT 1;";
+    const char* upsert_sql =
+        "INSERT INTO route_node_confirmation_policy "
+        "(route_id, node_id, node_label, role, username, typed_name, handwritten, "
+        "face, updated_by_uid, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(route_id, node_id) DO UPDATE SET node_label = excluded.node_label, "
+        "role = excluded.role, username = excluded.username, typed_name = excluded.typed_name, "
+        "handwritten = excluded.handwritten, face = excluded.face, "
+        "updated_by_uid = excluded.updated_by_uid, updated_at = CURRENT_TIMESTAMP;";
+
+    bool succeeded = true;
+    for(const ConfirmationPolicy& policy : policies)
+    {
+        sqlite3_stmt* node_statement = nullptr;
+        if(sqlite3_prepare_v2(db, node_sql, -1, &node_statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            break;
+        }
+        const bool node_exists =
+            bind_text(node_statement, 1, route_id) &&
+            bind_text(node_statement, 2, policy.node_id) &&
+            sqlite3_step(node_statement) == SQLITE_ROW;
+        sqlite3_finalize(node_statement);
+        if(!node_exists)
+        {
+            succeeded = false;
+            break;
+        }
+
+        sqlite3_stmt* statement = nullptr;
+        if(sqlite3_prepare_v2(db, upsert_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+            break;
+        }
+        const bool bound =
+            bind_text(statement, 1, route_id) &&
+            bind_text(statement, 2, policy.node_id) &&
+            bind_text(statement, 3, policy.node_label) &&
+            bind_text(statement, 4, policy.role) &&
+            bind_text(statement, 5, policy.username) &&
+            sqlite3_bind_int(statement, 6, policy.typed_name ? 1 : 0) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 7, policy.handwritten ? 1 : 0) == SQLITE_OK &&
+            sqlite3_bind_int(statement, 8, policy.face ? 1 : 0) == SQLITE_OK &&
+            bind_text(statement, 9, policy.updated_by_uid) &&
+            sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement);
+        if(!bound)
+        {
+            succeeded = false;
+            break;
+        }
+    }
+
+    if(!succeeded)
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy update failed");
+        sqlite3_close(db);
+        return false;
+    }
+    const bool committed = execute_sql(
+        db, "COMMIT;", "Commit route confirmation policy update failed");
+    if(!committed)
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy update failed");
     sqlite3_close(db);
     return committed;
 }
@@ -996,6 +1359,60 @@ std::optional<UserAccount> find_user_account(const std::string& db_path,
     return account;
 }
 
+bool load_user_accounts(const std::string& db_path,
+                        const std::string& role,
+                        std::vector<UserAccount>& accounts)
+{
+    accounts.clear();
+    sqlite3* db = nullptr;
+    if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+    {
+        std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
+        if(db) sqlite3_close(db);
+        return false;
+    }
+
+    const char* sql =
+        "SELECT uid, username, password_salt, password_hash, role, "
+        "organization_id, display_name, public_key, active FROM users "
+        "WHERE active = 1 AND (? = '' OR role = ?) "
+        "ORDER BY role ASC, username ASC;";
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        std::cerr << "Prepare user account list failed: " << sqlite3_errmsg(db)
+                  << '\n';
+        sqlite3_close(db);
+        return false;
+    }
+
+    const bool bound = bind_text(statement, 1, role) &&
+        bind_text(statement, 2, role);
+    int result = bound ? SQLITE_ROW : SQLITE_ERROR;
+    while(bound && (result = sqlite3_step(statement)) == SQLITE_ROW)
+    {
+        UserAccount account;
+        account.uid = column_text(statement, 0);
+        account.username = column_text(statement, 1);
+        account.password_salt = column_text(statement, 2);
+        account.password_hash = column_text(statement, 3);
+        account.role = column_text(statement, 4);
+        account.organization_id = column_text(statement, 5);
+        account.display_name = column_text(statement, 6);
+        account.public_key = column_text(statement, 7);
+        account.active = sqlite3_column_int(statement, 8) != 0;
+        accounts.push_back(std::move(account));
+    }
+
+    const bool succeeded = bound && result == SQLITE_DONE;
+    if(!succeeded)
+        std::cerr << "Load user account list failed: " << sqlite3_errmsg(db)
+                  << '\n';
+    sqlite3_finalize(statement);
+    sqlite3_close(db);
+    return succeeded;
+}
+
 std::optional<SupplyChainBatch> find_supply_chain_batch(
     const std::string& db_path,
     const std::string& batch_id)
@@ -1252,34 +1669,42 @@ bool ensure_batch_workflow(const std::string& db_path,
         if(db) sqlite3_close(db);
         return false;
     }
-    const char* sql = "UPDATE batches SET route_id = 'route-default' "
+    std::string default_route_id;
+    const char* route_sql =
+        "SELECT route_id FROM route_definitions WHERE is_default = 1 "
+        "ORDER BY updated_at DESC, route_id DESC LIMIT 1;";
+    sqlite3_stmt* route_statement = nullptr;
+    bool succeeded = sqlite3_prepare_v2(
+        db, route_sql, -1, &route_statement, nullptr) == SQLITE_OK;
+    if(succeeded && sqlite3_step(route_statement) == SQLITE_ROW)
+        default_route_id = column_text(route_statement, 0);
+    if(route_statement) sqlite3_finalize(route_statement);
+    if(default_route_id.empty()) default_route_id = "route-default";
+
+    const char* sql = "UPDATE batches SET route_id = ? "
                       "WHERE batch_id = ? AND route_id = '';";
     sqlite3_stmt* statement = nullptr;
-    const bool prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) == SQLITE_OK;
-    const bool succeeded = prepared && bind_text(statement, 1, batch_id) &&
-        sqlite3_step(statement) == SQLITE_DONE;
+    const bool prepared = succeeded && sqlite3_prepare_v2(
+        db, sql, -1, &statement, nullptr) == SQLITE_OK;
+    succeeded = prepared && bind_text(statement, 1, default_route_id) &&
+        bind_text(statement, 2, batch_id) && sqlite3_step(statement) == SQLITE_DONE;
     if(!succeeded)
         std::cerr << "Bind batch workflow failed: " << sqlite3_errmsg(db) << '\n';
     if(statement) sqlite3_finalize(statement);
     sqlite3_close(db);
     if(!succeeded) return false;
-    route_id = "route-default";
+    route_id = default_route_id;
     return true;
 }
 
-bool load_workflow_route(const std::string& db_path,
-                         const std::string& batch_id,
-                         std::string& route_id,
-                         std::vector<SupplyRouteNode>& nodes,
-                         std::vector<SupplyRouteEdge>& edges)
+bool load_workflow_route_by_id(const std::string& db_path,
+                               const std::string& route_id,
+                               std::vector<SupplyRouteNode>& nodes,
+                               std::vector<SupplyRouteEdge>& edges)
 {
-    route_id.clear();
     nodes.clear();
     edges.clear();
-
-    if(!batch_id.empty() && !ensure_batch_workflow(db_path, batch_id, route_id))
-        return false;
-    if(batch_id.empty()) route_id = "route-default";
+    if(route_id.empty()) return false;
 
     sqlite3* db = nullptr;
     if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
@@ -1345,6 +1770,44 @@ bool load_workflow_route(const std::string& db_path,
     return succeeded && route_node_ids_are_unique(nodes);
 }
 
+bool load_workflow_route(const std::string& db_path,
+                         const std::string& batch_id,
+                         std::string& route_id,
+                         std::vector<SupplyRouteNode>& nodes,
+                         std::vector<SupplyRouteEdge>& edges)
+{
+    route_id.clear();
+    nodes.clear();
+    edges.clear();
+
+    if(!batch_id.empty())
+    {
+        if(!ensure_batch_workflow(db_path, batch_id, route_id)) return false;
+    }
+    else
+    {
+        sqlite3* db = nullptr;
+        if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
+        {
+            if(db) sqlite3_close(db);
+            return false;
+        }
+        const char* sql =
+            "SELECT route_id FROM route_definitions WHERE is_default = 1 "
+            "ORDER BY updated_at DESC, route_id DESC LIMIT 1;";
+        sqlite3_stmt* statement = nullptr;
+        const bool prepared = sqlite3_prepare_v2(
+            db, sql, -1, &statement, nullptr) == SQLITE_OK;
+        if(prepared && sqlite3_step(statement) == SQLITE_ROW)
+            route_id = column_text(statement, 0);
+        if(statement) sqlite3_finalize(statement);
+        sqlite3_close(db);
+        if(route_id.empty()) route_id = "route-default";
+    }
+
+    return load_workflow_route_by_id(db_path, route_id, nodes, edges);
+}
+
 bool save_workflow_route(const std::string& db_path,
                          const std::string& batch_id,
                          const std::vector<SupplyRouteNode>& nodes,
@@ -1353,7 +1816,6 @@ bool save_workflow_route(const std::string& db_path,
                          std::string& error)
 {
     error.clear();
-    route_id = workflow_route_id(batch_id);
     if(!route_node_ids_are_unique(nodes))
     {
         error = "Workflow contains an invalid or duplicate node ID";
@@ -1382,13 +1844,163 @@ bool save_workflow_route(const std::string& db_path,
     }
     bool succeeded = execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
                                  "Begin workflow save failed");
+    sqlite3_stmt* statement = nullptr;
+
+    auto fail = [&](const std::string& message) {
+        error = message;
+        succeeded = false;
+    };
+
+    std::unordered_set<std::string> assigned_accounts;
+    for(const SupplyRouteNode& node : nodes)
+    {
+        if(node.username.empty())
+        {
+            fail("Every route node must have an assigned active account");
+            break;
+        }
+
+        sqlite3_stmt* account_statement = nullptr;
+        const char* account_sql =
+            "SELECT role FROM users WHERE username = ? AND active = 1 LIMIT 1;";
+        if(sqlite3_prepare_v2(db, account_sql, -1, &account_statement, nullptr) != SQLITE_OK)
+        {
+            fail("Failed to validate route-node accounts");
+            if(account_statement) sqlite3_finalize(account_statement);
+            break;
+        }
+        const bool found = bind_text(account_statement, 1, node.username) &&
+            sqlite3_step(account_statement) == SQLITE_ROW;
+        const std::string account_role = found
+            ? column_text(account_statement, 0)
+            : "";
+        if(account_statement) sqlite3_finalize(account_statement);
+        if(!found)
+        {
+            fail("The assigned account does not exist or is inactive: " + node.username);
+            break;
+        }
+        if(account_role != node.role)
+        {
+            fail("Account " + node.username + " cannot operate route role " + node.role);
+            break;
+        }
+        if(!assigned_accounts.insert(node.username).second)
+        {
+            fail("Account " + node.username + " is assigned to more than one route stage");
+            break;
+        }
+    }
+
+    if(!succeeded)
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback workflow account validation failed");
+        sqlite3_close(db);
+        return false;
+    }
+
+    std::string current_route_id;
+    if(batch_id.empty())
+    {
+        const char* current_sql =
+            "SELECT route_id FROM route_definitions WHERE is_default = 1 "
+            "ORDER BY updated_at DESC, route_id DESC LIMIT 1;";
+        if(sqlite3_prepare_v2(db, current_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            fail("Failed to read the active default route");
+        }
+        else
+        {
+            if(sqlite3_step(statement) == SQLITE_ROW)
+                current_route_id = column_text(statement, 0);
+            sqlite3_finalize(statement);
+        }
+        if(current_route_id.empty()) current_route_id = "route-default";
+    }
+    else
+    {
+        const char* current_sql =
+            "SELECT route_id FROM batches WHERE batch_id = ? LIMIT 1;";
+        if(sqlite3_prepare_v2(db, current_sql, -1, &statement, nullptr) != SQLITE_OK)
+        {
+            fail("Failed to read the batch route");
+        }
+        else
+        {
+            if(bind_text(statement, 1, batch_id) && sqlite3_step(statement) == SQLITE_ROW)
+                current_route_id = column_text(statement, 0);
+            sqlite3_finalize(statement);
+        }
+        if(succeeded && current_route_id.empty()) current_route_id = "route-default";
+    }
+
+    auto route_exists = [&](const std::string& candidate) {
+        sqlite3_stmt* query = nullptr;
+        const char* sql = "SELECT 1 FROM route_definitions WHERE route_id = ? LIMIT 1;";
+        if(sqlite3_prepare_v2(db, sql, -1, &query, nullptr) != SQLITE_OK)
+            return false;
+        const bool exists = bind_text(query, 1, candidate) &&
+            sqlite3_step(query) == SQLITE_ROW;
+        sqlite3_finalize(query);
+        return exists;
+    };
+
+    auto has_records = [&](const std::string& candidate) {
+        sqlite3_stmt* query = nullptr;
+        const char* sql = batch_id.empty()
+            ? "SELECT EXISTS(SELECT 1 FROM supply_chain_records WHERE route_id = ?);"
+            : "SELECT EXISTS(SELECT 1 FROM supply_chain_records "
+              "WHERE route_id = ? AND batch_id = ?);";
+        if(sqlite3_prepare_v2(db, sql, -1, &query, nullptr) != SQLITE_OK)
+            return false;
+        bool bound = bind_text(query, 1, candidate);
+        if(!batch_id.empty()) bound = bound && bind_text(query, 2, batch_id);
+        const bool exists = bound && sqlite3_step(query) == SQLITE_ROW &&
+            sqlite3_column_int(query, 0) != 0;
+        sqlite3_finalize(query);
+        return exists;
+    };
+
+    std::string base_route_id = current_route_id;
+    if(!batch_id.empty() && current_route_id == "route-default")
+        base_route_id = workflow_route_id(batch_id);
+
+    route_id = base_route_id;
+    const bool current_has_records = has_records(current_route_id);
+    if(current_has_records)
+    {
+        int version = 2;
+        do
+        {
+            route_id = base_route_id + "-v" + std::to_string(version++);
+        }
+        while(route_exists(route_id));
+    }
+
+    if(!succeeded)
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback workflow route selection failed");
+        sqlite3_close(db);
+        return false;
+    }
+
+    if(batch_id.empty() && route_id != current_route_id)
+    {
+        sqlite3_stmt* deactivate = nullptr;
+        const char* sql =
+            "UPDATE route_definitions SET is_default = 0 WHERE route_id = ?;";
+        succeeded = sqlite3_prepare_v2(db, sql, -1, &deactivate, nullptr) == SQLITE_OK &&
+            bind_text(deactivate, 1, current_route_id) &&
+            sqlite3_step(deactivate) == SQLITE_DONE;
+        if(deactivate) sqlite3_finalize(deactivate);
+    }
+
     const char* definition_sql =
         "INSERT INTO route_definitions "
         "(route_id, batch_id, name, is_default) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(route_id) DO UPDATE SET batch_id = excluded.batch_id, "
         "name = excluded.name, is_default = excluded.is_default, "
         "updated_at = CURRENT_TIMESTAMP;";
-    sqlite3_stmt* statement = nullptr;
     if(succeeded && sqlite3_prepare_v2(db, definition_sql, -1, &statement, nullptr) == SQLITE_OK)
     {
         const bool bound =
@@ -1405,7 +2017,7 @@ bool save_workflow_route(const std::string& db_path,
         succeeded = false;
     }
 
-    if(succeeded)
+    if(succeeded && route_id == current_route_id)
     {
         sqlite3_stmt* delete_statement = nullptr;
         succeeded = sqlite3_prepare_v2(
@@ -1415,7 +2027,7 @@ bool save_workflow_route(const std::string& db_path,
             sqlite3_step(delete_statement) == SQLITE_DONE;
         if(delete_statement) sqlite3_finalize(delete_statement);
     }
-    if(succeeded)
+    if(succeeded && route_id == current_route_id)
     {
         sqlite3_stmt* delete_statement = nullptr;
         succeeded = sqlite3_prepare_v2(
