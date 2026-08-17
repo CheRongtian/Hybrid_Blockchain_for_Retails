@@ -1934,15 +1934,190 @@ bool save_workflow_route(const std::string& db_path,
         if(succeeded && current_route_id.empty()) current_route_id = "route-default";
     }
 
-    auto route_exists = [&](const std::string& candidate) {
-        sqlite3_stmt* query = nullptr;
-        const char* sql = "SELECT 1 FROM route_definitions WHERE route_id = ? LIMIT 1;";
-        if(sqlite3_prepare_v2(db, sql, -1, &query, nullptr) != SQLITE_OK)
+    auto current_route_matches = [&]() {
+        std::vector<SupplyRouteNode> current_nodes;
+        std::vector<SupplyRouteEdge> current_edges;
+
+        const char* node_sql =
+            "SELECT node_id, node_type, label, role, username, position_x, "
+            "position_y, step_index FROM route_nodes WHERE route_id = ? "
+            "ORDER BY step_index ASC, position_x ASC, node_id ASC;";
+        sqlite3_stmt* node_query = nullptr;
+        if(sqlite3_prepare_v2(db, node_sql, -1, &node_query, nullptr) != SQLITE_OK)
             return false;
-        const bool exists = bind_text(query, 1, candidate) &&
-            sqlite3_step(query) == SQLITE_ROW;
-        sqlite3_finalize(query);
-        return exists;
+        bool bound = bind_text(node_query, 1, current_route_id);
+        int result = SQLITE_ROW;
+        while(bound && (result = sqlite3_step(node_query)) == SQLITE_ROW)
+        {
+            current_nodes.push_back(SupplyRouteNode{
+                current_route_id,
+                column_text(node_query, 0),
+                column_text(node_query, 1),
+                column_text(node_query, 2),
+                column_text(node_query, 3),
+                column_text(node_query, 4),
+                sqlite3_column_int(node_query, 5),
+                sqlite3_column_int(node_query, 6),
+                sqlite3_column_int(node_query, 7)
+            });
+        }
+        bound = bound && result == SQLITE_DONE;
+        sqlite3_finalize(node_query);
+        if(!bound) return false;
+
+        const char* edge_sql =
+            "SELECT from_node_id, to_node_id FROM route_edges "
+            "WHERE route_id = ? ORDER BY from_node_id ASC, to_node_id ASC;";
+        sqlite3_stmt* edge_query = nullptr;
+        if(sqlite3_prepare_v2(db, edge_sql, -1, &edge_query, nullptr) != SQLITE_OK)
+            return false;
+        bound = bind_text(edge_query, 1, current_route_id);
+        result = SQLITE_ROW;
+        while(bound && (result = sqlite3_step(edge_query)) == SQLITE_ROW)
+        {
+            current_edges.push_back(SupplyRouteEdge{
+                current_route_id,
+                column_text(edge_query, 0),
+                column_text(edge_query, 1)
+            });
+        }
+        bound = bound && result == SQLITE_DONE;
+        sqlite3_finalize(edge_query);
+        if(!bound || current_nodes.size() != nodes.size() ||
+           current_edges.size() != edges.size())
+            return false;
+
+        std::unordered_map<std::string, SupplyRouteNode> current_by_id;
+        for(const SupplyRouteNode& node : current_nodes)
+            current_by_id[node.node_id] = node;
+        for(const SupplyRouteNode& node : nodes)
+        {
+            const auto current = current_by_id.find(node.node_id);
+            if(current == current_by_id.end() ||
+               current->second.node_type != node.node_type ||
+               current->second.label != node.label ||
+               current->second.role != node.role ||
+               current->second.username != node.username ||
+               current->second.step_index != node.step_index)
+                return false;
+        }
+
+        std::unordered_set<std::string> current_edge_keys;
+        for(const SupplyRouteEdge& edge : current_edges)
+            current_edge_keys.insert(edge.from_node_id + "\x1f" + edge.to_node_id);
+        for(const SupplyRouteEdge& edge : edges)
+        {
+            if(current_edge_keys.count(edge.from_node_id + "\x1f" + edge.to_node_id) == 0)
+                return false;
+        }
+        return true;
+    };
+
+    auto committed_route_change_is_safe = [&]() {
+        if(batch_id.empty() || current_route_id == "route-default")
+            return current_route_matches();
+
+        struct CommittedStage
+        {
+            int block_id = -1;
+            int parent_block_id = -1;
+            std::string route_id;
+            std::string route_node_id;
+            int route_step_index = -1;
+            std::string role;
+            std::string username;
+        };
+
+        std::vector<CommittedStage> committed;
+        const char* record_sql =
+            "SELECT block_id, parent_block_id, route_id, route_node_id, "
+            "route_step_index, role, confirmed_by FROM supply_chain_records "
+            "WHERE batch_id = ? ORDER BY block_id ASC;";
+        sqlite3_stmt* record_query = nullptr;
+        if(sqlite3_prepare_v2(db, record_sql, -1, &record_query, nullptr) != SQLITE_OK)
+            return false;
+        bool bound = bind_text(record_query, 1, batch_id);
+        int result = SQLITE_ROW;
+        while(bound && (result = sqlite3_step(record_query)) == SQLITE_ROW)
+        {
+            committed.push_back(CommittedStage{
+                sqlite3_column_int(record_query, 0),
+                sqlite3_column_int(record_query, 1),
+                column_text(record_query, 2),
+                column_text(record_query, 3),
+                sqlite3_column_int(record_query, 4),
+                column_text(record_query, 5),
+                column_text(record_query, 6)
+            });
+        }
+        bound = bound && result == SQLITE_DONE;
+        sqlite3_finalize(record_query);
+        if(!bound || committed.empty()) return true;
+
+        std::unordered_map<std::string, const SupplyRouteNode*> candidate_by_id;
+        for(const SupplyRouteNode& node : nodes)
+            candidate_by_id[node.node_id] = &node;
+
+        std::unordered_set<std::string> committed_node_ids;
+        std::unordered_map<int, std::string> node_by_block;
+        int maximum_committed_step = -1;
+        for(const CommittedStage& stage : committed)
+        {
+            if(!stage.route_id.empty() && stage.route_id != current_route_id)
+                return false;
+
+            const SupplyRouteNode* candidate = nullptr;
+            if(!stage.route_node_id.empty())
+            {
+                const auto item = candidate_by_id.find(stage.route_node_id);
+                if(item != candidate_by_id.end()) candidate = item->second;
+            }
+            else
+            {
+                for(const SupplyRouteNode& node : nodes)
+                {
+                    if(node.role != stage.role ||
+                       node.username != stage.username ||
+                       (stage.route_step_index >= 0 &&
+                        node.step_index != stage.route_step_index))
+                        continue;
+                    if(candidate) return false;
+                    candidate = &node;
+                }
+            }
+
+            if(!candidate || candidate->role != stage.role ||
+               candidate->username != stage.username ||
+               (stage.route_step_index >= 0 &&
+                candidate->step_index != stage.route_step_index) ||
+               !committed_node_ids.insert(candidate->node_id).second)
+                return false;
+
+            maximum_committed_step =
+                std::max(maximum_committed_step, candidate->step_index);
+            node_by_block[stage.block_id] = candidate->node_id;
+        }
+
+        for(const SupplyRouteNode& node : nodes)
+        {
+            if(node.step_index <= maximum_committed_step &&
+               committed_node_ids.count(node.node_id) == 0)
+                return false;
+        }
+
+        std::unordered_set<std::string> candidate_edges;
+        for(const SupplyRouteEdge& edge : edges)
+            candidate_edges.insert(edge.from_node_id + "\x1f" + edge.to_node_id);
+        for(const CommittedStage& stage : committed)
+        {
+            if(stage.parent_block_id < 0) continue;
+            const auto parent = node_by_block.find(stage.parent_block_id);
+            const auto child = node_by_block.find(stage.block_id);
+            if(parent == node_by_block.end() || child == node_by_block.end() ||
+               candidate_edges.count(parent->second + "\x1f" + child->second) == 0)
+                return false;
+        }
+        return true;
     };
 
     auto has_records = [&](const std::string& candidate) {
@@ -1950,11 +2125,12 @@ bool save_workflow_route(const std::string& db_path,
         const char* sql = batch_id.empty()
             ? "SELECT EXISTS(SELECT 1 FROM supply_chain_records WHERE route_id = ?);"
             : "SELECT EXISTS(SELECT 1 FROM supply_chain_records "
-              "WHERE route_id = ? AND batch_id = ?);";
+              "WHERE batch_id = ?);";
         if(sqlite3_prepare_v2(db, sql, -1, &query, nullptr) != SQLITE_OK)
             return false;
-        bool bound = bind_text(query, 1, candidate);
-        if(!batch_id.empty()) bound = bound && bind_text(query, 2, batch_id);
+        bool bound = batch_id.empty()
+            ? bind_text(query, 1, candidate)
+            : bind_text(query, 1, batch_id);
         const bool exists = bound && sqlite3_step(query) == SQLITE_ROW &&
             sqlite3_column_int(query, 0) != 0;
         sqlite3_finalize(query);
@@ -1965,16 +2141,22 @@ bool save_workflow_route(const std::string& db_path,
     if(!batch_id.empty() && current_route_id == "route-default")
         base_route_id = workflow_route_id(batch_id);
 
-    route_id = base_route_id;
     const bool current_has_records = has_records(current_route_id);
     if(current_has_records)
     {
-        int version = 2;
-        do
+        if(!committed_route_change_is_safe())
         {
-            route_id = base_route_id + "-v" + std::to_string(version++);
+            fail("Cannot change a route after blocks have been committed. "
+                 "Only changes after the last committed stage are allowed.");
         }
-        while(route_exists(route_id));
+        else
+        {
+            route_id = current_route_id;
+        }
+    }
+    else
+    {
+        route_id = base_route_id;
     }
 
     if(!succeeded)

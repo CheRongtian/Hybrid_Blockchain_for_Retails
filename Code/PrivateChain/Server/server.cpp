@@ -1288,34 +1288,35 @@ const SupplyRouteNode* workflow_node_for_record(
     const RuntimeWorkflow& workflow,
     const SupplyChainRecord& record)
 {
+    if(!record.route_id.empty() && record.route_id != workflow.route_id)
+        return nullptr;
+
     if(!record.route_node_id.empty())
     {
-        if(const auto* node = workflow_node(workflow, record.route_node_id))
+        if(const auto* node = workflow_node(workflow, record.route_node_id);
+           node && node->role == record.role &&
+           node->username == record.confirmed_by &&
+           (record.route_step_index < 0 ||
+            node->step_index == record.route_step_index))
             return node;
+        return nullptr;
     }
 
+    if(!record.route_id.empty()) return nullptr;
+
+    const SupplyRouteNode* legacy_match = nullptr;
     for(const SupplyRouteNode& node : workflow.nodes)
     {
         if(node.role == record.role && !node.username.empty() &&
            node.username == record.confirmed_by &&
-           (record.route_step_index < 0 || node.step_index == record.route_step_index))
-            return &node;
+           (record.route_step_index < 0 ||
+            node.step_index == record.route_step_index))
+        {
+            if(legacy_match) return nullptr;
+            legacy_match = &node;
+        }
     }
-
-    for(const SupplyRouteNode& node : workflow.nodes)
-    {
-        if(node.role == record.role && !node.username.empty() &&
-           node.username == record.confirmed_by)
-            return &node;
-    }
-
-    for(const SupplyRouteNode& node : workflow.nodes)
-    {
-        if(node.role == record.role &&
-           (record.route_step_index < 0 || node.step_index == record.route_step_index))
-            return &node;
-    }
-    return nullptr;
+    return legacy_match;
 }
 
 const SupplyRouteNode* first_workflow_node(const RuntimeWorkflow& workflow)
@@ -1343,14 +1344,130 @@ const SupplyRouteNode* workflow_successor(const RuntimeWorkflow& workflow,
     return nullptr;
 }
 
-const SupplyRouteNode* next_workflow_node(
-    const RuntimeWorkflow& workflow,
-    const SupplyChainRecord* parent)
+bool ordered_workflow_nodes(const RuntimeWorkflow& workflow,
+                            std::vector<const SupplyRouteNode*>& ordered,
+                            std::string& error)
 {
-    if(!parent) return first_workflow_node(workflow);
-    const SupplyRouteNode* parent_node = workflow_node_for_record(workflow, *parent);
-    if(!parent_node) return nullptr;
-    return workflow_successor(workflow, parent_node->node_id);
+    ordered.clear();
+    error.clear();
+    const SupplyRouteNode* current = first_workflow_node(workflow);
+    std::unordered_set<std::string> visited;
+    while(current)
+    {
+        if(!visited.insert(current->node_id).second)
+        {
+            error = "The saved route contains a cycle";
+            return false;
+        }
+        ordered.push_back(current);
+        current = workflow_successor(workflow, current->node_id);
+    }
+    if(ordered.size() != workflow.nodes.size())
+    {
+        error = "The saved route does not contain one connected linear path";
+        return false;
+    }
+    return !ordered.empty();
+}
+
+struct WorkflowProgress
+{
+    const SupplyRouteNode* next_node = nullptr;
+    const SupplyChainRecord* parent_record = nullptr;
+    bool complete = false;
+    std::string error;
+};
+
+WorkflowProgress evaluate_workflow_progress(
+    const RuntimeWorkflow& workflow,
+    const std::vector<SupplyChainRecord>& records,
+    const std::string& batch_id)
+{
+    WorkflowProgress progress;
+    std::vector<const SupplyRouteNode*> ordered;
+    if(!ordered_workflow_nodes(workflow, ordered, progress.error))
+        return progress;
+
+    std::unordered_map<std::string, const SupplyChainRecord*> records_by_node;
+    for(const SupplyChainRecord& record : records)
+    {
+        if(record.batch_id != batch_id) continue;
+
+        if(!record.route_id.empty() && record.route_id != workflow.route_id)
+        {
+            progress.error = "Block " + std::to_string(record.block_id) +
+                " belongs to a different saved route";
+            return progress;
+        }
+
+        const auto* node = workflow_node_for_record(workflow, record);
+        if(!node)
+        {
+            progress.error = "Block " + std::to_string(record.block_id) +
+                " is not linked to a unique node in the saved route";
+            return progress;
+        }
+        if(records_by_node.find(node->node_id) != records_by_node.end())
+        {
+            progress.error = "Route node " + node->label +
+                " has more than one committed block";
+            return progress;
+        }
+        records_by_node[node->node_id] = &record;
+    }
+
+    const SupplyChainRecord* previous_record = nullptr;
+    for(std::size_t index = 0; index < ordered.size(); ++index)
+    {
+        const SupplyRouteNode* node = ordered[index];
+        const auto current = records_by_node.find(node->node_id);
+        if(current == records_by_node.end())
+        {
+            for(std::size_t later = index + 1; later < ordered.size(); ++later)
+            {
+                if(records_by_node.find(ordered[later]->node_id) !=
+                   records_by_node.end())
+                {
+                    progress.error = "Route stage " + node->label +
+                        " is pending while a later stage is already committed";
+                    return progress;
+                }
+            }
+
+            if(index > 0 && !previous_record)
+            {
+                progress.error = "Route stage " + node->label +
+                    " has no committed direct predecessor";
+                return progress;
+            }
+            progress.next_node = node;
+            progress.parent_record = previous_record;
+            return progress;
+        }
+
+        const SupplyChainRecord* record = current->second;
+        if(index == 0)
+        {
+            if(record->parent_block_id != -1 ||
+               record->parent_block_hash != "GENESIS")
+            {
+                progress.error = "Supplier block is not the genesis block";
+                return progress;
+            }
+        }
+        else if(!previous_record ||
+                record->parent_block_id != previous_record->block_id ||
+                record->parent_block_hash != previous_record->block_hash)
+        {
+            progress.error = "Block " + std::to_string(record->block_id) +
+                " does not link to the previous saved route stage";
+            return progress;
+        }
+        previous_record = record;
+    }
+
+    progress.complete = true;
+    return progress;
 }
 
 const SupplyRouteNode* next_pending_workflow_node(
@@ -1358,33 +1475,7 @@ const SupplyRouteNode* next_pending_workflow_node(
     const std::vector<SupplyChainRecord>& records,
     const std::string& batch_id)
 {
-    std::unordered_set<std::string> recorded_node_ids;
-    for(const SupplyChainRecord& record : records)
-    {
-        if(record.batch_id != batch_id) continue;
-        const auto* node = workflow_node_for_record(workflow, record);
-        if(node) recorded_node_ids.insert(node->node_id);
-    }
-
-    for(const SupplyRouteNode& node : workflow.nodes)
-    {
-        if(recorded_node_ids.count(node.node_id) != 0) continue;
-
-        bool predecessors_recorded = true;
-        bool has_predecessor = false;
-        for(const SupplyRouteEdge& edge : workflow.edges)
-        {
-            if(edge.to_node_id != node.node_id) continue;
-            has_predecessor = true;
-            if(recorded_node_ids.count(edge.from_node_id) == 0)
-            {
-                predecessors_recorded = false;
-                break;
-            }
-        }
-        if(!has_predecessor || predecessors_recorded) return &node;
-    }
-    return nullptr;
+    return evaluate_workflow_progress(workflow, records, batch_id).next_node;
 }
 
 bool workflow_is_valid(const std::vector<SupplyRouteNode>& nodes,
@@ -2012,10 +2103,6 @@ std::string records_json(const std::string& database_path,
     return json.str();
 }
 
-const SupplyChainRecord* latest_batch_record(
-    const std::vector<SupplyChainRecord>& records,
-    const std::string& batch_id);
-
 std::string batches_json(const std::string& database_path,
                          const std::vector<SupplyChainBatch>& batches,
                          const std::vector<SupplyChainRecord>& records)
@@ -2027,9 +2114,10 @@ std::string batches_json(const std::string& database_path,
         if(index > 0) json << ',';
         const SupplyChainBatch& batch = batches[index];
         const auto workflow = load_runtime_workflow(database_path, batch.batch_id);
-        const SupplyRouteNode* next = workflow
-            ? next_pending_workflow_node(*workflow, records, batch.batch_id)
-            : nullptr;
+        const WorkflowProgress progress = workflow
+            ? evaluate_workflow_progress(*workflow, records, batch.batch_id)
+            : WorkflowProgress{};
+        const SupplyRouteNode* next = progress.next_node;
         const SupplyRouteNode* destination = workflow && next
             ? workflow_successor(*workflow, next->node_id)
             : nullptr;
@@ -2052,8 +2140,8 @@ std::string batches_json(const std::string& database_path,
                     pending_route_nodes.push_back(&node);
             }
         }
-        const bool route_complete = workflow && !workflow->nodes.empty() &&
-            pending_route_nodes.empty();
+        const bool route_complete = workflow && progress.error.empty() &&
+            progress.complete;
         std::string current_stage = batch.current_stage;
         if(workflow)
         {
@@ -2070,7 +2158,9 @@ std::string batches_json(const std::string& database_path,
             ? workflow->route_id
             : batch.route_id;
         const std::string effective_status = workflow
-            ? (route_complete ? "completed" : "in_progress")
+            ? (!progress.error.empty()
+                   ? "route_error"
+                   : (route_complete ? "completed" : "in_progress"))
             : batch.status;
         json << "{\"batchId\":\"" << json_escape(batch.batch_id)
              << "\",\"product\":\"" << json_escape(batch.product)
@@ -2096,6 +2186,7 @@ std::string batches_json(const std::string& database_path,
              << json_escape(destination ? destination->label : "")
              << "\",\"routeReady\":"
              << (route_complete ? "true" : "false")
+             << ",\"routeError\":\"" << json_escape(progress.error) << "\""
              << ",\"routeNodeCount\":"
              << (workflow ? workflow->nodes.size() : 0)
              << ",\"recordedNodeCount\":" << recorded_route_nodes.size()
@@ -2195,20 +2286,6 @@ std::string workflow_json(const std::string& database_path,
     }
     json << "],\"routeId\":\"" << json_escape(workflow->route_id) << "\"}";
     return json.str();
-}
-
-const SupplyChainRecord* latest_batch_record(
-    const std::vector<SupplyChainRecord>& records,
-    const std::string& batch_id)
-{
-    const SupplyChainRecord* latest = nullptr;
-    for(const SupplyChainRecord& record : records)
-    {
-        if(record.batch_id != batch_id) continue;
-        if(!latest || record.block_id > latest->block_id)
-            latest = &record;
-    }
-    return latest;
 }
 
 std::string calculate_block_hash(const SupplyChainRecord& record)
@@ -3280,7 +3357,10 @@ int main(int argc, char* argv[])
                     if(!save_workflow_route(database_path.string(), batch_id, nodes,
                                             edges, route_id, workflow_error))
                     {
-                        status = "500 Internal Server Error";
+                        status = workflow_error.find(
+                            "Cannot change a route after blocks have been committed") == 0
+                            ? "409 Conflict"
+                            : "500 Internal Server Error";
                         body = json_error(workflow_error);
                     }
                     else
@@ -3996,16 +4076,15 @@ int main(int argc, char* argv[])
                     {
                         batch_id = trim(form_field_value(*fields, "batchId"));
                     }
-                    const SupplyChainRecord* parent =
-                        latest_batch_record(stored_records, batch_id);
                     const auto stored_batch =
                         find_supply_chain_batch(database_path.string(), batch_id);
                     const auto workflow = load_runtime_workflow(
                         database_path.string(), is_supplier ? "" : batch_id);
-                    const SupplyRouteNode* required_node = workflow
-                        ? next_pending_workflow_node(
-                              *workflow, stored_records, batch_id)
-                        : nullptr;
+                    const WorkflowProgress progress = workflow
+                        ? evaluate_workflow_progress(*workflow, stored_records, batch_id)
+                        : WorkflowProgress{};
+                    const SupplyChainRecord* parent = progress.parent_record;
+                    const SupplyRouteNode* required_node = progress.next_node;
                     const SupplyRouteNode* destination_node = workflow && required_node
                         ? workflow_successor(*workflow, required_node->node_id)
                         : nullptr;
@@ -4015,6 +4094,10 @@ int main(int argc, char* argv[])
                     if(!workflow)
                     {
                         workflow_error = "The configured route is unavailable";
+                    }
+                    else if(!progress.error.empty())
+                    {
+                        workflow_error = progress.error;
                     }
                     else if(is_supplier && (parent || stored_batch))
                     {
@@ -4209,22 +4292,22 @@ int main(int argc, char* argv[])
                                        "\",\"batchId\":\"" +
                                        json_escape(database_record.batch_id) +
                                        "\",\"nextStage\":\"" +
-                                       json_escape(next_workflow_node(
-                                           *workflow, &database_record)
-                                               ? next_workflow_node(
-                                                     *workflow, &database_record)->role
+                                       json_escape(workflow_successor(
+                                           *workflow, required_node->node_id)
+                                               ? workflow_successor(
+                                                     *workflow, required_node->node_id)->role
                                                : "") +
                                        "\",\"nextNodeId\":\"" +
-                                       json_escape(next_workflow_node(
-                                           *workflow, &database_record)
-                                               ? next_workflow_node(
-                                                     *workflow, &database_record)->node_id
+                                       json_escape(workflow_successor(
+                                           *workflow, required_node->node_id)
+                                               ? workflow_successor(
+                                                     *workflow, required_node->node_id)->node_id
                                                : "") +
                                        "\",\"nextNodeLabel\":\"" +
-                                       json_escape(next_workflow_node(
-                                           *workflow, &database_record)
-                                               ? next_workflow_node(
-                                                     *workflow, &database_record)->label
+                                       json_escape(workflow_successor(
+                                           *workflow, required_node->node_id)
+                                               ? workflow_successor(
+                                                     *workflow, required_node->node_id)->label
                                                : "") +
                                        "\",\"ipfsCount\":" +
                                        std::to_string(references.size()) +

@@ -758,23 +758,21 @@ function renderChain(batchId, nodes, edges, options = {}) {
     return card;
 }
 
-function findWorkflowRecord(routeNode, records, usedRecords) {
+function findWorkflowRecord(routeNode, records, usedRecords, routeId = "") {
     const exact = records.find((record) =>
-        !usedRecords.has(record) && record.routeNodeId && record.routeNodeId === routeNode.id);
+        !usedRecords.has(record) &&
+        record.routeId === routeId &&
+        record.routeNodeId === routeNode.id);
     if (exact) return exact;
 
-    const step = Number(routeNode.stepIndex);
-    if (Number.isFinite(step) && step >= 0) {
-        const byStep = records.find((record) =>
-            !usedRecords.has(record) && Number(record.routeStepIndex) === step);
-        if (byStep) return byStep;
-    }
-
-    return records.find((record) =>
+    const legacyMatches = records.filter((record) =>
         !usedRecords.has(record) &&
+        !record.routeId &&
+        !record.routeNodeId &&
         record.role === routeNode.role &&
         record.routeNodeUsername === routeNode.username
-    ) || null;
+    );
+    return legacyMatches.length === 1 ? legacyMatches[0] : null;
 }
 
 function buildWorkflowChainPreview(batchId, records, graphEdges, activeBatchId = "") {
@@ -802,29 +800,70 @@ function buildWorkflowChainPreview(batchId, records, graphEdges, activeBatchId =
     const usedRecords = new Set();
     const previewNodes = [];
     const previewKeys = new Map();
+    const recordsByRouteNode = new Map();
+    const product = records.find((record) => record.product)?.product || "";
     for (const routeNode of orderedRouteNodes) {
-        const record = findWorkflowRecord(routeNode, records, usedRecords);
-        if (!record) continue;
-        usedRecords.add(record);
-        const preview = {
-            ...record,
-            pending: false,
-            previewKey: `block:${record.blockID}`,
-            previewOrder: previewNodes.length
-        };
+        const record = findWorkflowRecord(
+            routeNode,
+            records,
+            usedRecords,
+            workflowData.routeId || ""
+        );
+        const preview = record
+            ? {
+                  ...record,
+                  pending: false,
+                  previewKey: `block:${record.blockID}`,
+                  previewOrder: previewNodes.length
+              }
+            : {
+                  batchId,
+                  product,
+                  pending: true,
+                  blockID: null,
+                  previewKey: `route-node:${routeNode.id}`,
+                  previewOrder: previewNodes.length,
+                  routeId: workflowData.routeId || "",
+                  routeNodeId: routeNode.id,
+                  routeStepIndex: routeNode.stepIndex,
+                  routeNodeLabel: routeNode.label,
+                  routeNodeRole: routeNode.role,
+                  routeNodeUsername: routeNode.username,
+                  role: routeNode.role,
+                  stage: routeNode.role,
+                  chainStatus: "pending"
+              };
+        if (record) {
+            usedRecords.add(record);
+            recordsByRouteNode.set(routeNode.id, record);
+        }
         previewNodes.push(preview);
         previewKeys.set(routeNode.id, preview.previewKey);
     }
 
     const workflowEdges = (workflowData.edges || [])
-        .map((edge) => ({
-            from: previewKeys.get(edge.from),
-            to: previewKeys.get(edge.to)
-        }))
-        .filter((edge) => edge.from && edge.to);
+        .map((edge) => {
+            const fromRecord = recordsByRouteNode.get(edge.from);
+            const toRecord = recordsByRouteNode.get(edge.to);
+            if (!fromRecord || !toRecord) return null;
+            const blockEdgeExists = graphEdges.some((blockEdge) =>
+                blockEdge.batchId === batchId &&
+                blockEdge.from === fromRecord.blockID &&
+                blockEdge.to === toRecord.blockID
+            );
+            const parentMatches =
+                toRecord.parentBlockId === fromRecord.blockID &&
+                toRecord.parentBlockHash === fromRecord.blockHash;
+            if (!blockEdgeExists || !parentMatches) return null;
+            return {
+                from: previewKeys.get(edge.from),
+                to: previewKeys.get(edge.to)
+            };
+        })
+        .filter(Boolean);
     const routeValidation = workflowValidation(workflowData);
     const missingRouteRecord = orderedRouteNodes.some((routeNode) =>
-        !previewKeys.has(routeNode.id));
+        !recordsByRouteNode.has(routeNode.id));
 
     return {
         nodes: previewNodes,

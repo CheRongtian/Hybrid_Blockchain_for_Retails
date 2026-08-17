@@ -119,40 +119,39 @@ std::optional<std::map<std::string, std::string>> parse_flat_string_object(
 
 const SupplyRouteNode* route_node_for_record(
     const std::vector<SupplyRouteNode>& route_nodes,
-    const SupplyChainRecord& record)
+    const SupplyChainRecord& record,
+    const std::string& route_id)
 {
+    if(!record.route_id.empty() && record.route_id != route_id)
+        return nullptr;
+
     if(!record.route_node_id.empty())
     {
         for(const SupplyRouteNode& node : route_nodes)
         {
-            if(node.node_id == record.route_node_id) return &node;
+            if(node.node_id == record.route_node_id &&
+               node.role == record.role &&
+               node.username == record.confirmed_by &&
+               (record.route_step_index < 0 ||
+                node.step_index == record.route_step_index))
+                return &node;
         }
+        return nullptr;
     }
 
+    const SupplyRouteNode* legacy_match = nullptr;
     for(const SupplyRouteNode& node : route_nodes)
     {
         if(node.role == record.role && !node.username.empty() &&
            node.username == record.confirmed_by &&
            (record.route_step_index < 0 ||
             node.step_index == record.route_step_index))
-            return &node;
+        {
+            if(legacy_match) return nullptr;
+            legacy_match = &node;
+        }
     }
-
-    for(const SupplyRouteNode& node : route_nodes)
-    {
-        if(node.role == record.role && !node.username.empty() &&
-           node.username == record.confirmed_by)
-            return &node;
-    }
-
-    for(const SupplyRouteNode& node : route_nodes)
-    {
-        if(node.role == record.role &&
-           (record.route_step_index < 0 ||
-            node.step_index == record.route_step_index))
-            return &node;
-    }
-    return nullptr;
+    return legacy_match;
 }
 }
 
@@ -169,6 +168,9 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
     input.certificate_id = batch.certificate_id;
     input.status = batch.status;
 
+    const std::string expected_route_id = !batch.route_id.empty()
+        ? batch.route_id
+        : (route_nodes.empty() ? "" : route_nodes.front().route_id);
     std::unordered_set<std::string> recorded_route_nodes;
 
     for(const SupplyRouteNode& node : route_nodes)
@@ -194,7 +196,7 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
         stage.route_step_index = record.route_step_index;
 
         const SupplyRouteNode* route_node =
-            route_node_for_record(route_nodes, record);
+            route_node_for_record(route_nodes, record, expected_route_id);
         if(route_node)
         {
             stage.route_node_id = route_node->node_id;
@@ -202,6 +204,12 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
             stage.route_node_username = route_node->username;
             stage.route_step_index = route_node->step_index;
             recorded_route_nodes.insert(route_node->node_id);
+        }
+        else
+        {
+            input.source_errors.push_back(
+                "Block " + std::to_string(record.block_id) +
+                " is not linked to the selected route");
         }
 
         const auto fields = parse_flat_string_object(record.event_data);
