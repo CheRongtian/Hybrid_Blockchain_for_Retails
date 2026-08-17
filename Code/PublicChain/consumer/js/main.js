@@ -1,6 +1,9 @@
 const batchSelect = document.querySelector("#batch-select");
 const statusLine = document.querySelector("#search-status");
 const resultSection = document.querySelector("#trace-result");
+let currentBatchId = "";
+let currentSnapshotId = "";
+let batchRefreshInFlight = false;
 
 const text = (selector, value, fallback = "Not disclosed") => {
   document.querySelector(selector).textContent = value || fallback;
@@ -163,35 +166,47 @@ function renderTrace(trace) {
   resultSection.hidden = false;
 }
 
-async function search(batchId) {
-  statusLine.className = "status";
-  statusLine.textContent = "Reading public-chain trace...";
-  resultSection.hidden = true;
-  batchSelect.disabled = true;
+async function search(batchId, { background = false } = {}) {
+  if (!background) {
+    statusLine.className = "status";
+    statusLine.textContent = "Reading public-chain trace...";
+    resultSection.hidden = true;
+    batchSelect.disabled = true;
+  }
   try {
     const response = await fetch(`/api/trace/${encodeURIComponent(batchId)}`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
     renderTrace(payload);
-    statusLine.textContent = payload.verified
-      ? "Public Manifest and Merkle Root match the active chain record."
-      : "The trace requires attention. Review its status and verification details.";
+    currentBatchId = batchId;
+    currentSnapshotId = payload.snapshotId || "";
+    statusLine.textContent = background
+      ? "The trace has been updated to the latest active snapshot."
+      : payload.verified
+        ? "Public Manifest and Merkle Root match the active chain record."
+        : "The trace requires attention. Review its status and verification details.";
     statusLine.className = payload.verified ? "status" : "status error";
   } catch (error) {
     statusLine.textContent = error.message;
     statusLine.className = "status error";
   } finally {
-    batchSelect.disabled = false;
+    if (!background) batchSelect.disabled = false;
   }
 }
 
-async function loadPublishedBatches() {
-  statusLine.className = "status";
-  statusLine.textContent = "Loading published product batches...";
+async function loadPublishedBatches({ background = false } = {}) {
+  if (batchRefreshInFlight) return;
+  batchRefreshInFlight = true;
+  const selectedBatchId = batchSelect.value;
+  if (!background) {
+    statusLine.className = "status";
+    statusLine.textContent = "Loading published product batches...";
+  }
   try {
     const response = await fetch("/api/batches");
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+    const batches = payload.batches || [];
 
     batchSelect.replaceChildren();
     const placeholder = document.createElement("option");
@@ -199,24 +214,46 @@ async function loadPublishedBatches() {
     placeholder.textContent = "Choose a product batch";
     batchSelect.append(placeholder);
 
-    for (const batch of payload.batches || []) {
+    for (const batch of batches) {
       const option = document.createElement("option");
       option.value = batch.batchId;
       option.textContent = `${batch.product} · ${batch.batchId}`;
       batchSelect.append(option);
     }
 
-    const hasBatches = (payload.batches || []).length > 0;
+    const selectedBatch = batches.find((batch) => batch.batchId === selectedBatchId);
+    if (selectedBatch) batchSelect.value = selectedBatchId;
+    const hasBatches = batches.length > 0;
     batchSelect.disabled = !hasBatches;
-    statusLine.textContent = hasBatches
-      ? "Choose a published product batch to view its trace."
-      : "No published product batches are available yet.";
-    statusLine.className = hasBatches ? "status" : "status error";
+    if (!background) {
+      statusLine.textContent = hasBatches
+        ? "Choose a published product batch to view its trace."
+        : "No published product batches are available yet.";
+      statusLine.className = hasBatches ? "status" : "status error";
+    }
+
+    if (selectedBatch && currentBatchId === selectedBatchId &&
+        selectedBatch.snapshotId && selectedBatch.snapshotId !== currentSnapshotId) {
+      await search(selectedBatchId, { background: true });
+    } else if (!selectedBatch && currentBatchId === selectedBatchId) {
+      currentBatchId = "";
+      currentSnapshotId = "";
+      resultSection.hidden = true;
+      statusLine.textContent = hasBatches
+        ? "The previous trace is no longer active. Choose a product batch."
+        : "No published product batches are available yet.";
+      statusLine.className = hasBatches ? "status" : "status error";
+    }
   } catch (error) {
     batchSelect.replaceChildren();
     batchSelect.disabled = true;
+    resultSection.hidden = true;
+    currentBatchId = "";
+    currentSnapshotId = "";
     statusLine.textContent = error.message;
     statusLine.className = "status error";
+  } finally {
+    batchRefreshInFlight = false;
   }
 }
 
@@ -225,3 +262,4 @@ batchSelect.addEventListener("change", () => {
 });
 
 loadPublishedBatches();
+window.setInterval(() => loadPublishedBatches({ background: true }), 5000);

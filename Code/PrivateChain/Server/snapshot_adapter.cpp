@@ -131,9 +131,7 @@ const SupplyRouteNode* route_node_for_record(
         {
             if(node.node_id == record.route_node_id &&
                node.role == record.role &&
-               node.username == record.confirmed_by &&
-               (record.route_step_index < 0 ||
-                node.step_index == record.route_step_index))
+               node.username == record.confirmed_by)
                 return &node;
         }
         return nullptr;
@@ -158,7 +156,8 @@ const SupplyRouteNode* route_node_for_record(
 supermarket::snapshot::BatchInput make_snapshot_batch_input(
     const SupplyChainBatch& batch,
     const std::vector<SupplyChainRecord>& records,
-    const std::vector<SupplyRouteNode>& route_nodes)
+    const std::vector<SupplyRouteNode>& route_nodes,
+    const std::vector<SupplyRouteEdge>& route_edges)
 {
     supermarket::snapshot::BatchInput input;
     input.batch_id = batch.batch_id;
@@ -176,7 +175,15 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
     for(const SupplyRouteNode& node : route_nodes)
     {
         input.route_nodes.push_back(supermarket::snapshot::RouteNodeInput{
-            node.node_id, node.label, node.role, node.username, node.step_index
+            node.node_id, node.label, node.role, node.username, node.step_index,
+            node.node_type
+        });
+    }
+
+    for(const SupplyRouteEdge& edge : route_edges)
+    {
+        input.route_edges.push_back(supermarket::snapshot::RouteEdgeInput{
+            edge.from_node_id, edge.to_node_id
         });
     }
 

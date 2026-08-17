@@ -285,6 +285,8 @@ std::string publication_candidate_json(const Preview& preview)
          << "  \"snapshotVersion\": " << preview.snapshot_version << ",\n"
          << "  \"generatedAt\": " << json_string(preview.generated_at) << ",\n"
          << "  \"batchId\": " << json_string(preview.batch_id) << ",\n"
+         << "  \"routeFingerprint\": "
+         << json_string(preview.route_fingerprint) << ",\n"
          << "  \"protocolHash\": "
          << json_string("0x" + keccak256_hex(preview.protocol)) << ",\n"
          << "  \"snapshotIdHash\": "

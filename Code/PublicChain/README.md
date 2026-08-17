@@ -148,6 +148,7 @@ Copy `.env.example` to `.env` only when overriding defaults.
 | `SOURCE_NETWORK_NAME` | Approved private source-network name |
 | `RELAYER_PRIVATE_KEY` | Optional signer; first local account by default |
 | `CONSUMER_PORT` | `8082` customer and publication service |
+| `PRIVATE_CONTROL_SERVER_URL` | `http://127.0.0.1:8081` current private-route state used to validate public snapshots |
 | `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
 | `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
 | `SNAPSHOT_PAYLOAD_PATH` | Low-level Gateway Payload smoke-test input |

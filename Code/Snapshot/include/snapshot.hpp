@@ -22,6 +22,13 @@ struct RouteNodeInput
     std::string role;
     std::string username;
     int step_index = -1;
+    std::string node_type;
+};
+
+struct RouteEdgeInput
+{
+    std::string from_node_id;
+    std::string to_node_id;
 };
 
 struct StageInput
@@ -52,6 +59,7 @@ struct BatchInput
     std::string status;
     std::vector<StageInput> stages;
     std::vector<RouteNodeInput> route_nodes;
+    std::vector<RouteEdgeInput> route_edges;
     std::vector<std::string> source_errors;
 };
 
@@ -84,12 +92,17 @@ struct Preview
     std::string manifest_json;
     std::string public_root;
     std::string final_private_block_hash;
+    std::string route_fingerprint;
     std::vector<PublicField> public_fields;
     std::vector<PublicEvidence> public_evidence;
     std::vector<std::string> excluded_fields;
 };
 
 Eligibility evaluate_eligibility(const BatchInput& input);
+
+std::string route_fingerprint(
+    const std::vector<RouteNodeInput>& route_nodes,
+    const std::vector<RouteEdgeInput>& route_edges);
 
 std::optional<Preview> build_preview(
     const BatchInput& input,

@@ -120,9 +120,10 @@ The initial route template is:
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The administrator can edit this template or select an existing batch and save
-a batch-specific route from the control Canvas. A valid route is a connected
-sequence that starts with Supplier and ends with Supermarket. It may contain
+The administrator can edit this template or select an existing batch and edit
+a batch-specific route from the control Canvas. Canvas changes are synchronized
+automatically as a route draft. A valid route is a connected sequence that
+starts with Supplier and ends with Supermarket. It may contain
 repeated Logistics and Warehouse nodes, or connect Supplier directly to
 Supermarket. The server accepts a new block only when the authenticated role and
 username match the next node on that batch's saved route. Each route node is
@@ -142,19 +143,23 @@ The Canvas supports the following editing actions:
   remain unchanged;
 - use **Undo** and **Redo**, including Command/Ctrl+Z and Command/Ctrl+Y;
 - choose **Auto arrange** to rebuild a compact left-to-right layout; and
-- save only a connected route that starts at Supplier and ends at Supermarket.
+- use **Save route** when an explicit final save is useful; Canvas edits already
+  synchronize automatically, including temporarily incomplete drafts.
 
 The Canvas is a lightweight static SVG/DOM editor. It does not add a frontend
 framework or a separate graph database. Node positions and connections continue
 to use the existing `/api/workflow` endpoint and SQLite records. Editing a node,
-adding a node, or changing a connection preserves the current pan and zoom. Auto
-arrangement and **Fit route** are explicit view-changing actions. New nodes are
-intentionally free-positioned so the administrator can place them without forcing
-the route into a single horizontal row.
+adding a node, or changing a connection preserves the current pan and zoom and
+invalidates the current Snapshot immediately. A draft may contain an unconnected
+node while the administrator finishes the route. Auto arrangement and **Fit
+route** are explicit view-changing actions. New nodes are intentionally
+free-positioned so the administrator can place them without forcing the route
+into a single horizontal row.
 
 The browser reports duplicate connections, invalid endpoints, cycles, and
-disconnected nodes immediately. The server validates the same route rules when
-the route is saved and when a participant submits an event.
+disconnected nodes immediately. Draft synchronization validates node, account,
+and edge references. The server validates the complete route when it is finally
+saved and when a participant submits an event.
 
 Supplier creates the batch master data. The server generates the batch ID from
 the normalized product name and a product-specific four-digit sequence. Later
@@ -177,6 +182,12 @@ CERT-0001       SHIP-0001       STORAGE-0001
 VEHICLE-0001    CONTAINER-0001  ZONE-0001
 RACK-0001       STORE-0001
 ```
+
+The user page derives the default shipment ID from the Logistics node's order
+within the selected batch route. The first Logistics stage receives
+`SHIP-0001`, the second receives `SHIP-0002`, and so on. Participants may still
+replace the suggested value with another valid shipment ID when the same
+physical shipment is intentionally reused for that route stage.
 
 The same shipment ID can appear in multiple batch records when one shipment
 carries multiple batches. The ID format is validated by the server; shipment
@@ -356,7 +367,9 @@ stage, and CID count.
 
 GET /api/workflow returns the default route or the route selected by batchId.
 
-POST /api/workflow validates and saves the Canvas node/edge sequence. An empty
+POST /api/workflow validates and saves the Canvas node/edge sequence. Sending
+`draft=true` stores an automatically synchronized, temporarily incomplete route
+draft. Without that flag, the complete route rules are required. An empty
 batchId updates the default route; a batchId creates or updates that batch's
 route assignment.
 

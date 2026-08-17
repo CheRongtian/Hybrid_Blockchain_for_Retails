@@ -5,6 +5,11 @@ import { Contract, JsonRpcProvider, ZeroHash, id, keccak256, toUtf8Bytes } from 
 import { projectDirectory, readJson } from "./runtime.js";
 
 const statusNames = ["None", "Active", "Superseded", "Recalled", "Revoked"];
+const privateControlServerUrl = (
+  process.env.PRIVATE_CONTROL_SERVER_URL ?? "http://127.0.0.1:8081"
+).replace(/\/+$/, "");
+const publicationToken = process.env.PUBLIC_CHAIN_PUBLICATION_TOKEN ??
+  "local-publication-demo-token";
 
 function requireText(candidate, name) {
   const value = candidate[name];
@@ -24,6 +29,50 @@ function requireBytes32(candidate, name) {
 
 function sha256Hex(value) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+async function fetchCurrentRouteState(batchId) {
+  const url = `${privateControlServerUrl}/api/public-route-state?batchId=${
+    encodeURIComponent(batchId)
+  }`;
+  const response = await fetch(url, {
+    headers: { "X-Publication-Token": publicationToken },
+  });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("The private route-state response is not valid JSON.");
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || `Private route-state request failed: ${response.status}`);
+  }
+  if (typeof payload.routeFingerprint !== "string" ||
+      !/^[0-9a-fA-F]{64}$/.test(payload.routeFingerprint) ||
+      typeof payload.routeShape !== "string" || payload.routeShape.length === 0) {
+    throw new Error("The private route-state response is incomplete.");
+  }
+  return {
+    routeFingerprint: payload.routeFingerprint.toLowerCase(),
+    routeShape: payload.routeShape,
+  };
+}
+
+function candidateRouteShape(candidate) {
+  const route = Array.isArray(candidate.manifest?.route)
+    ? candidate.manifest.route
+    : candidate.manifest?.verification?.route;
+  if (!Array.isArray(route)) return "";
+  return route.map((stage) => typeof stage === "string" ? stage : stage?.stage ?? "")
+    .join("|");
+}
+
+function candidateMatchesRoute(candidate, routeState) {
+  if (typeof candidate.routeFingerprint === "string" &&
+      candidate.routeFingerprint.length > 0) {
+    return candidate.routeFingerprint.toLowerCase() === routeState.routeFingerprint;
+  }
+  return candidateRouteShape(candidate) === routeState.routeShape;
 }
 
 export function buildPublicRoot(publicFields) {
@@ -65,6 +114,18 @@ export function validateCandidate(candidate) {
   const publicRoot = requireBytes32(candidate, "publicRoot");
   const manifestHash = requireBytes32(candidate, "manifestHash");
   requireBytes32(candidate, "sourceBlockHash");
+
+  if (candidate.routeFingerprint !== undefined) {
+    if (typeof candidate.routeFingerprint !== "string" ||
+        !/^[0-9a-fA-F]{64}$/.test(candidate.routeFingerprint)) {
+      throw new Error("routeFingerprint must be a 64-character hexadecimal value.");
+    }
+    const manifestFingerprint = candidate.manifest?.route_fingerprint;
+    if (typeof manifestFingerprint !== "string" ||
+        manifestFingerprint.toLowerCase() !== candidate.routeFingerprint.toLowerCase()) {
+      throw new Error("The candidate route fingerprint does not match its manifest.");
+    }
+  }
 
   if (!Number.isInteger(candidate.snapshotVersion) || candidate.snapshotVersion <= 0) {
     throw new Error("snapshotVersion must be a positive integer.");
@@ -121,6 +182,10 @@ export async function openGateway() {
 
 export async function publishCandidate(candidate) {
   const candidateChecks = validateCandidate(candidate);
+  const routeState = await fetchCurrentRouteState(candidate.batchId);
+  if (!candidateMatchesRoute(candidate, routeState)) {
+    throw new Error("The publication candidate does not match the current private route.");
+  }
   const runtime = await openGateway();
   const { provider, chainId, deployment, artifact } = runtime;
   const signer = process.env.RELAYER_PRIVATE_KEY?.trim()
@@ -192,6 +257,8 @@ export async function traceBatch(batchId) {
   }
   const publication = readJson(filePath);
   const candidateChecks = validateCandidate(publication.candidate);
+  const routeState = await fetchCurrentRouteState(batchId);
+  if (!candidateMatchesRoute(publication.candidate, routeState)) return null;
   const record = await gateway.getSnapshot(currentSnapshotHash);
   const status = statusNames[Number(record.status)] ?? "Unknown";
   const chainChecks = {
@@ -246,6 +313,7 @@ export async function listPublishedBatches() {
   const { provider, deployment, artifact } = await openGateway();
   const gateway = new Contract(deployment.contractAddress, artifact.abi, provider);
   const batches = new Map();
+  const routeStates = new Map();
 
   for (const fileName of files) {
     const publication = readJson(path.join(directory, fileName));
@@ -261,6 +329,11 @@ export async function listPublishedBatches() {
       continue;
     }
 
+    if (!routeStates.has(candidate.batchId)) {
+      routeStates.set(candidate.batchId, await fetchCurrentRouteState(candidate.batchId));
+    }
+    if (!candidateMatchesRoute(candidate, routeStates.get(candidate.batchId))) continue;
+
     const record = await gateway.getSnapshot(currentSnapshotHash);
     const manifestBatch = candidate.manifest?.batch ?? {};
     batches.set(candidate.batchId, {
@@ -269,6 +342,7 @@ export async function listPublishedBatches() {
       category: manifestBatch.category ?? "",
       status: statusNames[Number(record.status)] ?? "Unknown",
       verified: Number(record.status) === 1,
+      snapshotId: candidate.snapshotId,
     });
   }
 

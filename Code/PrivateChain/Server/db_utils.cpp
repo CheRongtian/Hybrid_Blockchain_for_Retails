@@ -1813,7 +1813,8 @@ bool save_workflow_route(const std::string& db_path,
                          const std::vector<SupplyRouteNode>& nodes,
                          const std::vector<SupplyRouteEdge>& edges,
                          std::string& route_id,
-                         std::string& error)
+                         std::string& error,
+                         bool allow_incomplete)
 {
     error.clear();
     if(!route_node_ids_are_unique(nodes))
@@ -2014,8 +2015,8 @@ bool save_workflow_route(const std::string& db_path,
     };
 
     auto committed_route_change_is_safe = [&]() {
-        if(batch_id.empty() || current_route_id == "route-default")
-            return current_route_matches();
+        if(batch_id.empty())
+            return allow_incomplete ? true : current_route_matches();
 
         struct CommittedStage
         {
@@ -2060,7 +2061,6 @@ bool save_workflow_route(const std::string& db_path,
 
         std::unordered_set<std::string> committed_node_ids;
         std::unordered_map<int, std::string> node_by_block;
-        int maximum_committed_step = -1;
         for(const CommittedStage& stage : committed)
         {
             if(!stage.route_id.empty() && stage.route_id != current_route_id)
@@ -2088,34 +2088,45 @@ bool save_workflow_route(const std::string& db_path,
 
             if(!candidate || candidate->role != stage.role ||
                candidate->username != stage.username ||
-               (stage.route_step_index >= 0 &&
+               (stage.route_node_id.empty() && stage.route_step_index >= 0 &&
                 candidate->step_index != stage.route_step_index) ||
                !committed_node_ids.insert(candidate->node_id).second)
                 return false;
 
-            maximum_committed_step =
-                std::max(maximum_committed_step, candidate->step_index);
             node_by_block[stage.block_id] = candidate->node_id;
         }
 
-        for(const SupplyRouteNode& node : nodes)
-        {
-            if(node.step_index <= maximum_committed_step &&
-               committed_node_ids.count(node.node_id) == 0)
-                return false;
-        }
+        auto candidate_reaches = [&](const std::string& from_node_id,
+                                     const std::string& to_node_id) {
+            if(from_node_id == to_node_id) return true;
+            std::vector<std::string> pending{from_node_id};
+            std::unordered_set<std::string> visited;
+            while(!pending.empty())
+            {
+                const std::string current = pending.back();
+                pending.pop_back();
+                if(!visited.insert(current).second) continue;
+                for(const SupplyRouteEdge& edge : edges)
+                {
+                    if(edge.from_node_id != current) continue;
+                    if(edge.to_node_id == to_node_id) return true;
+                    pending.push_back(edge.to_node_id);
+                }
+            }
+            return false;
+        };
 
-        std::unordered_set<std::string> candidate_edges;
-        for(const SupplyRouteEdge& edge : edges)
-            candidate_edges.insert(edge.from_node_id + "\x1f" + edge.to_node_id);
-        for(const CommittedStage& stage : committed)
+        if(!allow_incomplete)
         {
-            if(stage.parent_block_id < 0) continue;
-            const auto parent = node_by_block.find(stage.parent_block_id);
-            const auto child = node_by_block.find(stage.block_id);
-            if(parent == node_by_block.end() || child == node_by_block.end() ||
-               candidate_edges.count(parent->second + "\x1f" + child->second) == 0)
-                return false;
+            for(const CommittedStage& stage : committed)
+            {
+                if(stage.parent_block_id < 0) continue;
+                const auto parent = node_by_block.find(stage.parent_block_id);
+                const auto child = node_by_block.find(stage.block_id);
+                if(parent == node_by_block.end() || child == node_by_block.end() ||
+                   !candidate_reaches(parent->second, child->second))
+                    return false;
+            }
         }
         return true;
     };

@@ -19,6 +19,7 @@ const batchHarvestDate = document.querySelector("#batch-harvest-date");
 const batchFarmLocation = document.querySelector("#batch-farm-location");
 const batchStatus = document.querySelector("#batch-status");
 const deliveryLocationInput = document.querySelector("[name=deliveryLocation]");
+const shipmentIdInput = document.querySelector("[name=shipmentId]");
 const attachmentCategory = document.querySelector("#attachment-category");
 const ipfsFiles = document.querySelector("#ipfs-files");
 const attachmentList = document.querySelector("#attachment-list");
@@ -431,6 +432,11 @@ function updateBatchSummary() {
     if (deliveryLocationInput) {
         deliveryLocationInput.value = batch?.nextDestinationLabel || "";
         deliveryLocationInput.readOnly = true;
+    }
+    if (shipmentIdInput) {
+        shipmentIdInput.value = currentRole() === "logistics"
+            ? batch?.nextShipmentId || ""
+            : "";
     }
     const destination = batch?.nextDestinationLabel
         ? " Destination: " + batch.nextDestinationLabel + "."

@@ -85,7 +85,8 @@ bool save_workflow_route(const std::string& db_path,
                          const std::vector<SupplyRouteNode>& nodes,
                          const std::vector<SupplyRouteEdge>& edges,
                          std::string& route_id,
-                         std::string& error);
+                         std::string& error,
+                         bool allow_incomplete = false);
 bool insert_supply_chain_record(const std::string& db_path,
                                 const SupplyChainRecord& record);
 bool insert_supply_chain_block(const std::string& db_path,

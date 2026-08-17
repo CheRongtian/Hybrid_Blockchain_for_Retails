@@ -190,6 +190,86 @@ std::string evidence_key(const std::string& stage,
 {
     return stage + '\x1f' + category + '\x1f' + cid;
 }
+
+const StageInput* stage_for_block_id(const BatchInput& input, int block_id)
+{
+    for(const StageInput& stage : input.stages)
+    {
+        if(stage.block_id == block_id) return &stage;
+    }
+    return nullptr;
+}
+
+bool route_reaches(const BatchInput& input,
+                   const std::string& from_node_id,
+                   const std::string& to_node_id)
+{
+    if(from_node_id.empty() || to_node_id.empty()) return false;
+    if(from_node_id == to_node_id) return true;
+
+    std::vector<std::string> pending{from_node_id};
+    std::set<std::string> visited;
+    while(!pending.empty())
+    {
+        const std::string current = pending.back();
+        pending.pop_back();
+        if(!visited.insert(current).second) continue;
+        for(const RouteEdgeInput& edge : input.route_edges)
+        {
+            if(edge.from_node_id != current) continue;
+            if(edge.to_node_id == to_node_id) return true;
+            pending.push_back(edge.to_node_id);
+        }
+    }
+    return false;
+}
+}
+
+std::string route_fingerprint(
+    const std::vector<RouteNodeInput>& route_nodes,
+    const std::vector<RouteEdgeInput>& route_edges)
+{
+    std::vector<RouteNodeInput> nodes = route_nodes;
+    std::sort(nodes.begin(), nodes.end(), [](const RouteNodeInput& left,
+                                            const RouteNodeInput& right) {
+        if(left.step_index != right.step_index)
+            return left.step_index < right.step_index;
+        return left.node_id < right.node_id;
+    });
+
+    std::vector<RouteEdgeInput> edges = route_edges;
+    std::sort(edges.begin(), edges.end(), [](const RouteEdgeInput& left,
+                                             const RouteEdgeInput& right) {
+        if(left.from_node_id != right.from_node_id)
+            return left.from_node_id < right.from_node_id;
+        return left.to_node_id < right.to_node_id;
+    });
+
+    std::ostringstream canonical;
+    canonical << "supply-chain-route-v1\n";
+    const auto append_value = [&](const std::string& value) {
+        canonical << value.size() << ':' << value;
+    };
+    canonical << "nodes:" << nodes.size() << '\n';
+    for(const RouteNodeInput& node : nodes)
+    {
+        append_value(node.node_id);
+        append_value(node.node_type);
+        append_value(node.label);
+        append_value(node.role);
+        append_value(node.username);
+        canonical << node.step_index << '\n';
+    }
+    canonical << "edges:" << edges.size() << '\n';
+    for(const RouteEdgeInput& edge : edges)
+    {
+        append_value(edge.from_node_id);
+        append_value(edge.to_node_id);
+        canonical << '\n';
+    }
+
+    MerkleTree hasher(1);
+    return hasher.SHA256(canonical.str());
 }
 
 Eligibility evaluate_eligibility(const BatchInput& input)
@@ -270,9 +350,19 @@ Eligibility evaluate_eligibility(const BatchInput& input)
         }
         else
         {
-            const StageInput& parent = input.stages[index - 1];
-            if(stage.parent_block_id != parent.block_id ||
-               stage.parent_block_hash != parent.block_hash)
+            const StageInput& previous_route_stage = input.stages[index - 1];
+            const StageInput* parent =
+                stage_for_block_id(input, stage.parent_block_id);
+            const bool parent_hash_matches = parent &&
+                stage.parent_block_hash == parent->block_hash;
+            const bool direct_route_link = parent == &previous_route_stage;
+            const bool historical_route_link = parent &&
+                (route_reaches(input, parent->route_node_id,
+                               stage.route_node_id) ||
+                 route_reaches(input, stage.route_node_id,
+                               parent->route_node_id));
+            if(!parent_hash_matches || stage.parent_block_id >= stage.block_id ||
+               (!direct_route_link && !historical_route_link))
             {
                 result.errors.push_back(label + " does not link to the previous stage");
             }
@@ -320,6 +410,12 @@ std::optional<Preview> build_preview(
     }
 
     const StageInput& supermarket = input.stages.back();
+    const StageInput* latest_block = &input.stages.front();
+    for(const StageInput& stage : input.stages)
+    {
+        if(stage.block_id > latest_block->block_id)
+            latest_block = &stage;
+    }
 
     struct PublicRouteStage
     {
@@ -404,7 +500,9 @@ std::optional<Preview> build_preview(
                           timestamp_id_component(preview.generated_at) + "-" +
                           version_suffix(SNAPSHOT_VERSION);
     preview.batch_id = input.batch_id;
-    preview.final_private_block_hash = supermarket.block_hash;
+    preview.final_private_block_hash = latest_block->block_hash;
+    preview.route_fingerprint = route_fingerprint(
+        input.route_nodes, input.route_edges);
     preview.public_evidence = public_evidence;
     preview.excluded_fields = excluded_private_fields();
 
@@ -416,6 +514,7 @@ std::optional<Preview> build_preview(
     add_field("snapshot_id", preview.snapshot_id);
     add_field("snapshot_version", std::to_string(preview.snapshot_version));
     add_field("generated_at", preview.generated_at);
+    add_field("route.fingerprint", preview.route_fingerprint);
     add_field("batch.batch_id", input.batch_id);
     add_field("batch.product_name", input.product);
     add_field("batch.category", "Fresh Produce");
@@ -507,6 +606,8 @@ std::optional<Preview> build_preview(
         << ",\"snapshot_id\":" << json_string(preview.snapshot_id)
         << ",\"snapshot_version\":" << preview.snapshot_version
         << ",\"generated_at\":" << json_string(preview.generated_at)
+        << ",\"route_fingerprint\":"
+        << json_string(preview.route_fingerprint)
         << ",\"batch\":{\"batch_id\":" << json_string(input.batch_id)
         << ",\"product_name\":" << json_string(input.product)
         << ",\"category\":\"Fresh Produce\",\"status\":\"completed\"}"
