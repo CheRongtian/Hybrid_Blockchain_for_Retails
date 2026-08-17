@@ -868,10 +868,39 @@ dt {
 .chain-node {
     min-width: 0;
     flex: 1 1 0;
+    container-type: inline-size;
     padding: 0.8rem;
     border: 1px solid #2d4960;
     border-radius: 0.7rem;
     background: #0b1727;
+}
+
+.pending-chain-node {
+    border-style: dashed;
+    border-color: #a58a4b;
+    background: rgba(165, 138, 75, 0.08);
+}
+
+.chain-node-pending-status {
+    margin: 0.7rem 0 0;
+    color: #fde68a;
+    font-size: 0.75rem;
+    line-height: 1.4;
+}
+
+.chain-node-details-button {
+    width: 100%;
+    margin-top: 0.65rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid #315d7c;
+    border-radius: 0.6rem;
+    color: #73cef4;
+    background: #080f1c;
+    font-size: 0.76rem;
+}
+
+.chain-node-details-button:hover {
+    background: #123047;
 }
 
 .chain-node-header {
@@ -883,7 +912,16 @@ dt {
 }
 
 .chain-node-header strong {
+    min-width: 0;
+    flex: 1 1 auto;
     color: #e5edf8;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
+}
+
+.chain-node-header .badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
 }
 
 .chain-node p {
@@ -908,49 +946,12 @@ dt {
     margin-top: 0.7rem;
     border-color: #31516b;
     background: #08111f;
-    padding: 0.65rem;
-}
-
-.merkle-tree-summary-header,
-.merkle-tree-summary-root {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-}
-
-.merkle-tree-summary-header {
-    color: #73cef4;
-    font-weight: 800;
-}
-
-.merkle-tree-summary-header span {
-    color: #91a2b9;
-    font-size: 0.78rem;
-    font-weight: 600;
-}
-
-.merkle-tree-summary-root {
-    margin-top: 0.45rem;
-    padding: 0.4rem 0.5rem;
-    border-radius: 0.55rem;
-    background: rgba(85, 214, 176, 0.06);
-    font-size: 0.78rem;
-}
-
-.merkle-tree-summary-root.verified-node {
-    border: 1px solid #28604f;
-    color: #6ce8bf;
-}
-
-.merkle-tree-summary-root.failed-node {
-    border: 1px solid #7c3847;
-    color: #ff8f9c;
+    padding: 0.45rem;
 }
 
 .merkle-open-button {
     width: 100%;
-    margin-top: 0.45rem;
+    margin-top: 0;
     padding: 0.5rem 0.65rem;
     border: 1px solid #315d7c;
     border-radius: 0.55rem;
@@ -964,6 +965,59 @@ dt {
     background: #123047;
 }
 
+@container (max-width: 230px) {
+    .chain-node {
+        padding: 0.62rem;
+    }
+
+    .chain-node-header {
+        gap: 0.28rem;
+    }
+
+    .chain-node-header strong {
+        font-size: 0.84rem;
+    }
+
+    .chain-node-header .badge {
+        padding: 0.25rem 0.45rem;
+        font-size: 0.66rem;
+    }
+
+    .chain-node p {
+        font-size: 0.68rem;
+    }
+
+    .chain-node-details-button,
+    .merkle-open-button {
+        padding: 0.45rem 0.5rem;
+        font-size: 0.68rem;
+    }
+}
+
+@container (max-width: 175px) {
+    .chain-node {
+        padding: 0.5rem;
+    }
+
+    .chain-node-header strong {
+        font-size: 0.72rem;
+    }
+
+    .chain-node-header .badge {
+        padding: 0.2rem 0.35rem;
+        font-size: 0.58rem;
+    }
+
+    .chain-node p {
+        font-size: 0.61rem;
+    }
+
+    .chain-node-details-button,
+    .merkle-open-button {
+        font-size: 0.61rem;
+    }
+}
+
 .merkle-tree-dialog {
     width: min(96vw, 1180px);
     max-width: 1180px;
@@ -974,6 +1028,72 @@ dt {
     color: #e5edf8;
     background: #08111f;
     box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.55);
+}
+
+.block-details-dialog {
+    width: min(92vw, 44rem);
+    max-width: 44rem;
+    max-height: 88vh;
+    padding: 0;
+    border: 1px solid #315d7c;
+    border-radius: 1rem;
+    color: #e5edf8;
+    background: #08111f;
+    box-shadow: 0 1.5rem 5rem rgba(0, 0, 0, 0.55);
+}
+
+.block-details-dialog::backdrop {
+    background: rgba(2, 7, 15, 0.78);
+}
+
+.block-details-dialog-shell {
+    display: flex;
+    max-height: 88vh;
+    flex-direction: column;
+    padding: 1rem;
+}
+
+.block-details-dialog-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid #26364c;
+}
+
+.block-details-dialog-header h2 {
+    margin: 0;
+    color: #73cef4;
+    font-size: 1.2rem;
+}
+
+.block-details-dialog-header p {
+    margin: 0.35rem 0 0;
+    color: #9ce7d0;
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
+}
+
+.block-details-dialog-close {
+    flex: 0 0 auto;
+    padding: 0.55rem 0.8rem;
+    border: 1px solid #315d7c;
+    border-radius: 0.55rem;
+    color: #dce7f5;
+    background: #0b1727;
+    font-size: 0.78rem;
+}
+
+.block-details-dialog-close:hover {
+    background: #123047;
+}
+
+.block-details-dialog-body {
+    min-height: 0;
+    max-height: 70vh;
+    padding-top: 0.75rem;
+    overflow: auto;
 }
 
 .merkle-tree-dialog::backdrop {
@@ -1261,6 +1381,10 @@ dt {
     color: #73cef4;
     font-size: 1.5rem;
     font-weight: 800;
+}
+
+.chain-arrow.disconnected {
+    color: #a58a4b;
 }
 
 .chain-links {

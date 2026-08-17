@@ -65,6 +65,8 @@ let workflowWheelState = { pendingDelta: 0, anchor: null, frame: 0 };
 let snapshotBatches = [];
 let publicationCandidate = null;
 let confirmationPolicies = [];
+let chainGraph = { nodes: [], edges: [] };
+let chainGraphLoaded = false;
 
 function showSession(result) {
     session = result;
@@ -115,6 +117,8 @@ function clearSession() {
     workflowLayoutInitialized = false;
     workflowHistory = { past: [], future: [] };
     workflowWheelState = { pendingDelta: 0, anchor: null, frame: 0 };
+    chainGraph = { nodes: [], edges: [] };
+    chainGraphLoaded = false;
     workflowBatchSelect.value = "";
     workflowEdgeLayer.replaceChildren();
     workflowNodeLayer.replaceChildren();
@@ -478,24 +482,6 @@ function appendMerkleTree(record) {
     const section = document.createElement("section");
     section.className = "merkle-tree-panel";
 
-    const summaryHeader = document.createElement("div");
-    summaryHeader.className = "merkle-tree-summary-header";
-    const summaryTitle = document.createElement("strong");
-    summaryTitle.textContent = `Merkle Tree ${record.blockID}`;
-    const summaryCount = document.createElement("span");
-    summaryCount.textContent = `${record.merkleTree?.leafCount || 0} leaves`;
-    summaryHeader.append(summaryTitle, summaryCount);
-    section.append(summaryHeader);
-
-    const rootSummary = document.createElement("div");
-    rootSummary.className = record.merkleTree?.consistent
-        ? "merkle-tree-summary-root verified-node"
-        : "merkle-tree-summary-root failed-node";
-    rootSummary.textContent = record.merkleTree?.consistent
-        ? "Verified root"
-        : "Root check failed";
-    section.append(rootSummary);
-
     const openButton = document.createElement("button");
     openButton.type = "button";
     openButton.className = "merkle-open-button";
@@ -513,7 +499,7 @@ function appendMerkleTree(record) {
     const dialogHeading = document.createElement("h2");
     dialogHeading.textContent = `Block ${record.blockID} · Merkle Tree`;
     const dialogRoot = document.createElement("p");
-    dialogRoot.textContent = "Select a node to inspect its details.";
+    dialogRoot.textContent = `${record.merkleTree?.leafCount || 0} leaves · Select a node to inspect its details.`;
     dialogTitle.append(dialogHeading, dialogRoot);
     const closeButton = document.createElement("button");
     closeButton.type = "button";
@@ -561,6 +547,77 @@ function appendMerkleTree(record) {
     return section;
 }
 
+function createBlockDetailsDialog(record) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chain-node-details-button";
+    button.textContent = "Open block details";
+
+    const dialog = document.createElement("dialog");
+    dialog.className = "block-details-dialog";
+    const shell = document.createElement("div");
+    shell.className = "block-details-dialog-shell";
+
+    const header = document.createElement("header");
+    header.className = "block-details-dialog-header";
+    const heading = document.createElement("div");
+    const title = document.createElement("h2");
+    title.textContent = `Block ${record.blockID} · ${record.stage || "Route stage"}`;
+    const root = document.createElement("p");
+    root.textContent = `Merkle root: ${record.rootHash || "Unavailable"}`;
+    heading.append(title, root);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "block-details-dialog-close";
+    close.textContent = "Close";
+    header.append(heading, close);
+
+    const body = document.createElement("div");
+    body.className = "block-details-dialog-body";
+    appendNodeLine(body, "Harvest Date", record.batchHarvestDate);
+    appendNodeLine(body, "Farm Location", record.batchFarmLocation);
+    appendNodeLine(body, "Location Summary", record.locationSummary);
+
+    const eventData = document.createElement("pre");
+    eventData.className = "event-data";
+    eventData.textContent = JSON.stringify(record.eventData || {}, null, 2);
+    body.append(eventData);
+
+    const cidText = record.ipfsRefs?.length
+        ? record.ipfsRefs.map((reference) => `${reference.category}: ${reference.cid}`).join("\n")
+        : "None";
+    appendNodeLine(body, "CID References", cidText);
+    appendNodeLine(body, "Parent Block", record.parentBlockId >= 0
+        ? `Block ${record.parentBlockId}`
+        : "Genesis");
+    appendNodeLine(body, "Parent Hash", shortHash(record.parentBlockHash || "GENESIS"));
+
+    shell.append(header, body);
+    dialog.append(shell);
+    button.addEventListener("click", () => {
+        if (!dialog.open) dialog.showModal();
+    });
+    close.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+    });
+
+    return { button, dialog };
+}
+
+function chainRouteLabel(record) {
+    const role = record.role || record.routeNodeRole || "";
+    const routeLabel = String(record.routeNodeLabel || "").trim();
+    const roleLabel = workflowRoleLabel(role);
+
+    if (role === "logistics") {
+        const sequence = routeLabel.match(/(\d+)$/)?.[1];
+        return sequence ? `${roleLabel} ${sequence}` : roleLabel;
+    }
+
+    return routeLabel || roleLabel || record.stage || "Route stage";
+}
+
 function renderChainNode(record) {
     const node = document.createElement("div");
     node.className = "chain-node";
@@ -568,7 +625,7 @@ function renderChainNode(record) {
     const header = document.createElement("div");
     header.className = "chain-node-header";
     const title = document.createElement("strong");
-    title.textContent = `Block ${record.blockID}`;
+    title.textContent = `Block ${record.blockID} · ${chainRouteLabel(record)}`;
     const badge = document.createElement("span");
     badge.className = record.verified ? "badge verified" : "badge failed";
     badge.textContent = record.verified ? "Verified" : "Failed";
@@ -584,46 +641,65 @@ function renderChainNode(record) {
     appendNodeLine(summary, "Product", record.product);
     node.append(summary);
 
-    const details = document.createElement("details");
-    details.className = "chain-node-details";
-    const detailsSummary = document.createElement("summary");
-    detailsSummary.textContent = "Open block details";
-    const detailsBody = document.createElement("div");
-    detailsBody.className = "chain-node-details-body";
-    appendNodeLine(detailsBody, "Harvest Date", record.batchHarvestDate);
-    appendNodeLine(detailsBody, "Farm Location", record.batchFarmLocation);
-    appendNodeLine(detailsBody, "Location Summary", record.locationSummary);
-
-    const eventData = document.createElement("pre");
-    eventData.className = "event-data";
-    eventData.textContent = JSON.stringify(record.eventData || {}, null, 2);
-    detailsBody.append(eventData);
-
-    const cidText = record.ipfsRefs?.length
-        ? record.ipfsRefs.map((reference) => `${reference.category}: ${reference.cid}`).join("\n")
-        : "None";
-    appendNodeLine(detailsBody, "CID References", cidText);
-    appendNodeLine(detailsBody, "Parent Block", record.parentBlockId >= 0
-        ? `Block ${record.parentBlockId}`
-        : "Genesis");
-    appendNodeLine(detailsBody, "Parent Hash", shortHash(record.parentBlockHash || "GENESIS"));
-    details.append(detailsSummary, detailsBody);
-    node.append(details);
-    node.append(appendMerkleTree(record));
+    const details = createBlockDetailsDialog(record);
+    node.append(details.button, details.dialog, appendMerkleTree(record));
     return node;
 }
 
-function renderChain(batchId, nodes, edges) {
+function renderPendingChainNode(record) {
+    const node = document.createElement("div");
+    node.className = "chain-node pending-chain-node";
+
+    const header = document.createElement("div");
+    header.className = "chain-node-header";
+    const title = document.createElement("strong");
+    title.textContent = `Pending · ${record.routeNodeLabel || record.stage || "Route stage"}`;
+    const badge = document.createElement("span");
+    badge.className = "badge pending";
+    badge.textContent = "Pending";
+    header.append(title, badge);
+
+    const summary = document.createElement("div");
+    summary.className = "chain-node-summary";
+    appendNodeLine(summary, "Role", record.role || record.routeNodeRole);
+    appendNodeLine(summary, "Account", record.routeNodeUsername);
+    appendNodeLine(summary, "Stage", record.stage || record.routeNodeLabel);
+    appendNodeLine(summary, "Product", record.product);
+
+    const status = document.createElement("p");
+    status.className = "chain-node-pending-status";
+    status.textContent = "No block yet. Connect this stage and submit its participant data.";
+
+    node.append(header, summary, status);
+    return node;
+}
+
+function chainPreviewNodeLabel(node) {
+    if (node.pending) return node.routeNodeLabel || node.stage || "Pending stage";
+    return `Block ${node.blockID}`;
+}
+
+function chainPreviewOrderValue(node, fallback) {
+    const previewOrder = Number(node.previewOrder);
+    if (Number.isFinite(previewOrder)) return previewOrder;
+    const blockID = Number(node.blockID);
+    return Number.isFinite(blockID) ? blockID : fallback;
+}
+
+function renderChain(batchId, nodes, edges, options = {}) {
     const card = document.createElement("article");
     card.className = "record-card chain-card";
+    const routeIncomplete = options.routeIncomplete === true;
 
     const header = document.createElement("header");
     const title = document.createElement("h2");
     title.textContent = `Batch ${batchId}`;
     const badge = document.createElement("span");
-    const completed = nodes.some((node) => node.chainStatus === "completed");
+    const completed = !routeIncomplete && nodes.length > 0 && nodes.every((node) =>
+        !node.pending && node.chainStatus === "completed");
+    const hasPending = nodes.some((node) => node.pending);
     badge.className = completed ? "badge verified" : "badge pending";
-    badge.textContent = completed ? "Completed" : "In Progress";
+    badge.textContent = completed ? "Completed" : hasPending ? "Pending route changes" : "In Progress";
     header.append(title, badge);
 
     const chainLabel = document.createElement("p");
@@ -632,28 +708,142 @@ function renderChain(batchId, nodes, edges) {
 
     const flow = document.createElement("div");
     flow.className = "chain-flow";
-    const sortedNodes = [...nodes].sort((left, right) => left.blockID - right.blockID);
+    const sortedNodes = [...nodes].sort((left, right) =>
+        chainPreviewOrderValue(left, 0) - chainPreviewOrderValue(right, 0));
+    const hasDisconnectedLink = sortedNodes.some((node, index) => {
+        if (index === 0) return false;
+        const previous = sortedNodes[index - 1];
+        return !edges.some((edge) =>
+            edge.from === previous.previewKey && edge.to === node.previewKey
+        );
+    });
+    const hasUnresolvedRoute = routeIncomplete || nodes.some((node) => node.pending) ||
+        hasDisconnectedLink;
     sortedNodes.forEach((node, index) => {
         if (index > 0) {
             const previous = sortedNodes[index - 1];
             const connected = edges.some((edge) =>
-                edge.from === previous.blockID && edge.to === node.blockID);
+                edge.from === previous.previewKey && edge.to === node.previewKey);
             const arrow = document.createElement("span");
-            arrow.className = "chain-arrow";
+            arrow.className = connected ? "chain-arrow" : "chain-arrow disconnected";
             arrow.textContent = connected ? "→" : "·";
+            arrow.title = connected
+                ? `${chainPreviewNodeLabel(previous)} → ${chainPreviewNodeLabel(node)}`
+                : "These stages are not connected yet";
             flow.append(arrow);
         }
-        flow.append(renderChainNode(node));
+        flow.append(node.pending ? renderPendingChainNode(node) : renderChainNode(node));
     });
 
     const links = document.createElement("p");
     links.className = "chain-links";
-    links.textContent = edges.length > 0
-        ? `Connections: ${edges.map((edge) => `Block ${edge.from} → Block ${edge.to}`).join(" · ")}`
-        : "Genesis block";
+    if (edges.length > 0) {
+        const descriptions = edges.map((edge) => {
+            const from = sortedNodes.find((node) => node.previewKey === edge.from);
+            const to = sortedNodes.find((node) => node.previewKey === edge.to);
+            return from && to
+                ? `${chainPreviewNodeLabel(from)} → ${chainPreviewNodeLabel(to)}`
+                : "Unknown route connection";
+        });
+        links.textContent = `Connections: ${descriptions.join(" · ")}`;
+    } else {
+        links.textContent = hasPending ? "No route connections yet." : "Genesis block";
+    }
 
     card.append(header, chainLabel, flow, links);
+    if (hasUnresolvedRoute && completed) {
+        badge.className = "badge pending";
+        badge.textContent = "In Progress";
+    }
     return card;
+}
+
+function findWorkflowRecord(routeNode, records, usedRecords) {
+    const exact = records.find((record) =>
+        !usedRecords.has(record) && record.routeNodeId && record.routeNodeId === routeNode.id);
+    if (exact) return exact;
+
+    const step = Number(routeNode.stepIndex);
+    if (Number.isFinite(step) && step >= 0) {
+        const byStep = records.find((record) =>
+            !usedRecords.has(record) && Number(record.routeStepIndex) === step);
+        if (byStep) return byStep;
+    }
+
+    return records.find((record) =>
+        !usedRecords.has(record) &&
+        record.role === routeNode.role &&
+        record.routeNodeUsername === routeNode.username
+    ) || null;
+}
+
+function buildWorkflowChainPreview(batchId, records, graphEdges, activeBatchId = "") {
+    if (!workflowData || activeBatchId !== batchId) {
+        const formalNodes = records.map((record, index) => ({
+            ...record,
+            pending: false,
+            previewKey: `block:${record.blockID}`,
+            previewOrder: index
+        }));
+        const blockIds = new Set(records.map((record) => record.blockID));
+        return {
+            nodes: formalNodes,
+            edges: graphEdges
+                .filter((edge) => blockIds.has(edge.from) && blockIds.has(edge.to))
+                .map((edge) => ({
+                    from: `block:${edge.from}`,
+                    to: `block:${edge.to}`
+                })),
+            routeIncomplete: false
+        };
+    }
+
+    const orderedRouteNodes = workflowPreviewRouteOrder(workflowData);
+    const usedRecords = new Set();
+    const previewNodes = [];
+    const previewKeys = new Map();
+    for (const routeNode of orderedRouteNodes) {
+        const record = findWorkflowRecord(routeNode, records, usedRecords);
+        if (!record) continue;
+        usedRecords.add(record);
+        const preview = {
+            ...record,
+            pending: false,
+            previewKey: `block:${record.blockID}`,
+            previewOrder: previewNodes.length
+        };
+        previewNodes.push(preview);
+        previewKeys.set(routeNode.id, preview.previewKey);
+    }
+
+    const workflowEdges = (workflowData.edges || [])
+        .map((edge) => ({
+            from: previewKeys.get(edge.from),
+            to: previewKeys.get(edge.to)
+        }))
+        .filter((edge) => edge.from && edge.to);
+    const routeValidation = workflowValidation(workflowData);
+    const missingRouteRecord = orderedRouteNodes.some((routeNode) =>
+        !previewKeys.has(routeNode.id));
+
+    return {
+        nodes: previewNodes,
+        edges: workflowEdges,
+        routeIncomplete: !routeValidation.valid || missingRouteRecord
+    };
+}
+
+function activeWorkflowPreviewBatchId(graph) {
+    if (!workflowData) return "";
+    if (workflowBatchId) return workflowBatchId;
+
+    const matchingBatches = new Set(
+        graph.nodes
+            .filter((record) => record.routeId && record.routeId === workflowData.routeId)
+            .map((record) => record.batchId)
+            .filter(Boolean)
+    );
+    return matchingBatches.size === 1 ? [...matchingBatches][0] : "";
 }
 
 function renderChainGraph(graph) {
@@ -662,13 +852,27 @@ function renderChainGraph(graph) {
         if (!chains.has(node.batchId)) chains.set(node.batchId, []);
         chains.get(node.batchId).push(node);
     }
+    if (workflowData && workflowBatchId && !chains.has(workflowBatchId)) {
+        chains.set(workflowBatchId, []);
+    }
 
-    return [...chains.entries()].map(([batchId, nodes]) => {
-        const blockIds = new Set(nodes.map((node) => node.blockID));
-        const edges = graph.edges.filter((edge) =>
-            blockIds.has(edge.from) && blockIds.has(edge.to));
-        return renderChain(batchId, nodes, edges);
+    const activeBatchId = activeWorkflowPreviewBatchId(graph);
+    return [...chains.entries()].map(([batchId, records]) => {
+        const preview = buildWorkflowChainPreview(
+            batchId,
+            records,
+            graph.edges,
+            activeBatchId
+        );
+        return renderChain(batchId, preview.nodes, preview.edges, {
+            routeIncomplete: preview.routeIncomplete
+        });
     });
+}
+
+function refreshChainPreview() {
+    if (!chainGraphLoaded || !list) return;
+    list.replaceChildren(...renderChainGraph(chainGraph));
 }
 
 function routeOrder(workflow) {
@@ -694,6 +898,33 @@ function routeOrder(workflow) {
         if (!visited.has(node.id)) ordered.push(node);
     }
     return ordered;
+}
+
+function workflowPreviewRouteOrder(workflow) {
+    const nodes = workflow.nodes || [];
+    const ordered = routeOrder(workflow);
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const outgoing = new Map();
+    for (const edge of workflow.edges || []) {
+        if (!outgoing.has(edge.from)) outgoing.set(edge.from, []);
+        outgoing.get(edge.from).push(edge.to);
+    }
+
+    const reachable = new Set();
+    const supplier = nodes.find((node) => node.role === "supplier");
+    let current = supplier;
+    while (current && !reachable.has(current.id)) {
+        reachable.add(current.id);
+        const nextId = (outgoing.get(current.id) || [])[0];
+        current = nextId ? byId.get(nextId) : null;
+    }
+
+    const supermarket = nodes.find((node) => node.role === "supermarket");
+    const preview = ordered.filter((node) =>
+        node.role !== "supermarket" && reachable.has(node.id)
+    );
+    if (supermarket) preview.push(supermarket);
+    return preview;
 }
 
 function workflowInteger(value, fallback = 0) {
@@ -1076,6 +1307,15 @@ function workflowAccountsForRole(role) {
         .sort((left, right) => left.username.localeCompare(right.username));
 }
 
+function availableWorkflowAccountsForRole(role, includeUsername = "") {
+    const used = new Set((workflowData?.nodes || [])
+        .filter((node) => node.role === role && node.username !== includeUsername)
+        .map((node) => node.username));
+    return workflowAccountsForRole(role).filter((account) =>
+        account.username === includeUsername || !used.has(account.username)
+    );
+}
+
 function nextWorkflowAccount(role) {
     const used = new Set((workflowData?.nodes || [])
         .filter((node) => node.role === role)
@@ -1087,7 +1327,7 @@ function nextWorkflowAccount(role) {
 
 function populateWorkflowNodeAccounts(role, preferred = "") {
     if (!workflowNodeAccount) return "";
-    const accounts = workflowAccountsForRole(role);
+    const accounts = availableWorkflowAccountsForRole(role, preferred);
     workflowNodeAccount.replaceChildren();
     for (const account of accounts) {
         const option = document.createElement("option");
@@ -1104,11 +1344,7 @@ function populateWorkflowNodeAccounts(role, preferred = "") {
 }
 
 function syncWorkflowNodeAccountControl() {
-    const selectedNode = workflowData?.nodes?.find((node) =>
-        node.id === workflowSelectedNodeId
-    );
-    const role = selectedNode?.role || workflowRoleForType(workflowNodeType.value);
-    populateWorkflowNodeAccounts(role, selectedNode?.username || "");
+    populateWorkflowNodeAccounts(workflowRoleForType(workflowNodeType.value));
 }
 
 function createWorkflowNodeElement(position) {
@@ -1351,6 +1587,7 @@ function renderWorkflow(workflow, options = {}) {
         ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes or use the handles to edit the route.`
         : `Route error: ${validation.error}`;
     workflowStatus.className = "status " + (validation.valid ? "success" : "error");
+    refreshChainPreview();
 }
 
 function fitWorkflowView() {
@@ -1559,7 +1796,9 @@ async function loadChains() {
             throw new Error("The chain response is malformed.");
         }
 
-        list.replaceChildren(...renderChainGraph(graph));
+        chainGraph = graph;
+        chainGraphLoaded = true;
+        refreshChainPreview();
         statusLine.textContent = graph.nodes.length === 0
             ? "No supply-chain workflow yet."
             : `Loaded ${graph.nodes.length} node(s) across ${new Set(graph.nodes.map((node) => node.batchId)).size} batch(es).`;
@@ -2035,26 +2274,7 @@ workflowZoomIn.addEventListener("click", () =>
 workflowFitView.addEventListener("click", () => fitWorkflowView());
 
 workflowNodeType.addEventListener("change", () => {
-    if (!workflowSelectedNodeId) {
-        populateWorkflowNodeAccounts(workflowRoleForType(workflowNodeType.value));
-    }
-});
-workflowNodeAccount.addEventListener("change", () => {
-    if (!workflowData || !workflowSelectedNodeId || !workflowNodeAccount.value) return;
-    const node = workflowData.nodes.find((candidate) =>
-        candidate.id === workflowSelectedNodeId
-    );
-    if (!node || node.username === workflowNodeAccount.value) return;
-    const account = workflowAccountsForRole(node.role).find((candidate) =>
-        candidate.username === workflowNodeAccount.value
-    );
-    if (!account) {
-        setWorkflowRouteError("The selected account does not match this route stage.");
-        return;
-    }
-    captureWorkflowHistory();
-    node.username = account.username;
-    renderWorkflow(workflowData);
+    populateWorkflowNodeAccounts(workflowRoleForType(workflowNodeType.value));
 });
 
 workflowDeleteEdge.addEventListener("click", deleteSelectedWorkflowEdge);
