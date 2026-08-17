@@ -1836,6 +1836,13 @@ function deleteSelectedWorkflowNode() {
         setWorkflowRouteError("Supplier and Supermarket are required route endpoints.");
         return;
     }
+    const predecessorIds = workflowData.edges
+        .filter((edge) => edge.to === selected.id)
+        .map((edge) => edge.from);
+    const successorIds = workflowData.edges
+        .filter((edge) => edge.from === selected.id)
+        .map((edge) => edge.to);
+
     captureWorkflowHistory();
     workflowData.nodes = workflowData.nodes.filter((node) =>
         node.id !== workflowSelectedNodeId
@@ -1843,6 +1850,19 @@ function deleteSelectedWorkflowNode() {
     workflowData.edges = workflowData.edges.filter((edge) =>
         edge.from !== workflowSelectedNodeId && edge.to !== workflowSelectedNodeId
     );
+
+    // Preserve a linear route when a middle stage is removed.
+    if (predecessorIds.length === 1 && successorIds.length === 1) {
+        const from = predecessorIds[0];
+        const to = successorIds[0];
+        const alreadyConnected = workflowData.edges.some((edge) =>
+            edge.from === from && edge.to === to
+        );
+        if (from !== to && !alreadyConnected) {
+            workflowData.edges.push({ from, to });
+        }
+    }
+
     workflowSelectedNodeId = "";
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;

@@ -2143,7 +2143,10 @@ bool insert_supply_chain_block(const std::string& db_path,
         "signature_algorithm, signature, signature_public_key_hash, "
         "signed_payload_hash, signature_verified, route_id, route_node_id, "
         "route_step_index"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        ") VALUES ("
+        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+        "?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, record_sql, -1, &statement, nullptr) != SQLITE_OK)
     {
