@@ -19,7 +19,7 @@ Authenticated participant
           | role-specific event and optional IPFS file
           v
 PrivateChain
-  +-- fixed supply-chain route
+  +-- configurable linear supply-chain route
   +-- linked block chain per product batch
   +-- independent Merkle Tree inside every block
   +-- ECDSA P-256 confirmation
@@ -96,12 +96,22 @@ The default route template is:
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-The administrator can edit and save the default template or a batch-specific
-route from the control Canvas. A route may contain repeated Logistics and
+The administrator edits the default template or a batch-specific route from
+the control Canvas. Canvas changes synchronize automatically, including
+temporarily incomplete drafts. A route may contain repeated Logistics and
 Warehouse stages or connect Supplier directly to Supermarket. Supplier remains
 the required first stage and Supermarket remains the required final stage.
 Each later participant selects an existing batch when that participant's role
 is the next required stage. Batch master data is inherited along the route.
+
+Route nodes have stable IDs. A semantic route change creates a new active route
+revision, immediately invalidates the current public Snapshot, and keeps
+already-created Blocks as historical records. An unconnected draft node remains
+Canvas-only. Once the node is connected into a complete path, it appears in the
+administrator preview as pending; its Block and preview arrows appear after
+the assigned participant submits and passes verification. A restored route
+with the exact previous route fingerprint can use its matching publication
+again; a new route requires a new completed Snapshot before publication.
 
 Each supply-chain event creates one block with its own Merkle Tree:
 
@@ -125,7 +135,7 @@ verifiable tree for each event.
 - role-specific forms for Supplier, Logistics, Warehouse, and Supermarket;
 - administrator-defined default and per-batch route-order enforcement;
 - generated and validated identifiers;
-- route-stage account assignment with role-specific confirmation policies;
+- route-stage account assignment with node-specific confirmation policies;
 - typed-name confirmation with browser ECDSA P-256 signing and C++ OpenSSL
   verification;
 - per-block Merkle leaves, roots, proofs, and verification;
@@ -137,17 +147,20 @@ verifiable tree for each event.
 - completed-batch public Manifest, Public Root, and Gateway Payload;
 - administrator-triggered publication to the local Hardhat EVM gateway;
 - independently revalidated publication candidates and public Manifests;
-- customer Batch ID search with public route and chain verification details;
+- customer published-batch selection with public route and chain verification
+  details;
+- live route, block, Snapshot, and customer-page synchronization through
+  server-sent events;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
-The control panel stores confirmation choices separately for Supplier, Logistics,
-Warehouse, and Supermarket. Each role must keep at least one method enabled.
-Typed-name confirmation is implemented in this demo; handwritten and face
-confirmation can be configured, but their capture and verification flows remain
-deferred.
+The control panel stores confirmation choices for each connected route node.
+Every connected node must keep at least one method enabled, with Typed Name
+selected by default. Typed-name confirmation is implemented in this demo;
+handwritten and face confirmation remain available as configuration choices,
+while their capture and verification flows are deferred.
 Inspection Agency, production key custody, durable relayer jobs, public-testnet
- deployment and QR-code entry are pending.
+deployment, and QR-code entry are pending.
 
 ## Requirements
 
@@ -192,9 +205,10 @@ selection and deletion, background panning, trackpad pinch zoom, zoom controls,
 fit-to-route, explicit left-to-right auto-arrangement, and Undo/Redo. Adding a
 node creates an unconnected, free-positioned stage without changing the current
 route, pan, or zoom. The administrator assigns an unused active account with the
-matching role, positions the node, and connects it manually. The editor continues
-using the existing workflow API and SQLite data; no new frontend framework or
-graph database is required.
+matching role, positions the node, and connects it manually. Semantic route
+edits are autosaved as revisions and invalidate the current Snapshot
+immediately. The editor continues using the existing workflow API and SQLite
+data; no new frontend framework or graph database is required.
 
 ### One-time Kubo setup on macOS
 

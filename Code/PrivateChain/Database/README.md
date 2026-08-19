@@ -3,7 +3,8 @@
 The control server stores local supply-chain data in supply_chain.db.
 
 The database contains batch master data, role-specific event data, Merkle
-verification snapshots, IPFS CID references, and block connections. Large file
+verification records, IPFS CID references, block connections, route revisions,
+stable route-node mappings, and node-level confirmation policies. Large file
 contents remain in IPFS; this directory stores the returned CID and metadata.
 
 SQLite database files and their WAL/SHM files are ignored by Git. The database
@@ -16,8 +17,26 @@ BATCH-POTATO-0001
 BATCH-EGGPLANT-0001
 ```
 
-Other event identifiers use short prefixes and four numeric digits, such as
-`SHIP-0001`, `STORAGE-0001`, `CERT-0001`, and `STORE-0001`.
+Other event identifiers use short prefixes and four numeric digits. Logistics
+and warehouse identifiers follow the node's occurrence in the active route:
 
-For a fresh local demo, clear the business tables while keeping `users` and
-the schema. The next generated block will then be Block 0.
+```text
+Transport 1  -> SHIP-0001 / VEHICLE-0001
+Transport 2  -> SHIP-0002 / VEHICLE-0002
+Warehouse 1  -> STORAGE-0001 / ZONE-0001
+Warehouse 2  -> STORAGE-0002 / ZONE-0002
+```
+
+The server validates these route-controlled identifiers again when a record is
+committed.
+
+Route definitions are immutable revisions selected by `route_id`. A route edit
+keeps existing Blocks and their Merkle data as history, then activates the new
+route revision for subsequent submissions. A deleted node's historical Block
+is retained and excluded from the current route preview and Snapshot.
+
+For a fresh local demo, stop the servers before changing this database. The
+application expects the schema to be initialized by `control_server`; manual
+table deletion can remove route history, policies, or Merkle evidence. A new
+empty database starts block numbering at Block 0 after the server initializes
+the schema and demonstration accounts.

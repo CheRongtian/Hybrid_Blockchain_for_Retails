@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>N-ary Merkle Tree Visualizer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">INDEPENDENT C++ DEMO</p>
+      <h1>N-ary Merkle Tree</h1>
+      <p class="subtitle">
+        Watch each leaf, padding node, parent, proof, and Root Hash arrive from
+        the running C++ builder.
+      </p>
+    </header>
+
+    <section class="panel status-panel">
+      <div class="status-row">
+        <div>
+          <p class="label">BUILD STATUS</p>
+          <h2 id="build-status">Waiting for events</h2>
+        </div>
+        <span id="status-badge" class="badge waiting">Waiting</span>
+      </div>
+      <p id="event-message" class="message">Connecting to the local event stream…</p>
+      <div class="toolbar">
+        <button id="pause-button" type="button">Pause</button>
+        <button id="step-button" type="button">Step</button>
+        <button id="restart-button" type="button">Reload view</button>
+        <label class="speed-control" for="speed-range">
+          Speed <input id="speed-range" type="range" min="1" max="10" value="5">
+        </label>
+      </div>
+    </section>
+
+    <section class="metrics">
+      <article class="metric"><span>Arity N</span><strong id="arity">–</strong></article>
+      <article class="metric"><span>Events</span><strong id="event-count">0</strong></article>
+      <article class="metric"><span>Leaves</span><strong id="leaf-count">–</strong></article>
+      <article class="metric"><span>Height</span><strong id="height">–</strong></article>
+      <article class="metric root-metric"><span>Root Hash</span><code id="root-hash">–</code></article>
+    </section>
+
+    <section class="panel tree-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">LIVE TREE</p>
+          <h2>Construction state</h2>
+        </div>
+        <span id="level-label" class="level-label">Level –</span>
+      </div>
+      <div class="tree-scroll">
+        <svg id="tree-canvas" role="img" aria-label="N-ary Merkle Tree"></svg>
+      </div>
+      <p class="hint">Padding nodes are outlined in amber. Hover a node to inspect its full hash.</p>
+    </section>
+
+    <section class="bottom-grid">
+      <section class="panel event-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">EVENT LOG</p>
+            <h2>Build events</h2>
+          </div>
+        </div>
+        <ol id="event-log" class="event-log"></ol>
+      </section>
+
+      <section class="panel proof-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PROOF RESULT</p>
+            <h2 id="proof-status">Waiting</h2>
+          </div>
+        </div>
+        <p id="proof-message" class="message">The proof will appear after the tree is built.</p>
+        <dl class="proof-details">
+          <dt>Leaf index</dt><dd id="proof-leaf-index">–</dd>
+          <dt>Proof levels</dt><dd id="proof-levels">–</dd>
+          <dt>Result file</dt><dd><code id="result-path">output/tree-result.json</code></dd>
+        </dl>
+      </section>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

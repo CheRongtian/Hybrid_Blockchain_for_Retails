@@ -122,13 +122,14 @@ Supplier -> Logistics -> Warehouse -> Supermarket
 
 The administrator can edit this template or select an existing batch and edit
 a batch-specific route from the control Canvas. Canvas changes are synchronized
-automatically as a route draft. A valid route is a connected sequence that
-starts with Supplier and ends with Supermarket. It may contain
-repeated Logistics and Warehouse nodes, or connect Supplier directly to
-Supermarket. The server accepts a new block only when the authenticated role and
-username match the next node on that batch's saved route. Each route node is
-assigned to one active account whose role matches the node type. The same
-account cannot occupy multiple nodes in one route.
+automatically as route revisions, including temporarily incomplete drafts. A
+valid route is a connected sequence that starts with Supplier and ends with
+Supermarket. It may contain repeated Logistics and Warehouse nodes, or connect
+Supplier directly to Supermarket. The server accepts a new block only when the
+authenticated role and username match the next node on that batch's active
+route revision. Each route node is assigned to one active account whose role
+matches the node type. The same account cannot occupy multiple nodes in one
+route.
 
 The Canvas supports the following editing actions:
 
@@ -147,18 +148,25 @@ The Canvas supports the following editing actions:
 
 The Canvas is a lightweight static SVG/DOM editor. It does not add a frontend
 framework or a separate graph database. Node positions and connections continue
-to use the existing `/api/workflow` endpoint and SQLite records. Editing a node,
-adding a node, or changing a connection preserves the current pan and zoom and
-invalidates the current Snapshot immediately. A draft may contain an unconnected
-node while the administrator finishes the route. Auto arrangement and **Fit
-route** are explicit view-changing actions. New nodes are intentionally
-free-positioned so the administrator can place them without forcing the route
-into a single horizontal row.
+to use the existing `/api/workflow` endpoint and SQLite records. Every route
+node has a stable ID. Adding, deleting, or reconnecting a node creates or
+reuses a route revision and invalidates the current Snapshot immediately;
+already-created Blocks remain immutable historical records. A draft may contain
+an unconnected node while the administrator finishes the route. Such a node is
+excluded from the lower chain preview. After it is connected into a complete
+Supplier-to-Supermarket path, it appears as a pending stage; preview arrows
+appear only after both endpoint events have verified Blocks. Auto arrangement
+and **Fit route** are explicit view-changing actions. New nodes are
+intentionally free-positioned so the administrator can place them without
+forcing the route into a single horizontal row.
 
 The browser reports duplicate connections, invalid endpoints, cycles, and
 disconnected nodes immediately. Draft synchronization validates node, account,
 and edge references. The server requires one complete Supplier-to-Supermarket
 path before a participant can submit an event or a Snapshot can be generated.
+If a route changes after publication, the old Snapshot is immediately hidden
+from the current customer trace until the route is restored exactly or a new
+Snapshot is published.
 
 Supplier creates the batch master data. The server generates the batch ID from
 the normalized product name and a product-specific four-digit sequence. Later
@@ -300,10 +308,11 @@ POST /api/auth/logout invalidates a token.
 
 ### Confirmation policy
 
-GET /api/confirmation-policy returns one policy for each route role. The control
-panel edits Supplier, Logistics, Warehouse, and Supermarket independently. Each
-role must keep at least one method enabled before the policy can be saved. An
-authenticated route user receives the policy for that user's role.
+GET /api/confirmation-policy returns policies for the connected nodes on the
+current route. The control panel edits the policy by route node and assigned
+account, with one row per connected node. Every connected node must keep at
+least one method enabled; Typed Name is selected by default. An authenticated
+route user receives the policy for the exact route node assigned to that user.
 
 Typed-name confirmation is implemented in this demo. Handwritten and face
 confirmation can be enabled as configuration options, but their capture and
@@ -314,9 +323,10 @@ for the authenticated user.
 
 ### Batch selection
 
-GET /api/batches returns batch master data, the next required route stage, and
-the username assigned to that stage. The user page only offers a batch when both
-the role and assigned username match the authenticated account.
+GET /api/batches returns batch master data, the next required route stage, its
+stable route-node ID, the active route revision, and the username assigned to
+that stage. The user page only offers a batch when the role, assigned username,
+route revision, and authenticated account match.
 
 ### File upload
 
@@ -354,10 +364,12 @@ The server derives the stage, UID, confirmer, organization, and a new Supplier
 batch ID from the authenticated session and submitted product. The browser
 cannot choose the stage or create a batch ID.
 
-Every route role must select a method enabled by its own policy. The typed-name
-demo path checks the entered name against the account display name, verifies
-the signed payload and one-time challenge with OpenSSL, and only then creates
-the Merkle block.
+Every connected route node must select a method enabled by its node policy. The
+typed-name demo path checks the entered name against the account display name,
+verifies the signed payload and one-time challenge with OpenSSL, and only then
+creates the Merkle block. The server rechecks the route ID, stable node ID,
+role, account, next-stage position, and route-controlled identifiers at commit
+time.
 
 The response includes the new block ID, verification status, batch ID, next
 stage, and CID count.
@@ -366,11 +378,19 @@ stage, and CID count.
 
 GET /api/workflow returns the default route or the route selected by batchId.
 
-POST /api/workflow validates and saves the Canvas node/edge sequence. Sending
-`draft=true` stores an automatically synchronized, temporarily incomplete route
-draft. Without that flag, the complete route rules are required. An empty
-batchId updates the default route; a batchId creates or updates that batch's
-route assignment.
+POST /api/workflow validates and stores the Canvas node/edge sequence. The
+control page sends `draft=true` while the administrator is editing, so node
+addition, deletion, reconnection, and incomplete intermediate states can be
+synchronized automatically. Without that flag, the complete route rules are
+required. An empty batchId updates the default route; a batchId creates or
+updates that batch's active route revision. Semantic changes invalidate the
+current Snapshot and publish a live `route_changed` event.
+
+GET /api/events keeps a server-sent event stream open. It reports route changes,
+new verified batch records, and successful Snapshot publication through
+`route_changed`, `batch_changed`, and `snapshot_published` messages. The
+control and customer pages use this stream for automatic updates without a full
+page refresh.
 
 GET /api/chains returns saved records and block edges for the administrator
 control page.
@@ -410,11 +430,12 @@ service environments when overriding the local demonstration value.
 
 The control server creates or upgrades these tables:
 
-The v7 schema stores batch master data, blocks, edges, Merkle leaves,
-attachments, users, persistent sessions, per-role confirmation policies,
+The v8 schema stores batch master data, blocks, edges, Merkle leaves,
+attachments, users, persistent sessions, route-node confirmation policies,
 route definitions, route nodes, route edges, and transport-to-batch links.
-The v5 global confirmation policy is migrated to separate Supplier, Logistics,
-Warehouse, and Supermarket rows without changing stored business records.
+The legacy role-level `confirmation_policy` table remains for defaults and
+backward-compatible migration; active route validation uses
+`route_node_confirmation_policy`.
 
 ```
 batches
@@ -426,6 +447,7 @@ batches
     created_by_uid
     current_stage
     status
+    route_id
 
 supply_chain_records
     block_id
@@ -445,6 +467,9 @@ supply_chain_records
     signature_public_key_hash
     signed_payload_hash
     signature_verified
+    route_id
+    route_node_id
+    route_step_index
     created_at
 
 block_merkle_leaves
@@ -491,6 +516,48 @@ confirmation_policy
     face
     updated_by_uid
     updated_at
+
+route_node_confirmation_policy
+    route_id
+    node_id
+    node_label
+    role
+    username
+    typed_name
+    handwritten
+    face
+    updated_by_uid
+    updated_at
+
+route_definitions
+    route_id
+    batch_id
+    name
+    is_default
+    created_at
+    updated_at
+
+route_nodes
+    route_id
+    node_id
+    node_type
+    label
+    role
+    username
+    position_x
+    position_y
+    step_index
+
+route_edges
+    route_id
+    from_node_id
+    to_node_id
+
+transport_batch_links
+    shipment_id
+    vehicle_container_id
+    batch_id
+    block_id
 ```
 
 Every block has its own Merkle Tree. Its canonical input covers the batch master
@@ -510,10 +577,15 @@ remain in memory for up to eight hours.
 ## Scope limits
 
 - Route editing currently supports a linear per-batch sequence with Supplier
-  and Supermarket as required endpoints.
+  and Supermarket as required endpoints. Route revisions may be added,
+  removed, or reconnected after Blocks exist; historical Blocks remain
+  immutable and the active Snapshot is invalidated until the new route is
+  complete and republished.
 - ECDSA P-256 typed-name confirmation is implemented. Handwritten capture, face
   capture, Inspection Agency, and third-party verification are deferred.
 - Public snapshot preview generation is provided through the sibling Snapshot
-  library. Snapshot persistence/publication, public-chain anchoring,
-  cross-chain relaying, and external gateway work remain outside this module.
+  library. The administrator publish endpoint forwards the verified candidate
+  to PublicChain for local publication; durable relayer jobs, public-chain
+  anchoring beyond the local gateway, cross-chain relaying, and external
+  gateway work remain outside this module.
 - MerkleTree is used as an existing library and remains unchanged.

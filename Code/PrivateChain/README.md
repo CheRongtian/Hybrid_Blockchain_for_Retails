@@ -30,11 +30,21 @@ Detailed references:
 Supplier -> Logistics -> Warehouse -> Supermarket
 ```
 
-This sequence is the initial route template. The control Canvas can save a
-different default route or a route for one batch. Repeated Logistics and
-Warehouse stages and direct Supplier-to-Supermarket delivery are supported.
-The Supplier creates a new product batch, later roles follow that batch's
-saved route, and the Supermarket completes it.
+This sequence is the initial route template. The control Canvas can edit the
+default route or a route for one batch. Repeated Logistics and Warehouse stages
+and direct Supplier-to-Supermarket delivery are supported. Canvas changes are
+synchronized automatically, while semantic route changes are stored as route
+revisions, including incomplete drafts. The Supplier creates a new product
+batch, later roles follow that batch's active route, and the Supermarket
+completes it.
+
+Each route node has a stable ID. Adding, deleting, or reconnecting a node keeps
+existing Blocks as historical records, switches the batch to the new route
+revision, and invalidates the current public Snapshot. An unconnected node is
+excluded from the current chain preview. A connected node appears as pending
+until its assigned participant submits a verified event. The matching route
+fingerprint is required when a Snapshot is previewed, published, or displayed
+on the customer page.
 
 Each batch is represented as an outer linked block chain:
 
@@ -62,7 +72,8 @@ control_server :8081
         +-- builds and verifies a per-block Merkle Tree
         +-- commits batches, blocks, leaves, edges, and CIDs to SQLite
         +-- forwards selected files to the local IPFS API
-        +-- previews consumer-safe public snapshots for completed batches
+        +-- previews and publishes consumer-safe public snapshots for completed
+            batches through PublicChain
         +-- serves the administrator control page
 ```
 
@@ -137,10 +148,9 @@ daemon can be reused; a stale Homebrew entry can be repaired with
 
 ## Identity confirmation
 
-The administrator configures confirmation methods separately for Supplier,
-Logistics, Warehouse, and Supermarket. Every role must have at least one
-enabled method, and a user can select only a method enabled for the current
-role.
+The administrator configures confirmation methods for each connected route
+node. Every connected node must have at least one enabled method, and a user
+can select only a method enabled for the current route node.
 
 Typed-name confirmation is currently implemented end to end. The browser signs
 the canonical confirmation payload with ECDSA P-256, and the C++ control server
@@ -159,8 +169,10 @@ throughput independently from HTTP, SQLite, Merkle, and IPFS work.
 
 ## Current boundary
 
-This module is the private-side prototype. The sibling `Snapshot` module can
-generate a non-persisted public Manifest and Public Root preview from a
-completed batch. The system does not yet publish a snapshot, submit
-transactions to an EVM network, bridge between chains, or serve a consumer QR
-trace page.
+This module is the private-side prototype. The sibling `Snapshot` module
+generates a consumer-safe Manifest and Public Root preview from a completed
+current route. The control server forwards an administrator-approved
+publication candidate to the independent PublicChain service, which submits
+the local EVM transaction and serves the customer trace page. Wallet custody,
+production chains, cross-chain relaying, and consumer QR entry remain outside
+the current prototype.

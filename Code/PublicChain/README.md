@@ -2,7 +2,9 @@
 
 This module owns the local EVM gateway, publication boundary, persisted public
 Manifests, and customer-facing trace page. It does not read the private SQLite
-database or apply private disclosure policy.
+database or apply private disclosure policy. It asks the private control server
+for the current route fingerprint so an old publication cannot remain visible
+after the private route changes.
 
 The Snapshot module supplies one self-contained publication candidate. This
 module independently verifies that candidate before submitting an EVM
@@ -24,6 +26,7 @@ PublicChain service :8082/api/publish
         +-- verify raw IDs and Keccak hashes
         +-- verify exact canonical Manifest hash
         +-- rebuild SHA-256 Public Merkle Root
+        +-- compare the candidate route fingerprint with the current private route
         +-- submit SnapshotGateway transaction
         +-- save public Manifest beside chain metadata
         v
@@ -32,6 +35,7 @@ Customer :8082/
         +-- choose a published product batch
         +-- read active snapshot from SnapshotGateway
         +-- load matching public Manifest
+        +-- compare the publication route fingerprint with the current private route
         +-- repeat all candidate and chain checks
         +-- display public product route and evidence CIDs
 ```
@@ -130,8 +134,10 @@ opened separately when needed.
 
 The customer page loads its published-batch selection list from the PublicChain
 service. The customer clicks a product batch, and the page loads that batch's
-public trace. Batch IDs are not typed into the customer page. QR-code behavior
-is outside the current scope.
+public trace. Batch IDs are not typed into the customer page. The page listens
+to the private control server's server-sent event stream: route edits remove a
+stale trace from the current view, while a newly published matching Snapshot
+is loaded automatically. QR-code behavior is outside the current scope.
 
 The low-level `publish:local` and `query:local` commands remain contract smoke
 tools. The integrated customer flow should use the administrator Publish button
@@ -171,6 +177,7 @@ Before publication, `scripts/publication.js` verifies:
 - protocol, snapshot, and batch ID hashes;
 - exact canonical Manifest bytes and Keccak-256 Manifest hash;
 - all ordered public fields and the SHA-256 Public Merkle Root;
+- the Manifest route fingerprint and its match with the current private route;
 - bytes32 formatting for the source private-block anchor; and
 - the deployed gateway source-network allowlist.
 

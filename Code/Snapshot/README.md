@@ -70,11 +70,20 @@ Public-chain customer application
 
 A batch can enter the snapshot layer only when:
 
-- the supplier, logistics, warehouse, and supermarket stages are present;
-- each block points to the preceding private block;
-- each stage passes Merkle and digital-signature verification;
-- the supermarket stage completes the preset route; and
+- the active route is one connected linear path from Supplier to Supermarket;
+- every node on that current path has a matching verified private Block;
+- each Block points to the preceding private Block in the current path;
+- each stage passes Merkle and digital-signature verification; and
 - all required consumer-facing fields are available.
+
+The route may contain repeated Logistics or Warehouse stages. Each private
+Block carries its stable route-node ID and route revision. Historical Blocks
+from deleted or superseded route nodes remain available to the private chain,
+but they are excluded from the current Snapshot. The preview includes a
+deterministic `routeFingerprint`; publication and customer lookup require that
+fingerprint to match the current private route. A route change therefore makes
+an older Snapshot unavailable until the exact route is restored or a new
+Snapshot is published.
 
 The first protocol is `Supermarket-Trace-v1`, with snapshot schema version `1`.
 
@@ -134,6 +143,7 @@ assigned by the PublicChain service at transaction time.
 | `publicRoot` | Existing SHA-256 root normalized to `bytes32` hex |
 | `manifestHash` | Keccak-256 of the exact canonical Manifest UTF-8 bytes |
 | `sourceBlockHash` | Final private block hash normalized to `bytes32` hex |
+| `routeFingerprint` | SHA-256 fingerprint of the active route nodes and edges |
 | `sourceNetworkId` | Keccak-256 of the configured private-network name |
 | `destinationChainId` | Intended EVM destination chain ID |
 | `nonce` | Unique positive value within one source network |

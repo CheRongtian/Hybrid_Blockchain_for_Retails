@@ -1,0 +1,6 @@
+Supplier: oranges harvested at STL
+Logistics: shipment SHIP-0001 moved to Warehouse A
+Warehouse: stored between 3 and 4 degrees Celsius
+Supermarket: received and shelved at STORE-0001
+Inspection: certificate checked before sale
+Evidence: temperature log and product photos referenced
