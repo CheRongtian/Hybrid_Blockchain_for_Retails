@@ -4,6 +4,9 @@ const resultSection = document.querySelector("#trace-result");
 let currentBatchId = "";
 let currentSnapshotId = "";
 let batchRefreshInFlight = false;
+let liveEventSource = null;
+let liveRefreshInFlight = false;
+let liveRefreshQueued = false;
 
 const text = (selector, value, fallback = "Not disclosed") => {
   document.querySelector(selector).textContent = value || fallback;
@@ -180,24 +183,24 @@ async function search(batchId, { background = false } = {}) {
     renderTrace(payload);
     currentBatchId = batchId;
     currentSnapshotId = payload.snapshotId || "";
-    statusLine.textContent = background
-      ? "The trace has been updated to the latest active snapshot."
-      : payload.verified
-        ? "Public Manifest and Merkle Root match the active chain record."
-        : "The trace requires attention. Review its status and verification details.";
+    statusLine.textContent = payload.verified
+      ? "Public Manifest and Merkle Root match the active chain record."
+      : "The trace requires attention. Review its status and verification details.";
     statusLine.className = payload.verified ? "status" : "status error";
   } catch (error) {
+    currentSnapshotId = "";
+    resultSection.hidden = true;
     statusLine.textContent = error.message;
     statusLine.className = "status error";
   } finally {
-    if (!background) batchSelect.disabled = false;
+    if (!background) batchSelect.disabled = batchSelect.options.length <= 1;
   }
 }
 
 async function loadPublishedBatches({ background = false } = {}) {
-  if (batchRefreshInFlight) return;
+  if (batchRefreshInFlight) return null;
   batchRefreshInFlight = true;
-  const selectedBatchId = batchSelect.value;
+  const selectedBatchId = currentBatchId || batchSelect.value;
   if (!background) {
     statusLine.className = "status";
     statusLine.textContent = "Loading published product batches...";
@@ -225,33 +228,27 @@ async function loadPublishedBatches({ background = false } = {}) {
     if (selectedBatch) batchSelect.value = selectedBatchId;
     const hasBatches = batches.length > 0;
     batchSelect.disabled = !hasBatches;
-    if (!background) {
+    if (!selectedBatch && currentBatchId === selectedBatchId && currentBatchId) {
+      currentSnapshotId = "";
+      resultSection.hidden = true;
+      statusLine.textContent =
+        "This batch's previous public trace is inactive while its route is changing.";
+      statusLine.className = hasBatches ? "status" : "status error";
+    } else if (!background || !currentBatchId) {
       statusLine.textContent = hasBatches
         ? "Choose a published product batch to view its trace."
         : "No published product batches are available yet.";
       statusLine.className = hasBatches ? "status" : "status error";
     }
-
-    if (selectedBatch && currentBatchId === selectedBatchId &&
-        selectedBatch.snapshotId && selectedBatch.snapshotId !== currentSnapshotId) {
-      await search(selectedBatchId, { background: true });
-    } else if (!selectedBatch && currentBatchId === selectedBatchId) {
-      currentBatchId = "";
-      currentSnapshotId = "";
-      resultSection.hidden = true;
-      statusLine.textContent = hasBatches
-        ? "The previous trace is no longer active. Choose a product batch."
-        : "No published product batches are available yet.";
-      statusLine.className = hasBatches ? "status" : "status error";
-    }
+    return batches;
   } catch (error) {
     batchSelect.replaceChildren();
     batchSelect.disabled = true;
     resultSection.hidden = true;
-    currentBatchId = "";
     currentSnapshotId = "";
     statusLine.textContent = error.message;
     statusLine.className = "status error";
+    return null;
   } finally {
     batchRefreshInFlight = false;
   }
@@ -261,5 +258,43 @@ batchSelect.addEventListener("change", () => {
   if (batchSelect.value) search(batchSelect.value);
 });
 
-loadPublishedBatches();
-window.setInterval(() => loadPublishedBatches({ background: true }), 5000);
+async function refreshFromLiveEvent() {
+  if (batchRefreshInFlight || liveRefreshInFlight) {
+    liveRefreshQueued = true;
+    return;
+  }
+  liveRefreshInFlight = true;
+  const selectedBatchId = currentBatchId || batchSelect.value;
+  try {
+    const batches = await loadPublishedBatches({ background: true });
+    const activeBatch = batches?.find((batch) => batch.batchId === selectedBatchId);
+    if (activeBatch &&
+        (resultSection.hidden || activeBatch.snapshotId !== currentSnapshotId)) {
+      await search(selectedBatchId, { background: true });
+    }
+  } finally {
+    liveRefreshInFlight = false;
+    if (liveRefreshQueued) {
+      liveRefreshQueued = false;
+      refreshFromLiveEvent();
+    }
+  }
+}
+
+async function initializeConsumerPage() {
+  await loadPublishedBatches();
+  liveEventSource = new EventSource("http://127.0.0.1:8081/api/events");
+  liveEventSource.onmessage = (event) => {
+    if (!event.data) return;
+    try {
+      const payload = JSON.parse(event.data);
+      if (["state_sync", "route_changed", "batch_changed", "snapshot_published"].includes(payload.type)) {
+        refreshFromLiveEvent();
+      }
+    } catch {
+      // Ignore malformed broadcast data; the next event or manual selection remains usable.
+    }
+  };
+}
+
+initializeConsumerPage();

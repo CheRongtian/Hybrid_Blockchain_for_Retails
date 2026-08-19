@@ -122,8 +122,7 @@ const SupplyRouteNode* route_node_for_record(
     const SupplyChainRecord& record,
     const std::string& route_id)
 {
-    if(!record.route_id.empty() && record.route_id != route_id)
-        return nullptr;
+    static_cast<void>(route_id);
 
     if(!record.route_node_id.empty())
     {
@@ -204,20 +203,28 @@ supermarket::snapshot::BatchInput make_snapshot_batch_input(
 
         const SupplyRouteNode* route_node =
             route_node_for_record(route_nodes, record, expected_route_id);
-        if(route_node)
+        if(!route_node)
         {
-            stage.route_node_id = route_node->node_id;
-            stage.route_node_label = route_node->label;
-            stage.route_node_username = route_node->username;
-            stage.route_step_index = route_node->step_index;
-            recorded_route_nodes.insert(route_node->node_id);
+            // The Block remains in the immutable chain after a route node is
+            // deleted or reassigned. Keep its parent/hash metadata available
+            // for route validation while excluding it from the current trace.
+            input.historical_blocks.push_back(
+                supermarket::snapshot::HistoricalBlockInput{
+                    record.block_id,
+                    record.parent_block_id,
+                    record.parent_block_hash,
+                    record.block_hash,
+                    record.route_node_id,
+                    record.route_step_index
+                });
+            continue;
         }
-        else
-        {
-            input.source_errors.push_back(
-                "Block " + std::to_string(record.block_id) +
-                " is not linked to the selected route");
-        }
+
+        stage.route_node_id = route_node->node_id;
+        stage.route_node_label = route_node->label;
+        stage.route_node_username = route_node->username;
+        stage.route_step_index = route_node->step_index;
+        recorded_route_nodes.insert(route_node->node_id);
 
         const auto fields = parse_flat_string_object(record.event_data);
         if(fields)

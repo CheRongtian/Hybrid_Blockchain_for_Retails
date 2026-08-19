@@ -3,9 +3,11 @@
 #include <cctype>
 #include <csignal>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -500,6 +502,98 @@ std::string json_escape(const std::string& value)
         }
     }
     return escaped.str();
+}
+
+struct LiveEvent
+{
+    std::uint64_t id = 0;
+    std::string payload;
+};
+
+class LiveEventHub
+{
+public:
+    void publish(const std::string& type, const std::string& batch_id)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.push_back(LiveEvent{
+            ++sequence_,
+            "{\"type\":\"" + json_escape(type) +
+                "\",\"batchId\":\"" + json_escape(batch_id) + "\"}"
+        });
+        while(events_.size() > 64) events_.pop_front();
+        condition_.notify_all();
+    }
+
+    std::uint64_t latest_id() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return sequence_;
+    }
+
+    std::vector<LiveEvent> after(std::uint64_t id) const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<LiveEvent> result;
+        for(const LiveEvent& event : events_)
+        {
+            if(event.id > id) result.push_back(event);
+        }
+        return result;
+    }
+
+    bool wait_for_change(std::uint64_t id) const
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait_for(lock, std::chrono::seconds(25), [&] {
+            return sequence_ > id;
+        });
+        return sequence_ > id;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    mutable std::condition_variable condition_;
+    std::deque<LiveEvent> events_;
+    std::uint64_t sequence_ = 0;
+};
+
+LiveEventHub live_event_hub;
+
+bool stream_live_events(int client_fd)
+{
+    const std::string headers =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n"
+        "X-Content-Type-Options: nosniff\r\n" +
+        std::string(CORS_HEADERS) + "\r\n";
+    if(!write_all(client_fd, headers)) return false;
+    if(!write_all(client_fd, ": connected\n\n")) return false;
+
+    std::uint64_t last_id = live_event_hub.latest_id();
+    const std::string initial_state =
+        "id: " + std::to_string(last_id) +
+        "\ndata: {\"type\":\"state_sync\",\"batchId\":\"\"}\n\n";
+    if(!write_all(client_fd, initial_state)) return false;
+    while(true)
+    {
+        if(!live_event_hub.wait_for_change(last_id))
+        {
+            if(!write_all(client_fd, ": keep-alive\n\n")) return false;
+            continue;
+        }
+
+        const std::vector<LiveEvent> events = live_event_hub.after(last_id);
+        for(const LiveEvent& event : events)
+        {
+            const std::string message = "id: " + std::to_string(event.id) +
+                "\ndata: " + event.payload + "\n\n";
+            if(!write_all(client_fd, message)) return false;
+            last_id = event.id;
+        }
+    }
 }
 
 void skip_json_whitespace(const std::string& value, std::size_t& cursor)
@@ -1289,9 +1383,6 @@ const SupplyRouteNode* workflow_node_for_record(
     const RuntimeWorkflow& workflow,
     const SupplyChainRecord& record)
 {
-    if(!record.route_id.empty() && record.route_id != workflow.route_id)
-        return nullptr;
-
     if(!record.route_node_id.empty())
     {
         if(const auto* node = workflow_node(workflow, record.route_node_id);
@@ -1343,29 +1434,6 @@ const SupplyRouteNode* workflow_successor(const RuntimeWorkflow& workflow,
     return nullptr;
 }
 
-bool workflow_route_reaches(const RuntimeWorkflow& workflow,
-                            const std::string& from_node_id,
-                            const std::string& to_node_id)
-{
-    if(from_node_id == to_node_id) return true;
-
-    std::vector<std::string> pending{from_node_id};
-    std::unordered_set<std::string> visited;
-    while(!pending.empty())
-    {
-        const std::string current = pending.back();
-        pending.pop_back();
-        if(!visited.insert(current).second) continue;
-        for(const SupplyRouteEdge& edge : workflow.edges)
-        {
-            if(edge.from_node_id != current) continue;
-            if(edge.to_node_id == to_node_id) return true;
-            pending.push_back(edge.to_node_id);
-        }
-    }
-    return false;
-}
-
 bool ordered_workflow_nodes(const RuntimeWorkflow& workflow,
                             std::vector<const SupplyRouteNode*>& ordered,
                             std::string& error)
@@ -1392,11 +1460,13 @@ bool ordered_workflow_nodes(const RuntimeWorkflow& workflow,
     return !ordered.empty();
 }
 
-std::string default_transport_shipment_id(
+std::string numbered_route_identifier(
     const RuntimeWorkflow& workflow,
-    const SupplyRouteNode& target)
+    const SupplyRouteNode& target,
+    const std::string& role,
+    const std::string& prefix)
 {
-    if(target.role != "logistics") return "";
+    if(target.role != role) return "";
 
     std::vector<const SupplyRouteNode*> ordered;
     std::string error;
@@ -1406,7 +1476,7 @@ std::string default_transport_shipment_id(
     bool target_found = false;
     for(const SupplyRouteNode* node : ordered)
     {
-        if(node->role == "logistics") ++transport_sequence;
+        if(node->role == role) ++transport_sequence;
         if(node->node_id == target.node_id)
         {
             target_found = true;
@@ -1416,10 +1486,45 @@ std::string default_transport_shipment_id(
     if(!target_found || transport_sequence <= 0 || transport_sequence > 9999)
         return "";
 
-    std::ostringstream shipment_id;
-    shipment_id << "SHIP-" << std::setw(4) << std::setfill('0')
+    std::ostringstream identifier;
+    identifier << prefix << std::setw(4) << std::setfill('0')
                 << transport_sequence;
-    return shipment_id.str();
+    return identifier.str();
+}
+
+std::string default_transport_shipment_id(
+    const RuntimeWorkflow& workflow,
+    const SupplyRouteNode& target)
+{
+    return numbered_route_identifier(workflow, target, "logistics", "SHIP-");
+}
+
+std::string default_transport_vehicle_id(
+    const RuntimeWorkflow& workflow,
+    const SupplyRouteNode& target)
+{
+    return numbered_route_identifier(workflow, target, "logistics", "VEHICLE-");
+}
+
+std::string default_storage_lot_id(
+    const RuntimeWorkflow& workflow,
+    const SupplyRouteNode& target)
+{
+    return numbered_route_identifier(workflow, target, "warehouse", "STORAGE-");
+}
+
+std::string default_storage_zone_id(
+    const RuntimeWorkflow& workflow,
+    const SupplyRouteNode& target)
+{
+    return numbered_route_identifier(workflow, target, "warehouse", "ZONE-");
+}
+
+bool local_datetime_range_is_valid(const std::string& start,
+                                   const std::string& end)
+{
+    if(start.empty() || end.empty()) return true;
+    return start <= end;
 }
 
 struct WorkflowProgress
@@ -1441,24 +1546,18 @@ WorkflowProgress evaluate_workflow_progress(
         return progress;
 
     std::unordered_map<std::string, const SupplyChainRecord*> records_by_node;
+    std::unordered_map<int, const SupplyChainRecord*> records_by_block;
     for(const SupplyChainRecord& record : records)
     {
         if(record.batch_id != batch_id) continue;
+        if(!record.verified || !record.signature_verified) continue;
 
-        if(!record.route_id.empty() && record.route_id != workflow.route_id)
-        {
-            progress.error = "Block " + std::to_string(record.block_id) +
-                " belongs to a different saved route";
-            return progress;
-        }
+        records_by_block[record.block_id] = &record;
 
         const auto* node = workflow_node_for_record(workflow, record);
-        if(!node)
-        {
-            progress.error = "Block " + std::to_string(record.block_id) +
-                " is not linked to a unique node in the saved route";
-            return progress;
-        }
+        // A Block for a deleted or reassigned node remains historical data. It
+        // does not participate in the current route progress calculation.
+        if(!node) continue;
         if(records_by_node.find(node->node_id) != records_by_node.end())
         {
             progress.error = "Route node " + node->label +
@@ -1470,7 +1569,7 @@ WorkflowProgress evaluate_workflow_progress(
 
     const SupplyChainRecord* previous_record = nullptr;
     const SupplyChainRecord* latest_record = nullptr;
-    for(const auto& item : records_by_node)
+    for(const auto& item : records_by_block)
     {
         if(!latest_record || item.second->block_id > latest_record->block_id)
             latest_record = item.second;
@@ -1514,30 +1613,12 @@ WorkflowProgress evaluate_workflow_progress(
                 record->parent_block_hash == previous_record->block_hash;
             if(!parent_matches)
             {
-                const SupplyRouteNode* historical_parent_node = nullptr;
-                const SupplyChainRecord* historical_parent_record = nullptr;
-                for(const auto& item : records_by_node)
-                {
-                    if(item.second->block_id != record->parent_block_id) continue;
-                    historical_parent_node = workflow_node(
-                        workflow, item.first);
-                    historical_parent_record = item.second;
-                    break;
-                }
-
-                if(historical_parent_node && historical_parent_record &&
-                   historical_parent_record->block_id < record->block_id)
-                {
-                    const bool follows_old_route =
-                        historical_parent_node->step_index < node->step_index &&
-                        workflow_route_reaches(
-                            workflow, historical_parent_node->node_id,
-                            node->node_id);
-                    const bool appended_after_downstream_stage =
-                        historical_parent_node->step_index > node->step_index;
-                    parent_matches = follows_old_route ||
-                        appended_after_downstream_stage;
-                }
+                const auto historical_parent = records_by_block.find(
+                    record->parent_block_id);
+                parent_matches = historical_parent != records_by_block.end() &&
+                    historical_parent->second->block_id < record->block_id &&
+                    historical_parent->second->block_hash ==
+                        record->parent_block_hash;
             }
             if(!parent_matches)
             {
@@ -1656,11 +1737,19 @@ bool workflow_is_valid(const std::vector<SupplyRouteNode>& nodes,
 
     std::unordered_set<std::string> visited;
     std::string current = supplier->node_id;
+    int expected_step_index = 0;
     while(true)
     {
         if(!visited.insert(current).second)
         {
             error = "Route cannot contain a cycle";
+            return false;
+        }
+        const auto current_node = by_id.find(current);
+        if(current_node == by_id.end() ||
+           current_node->second->step_index != expected_step_index)
+        {
+            error = "Route step indexes must follow the saved connection order";
             return false;
         }
         if(current == supermarket->node_id) break;
@@ -1681,6 +1770,7 @@ bool workflow_is_valid(const std::vector<SupplyRouteNode>& nodes,
             return false;
         }
         current = next;
+        ++expected_step_index;
     }
     if(visited.size() != nodes.size())
     {
@@ -1845,13 +1935,25 @@ std::string snapshot_evidence_json(
 std::string latest_snapshot_block_hash(
     const supermarket::snapshot::BatchInput& input)
 {
-    if(input.stages.empty()) return "";
-    const supermarket::snapshot::StageInput* latest = &input.stages.front();
+    int latest_block_id = -1;
+    std::string latest_block_hash;
     for(const auto& stage : input.stages)
     {
-        if(stage.block_id > latest->block_id) latest = &stage;
+        if(stage.block_id > latest_block_id && !stage.block_hash.empty())
+        {
+            latest_block_id = stage.block_id;
+            latest_block_hash = stage.block_hash;
+        }
     }
-    return latest->block_hash;
+    for(const auto& block : input.historical_blocks)
+    {
+        if(block.block_id > latest_block_id && !block.block_hash.empty())
+        {
+            latest_block_id = block.block_id;
+            latest_block_hash = block.block_hash;
+        }
+    }
+    return latest_block_hash;
 }
 
 std::string eligible_snapshot_batches_json(
@@ -2278,12 +2380,22 @@ std::string batches_json(const std::string& database_path,
         const std::string next_shipment_id = workflow && next
             ? default_transport_shipment_id(*workflow, *next)
             : "";
+        const std::string next_vehicle_container_id = workflow && next
+            ? default_transport_vehicle_id(*workflow, *next)
+            : "";
+        const std::string next_storage_lot_id = workflow && next
+            ? default_storage_lot_id(*workflow, *next)
+            : "";
+        const std::string next_storage_zone_id = workflow && next
+            ? default_storage_zone_id(*workflow, *next)
+            : "";
         std::unordered_set<std::string> recorded_route_nodes;
         if(workflow)
         {
             for(const SupplyChainRecord& record : records)
             {
                 if(record.batch_id != batch.batch_id) continue;
+                if(!record.verified || !record.signature_verified) continue;
                 if(const auto* node = workflow_node_for_record(*workflow, record))
                     recorded_route_nodes.insert(node->node_id);
             }
@@ -2343,6 +2455,12 @@ std::string batches_json(const std::string& database_path,
              << json_escape(destination ? destination->label : "")
              << "\",\"nextShipmentId\":\""
              << json_escape(next_shipment_id)
+             << "\",\"nextVehicleContainerId\":\""
+             << json_escape(next_vehicle_container_id)
+             << "\",\"nextStorageLotId\":\""
+             << json_escape(next_storage_lot_id)
+             << "\",\"nextStorageZoneRackId\":\""
+             << json_escape(next_storage_zone_id)
              << "\",\"routeReady\":"
              << (route_complete ? "true" : "false")
              << ",\"routeError\":\"" << json_escape(progress.error) << "\""
@@ -2782,7 +2900,10 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    ThreadPool thread_pool;
+    // The control, user, and customer pages each keep one live event stream.
+    // Reserve enough workers so those long-lived connections cannot starve
+    // normal route, record, and snapshot requests on low-core machines.
+    ThreadPool thread_pool(8);
     std::cout << "Control server: http://127.0.0.1:" << port << '\n'
               << "Static root: " << static_root << '\n'
               << "Database: " << database_path << '\n'
@@ -2827,6 +2948,7 @@ int main(int argc, char* argv[])
             request.target == "/api/ipfs/files" ||
             request.target == "/api/workflow" ||
             request_path(request.target) == "/api/workflow" ||
+            request_path(request.target) == "/api/events" ||
             request.target == "/api/chains" ||
             request_path(request.target) == "/api/public-route-state" ||
             request.target == "/api/snapshot/eligible-batches" ||
@@ -2838,6 +2960,12 @@ int main(int argc, char* argv[])
             status = "204 No Content";
             body.clear();
             send_response(client_fd, status, content_type, body, false, CORS_HEADERS);
+        }
+        else if(request.method == "GET" &&
+                request_path(request.target) == "/api/events")
+        {
+            status = "200 OK";
+            stream_live_events(client_fd);
         }
         else if(request.method == "POST" && request.target == "/api/auth/login")
         {
@@ -3013,8 +3141,13 @@ int main(int argc, char* argv[])
                 else if(!requested_route_id.empty())
                 {
                     route_id = requested_route_id;
-                    route_loaded = load_workflow_route_by_id(
-                        database_path.string(), route_id, route_nodes, route_edges);
+                    route_loaded = requested_route_id == "route-default"
+                        ? load_workflow_route(
+                              database_path.string(), "", route_id,
+                              route_nodes, route_edges)
+                        : load_workflow_route_by_id(
+                              database_path.string(), route_id,
+                              route_nodes, route_edges);
                 }
 
                 if(route_requested && !route_loaded)
@@ -3022,16 +3155,16 @@ int main(int argc, char* argv[])
                     status = "404 Not Found";
                     body = json_error("The requested route was not found");
                 }
+                else if(route_loaded && !ensure_route_confirmation_policies(
+                            database_path.string(), route_id, route_nodes, route_edges))
+                {
+                    status = "500 Internal Server Error";
+                    body = json_error(
+                        "Failed to initialize route-node confirmation policies");
+                }
                 else if(route_loaded)
                 {
-                    if(!ensure_route_confirmation_policies(
-                           database_path.string(), route_id, route_nodes))
-                    {
-                        status = "500 Internal Server Error";
-                        body = json_error(
-                            "Failed to initialize route-node confirmation policies");
-                    }
-                    else if(user->role == "admin")
+                    if(user->role == "admin")
                     {
                         std::vector<ConfirmationPolicy> policies;
                         if(!load_route_confirmation_policies(
@@ -3217,14 +3350,12 @@ int main(int argc, char* argv[])
 
                     std::vector<ConfirmationPolicy> policies;
                     std::unordered_set<std::string> seen_node_ids;
+                    const std::unordered_set<std::string> linked_node_ids =
+                        supplier_route_path_node_ids(route_nodes, route_edges);
                     std::string policy_error;
                     const std::string encoded = form_field_value(*fields, "policies");
                     if(!route_loaded)
                         policy_error = "The selected route was not found";
-                    else if(!ensure_route_confirmation_policies(
-                                database_path.string(), route_id, route_nodes))
-                        policy_error =
-                            "Failed to initialize route-node confirmation policies";
                     else if(encoded.empty())
                         policy_error = "At least one route-node policy is required";
                     else
@@ -3252,10 +3383,10 @@ int main(int argc, char* argv[])
                                     break;
                                 }
                             }
-                            if(!node)
+                            if(!node || linked_node_ids.count(node->node_id) == 0)
                             {
                                 policy_error =
-                                    "A submitted policy references an unknown route node";
+                                    "A submitted policy references an unconnected route node";
                                 break;
                             }
                             ConfirmationPolicy policy;
@@ -3274,17 +3405,17 @@ int main(int argc, char* argv[])
                             if(!policy.typed_name && !policy.handwritten && !policy.face)
                             {
                                 policy_error =
-                                    "At least one confirmation method must be enabled for " +
+                                    "At least one confirmation method is required for " +
                                     node->label;
                                 break;
                             }
                             policies.push_back(std::move(policy));
                         }
                         if(policy_error.empty() &&
-                           seen_node_ids.size() != route_nodes.size())
+                           seen_node_ids.size() != linked_node_ids.size())
                         {
                             policy_error =
-                                "A confirmation policy is required for every route node";
+                                "A confirmation policy is required for every connected route node";
                         }
                     }
 
@@ -3332,7 +3463,8 @@ int main(int argc, char* argv[])
                             *fields, role + "TypedName");
                         policy.handwritten = parse_boolean(
                             *fields, role + "Handwritten");
-                        policy.face = parse_boolean(*fields, role + "Face");
+                        policy.face = parse_boolean(
+                            *fields, role + "Face");
                         policy.updated_by_uid = user->uid;
                         if(!policy.typed_name && !policy.handwritten && !policy.face)
                             invalid_role = role;
@@ -3343,7 +3475,7 @@ int main(int argc, char* argv[])
                     {
                         status = "422 Unprocessable Entity";
                         body = json_error(
-                            "At least one confirmation method must be enabled for " +
+                            "At least one confirmation method is required for " +
                             invalid_role);
                     }
                     else if(!save_confirmation_policies(
@@ -3514,16 +3646,25 @@ int main(int argc, char* argv[])
                 }
                 else
                 {
+                    // Route revisions and Block commits both change the active
+                    // batch workflow. Serialize them so a record validated
+                    // against one revision cannot write that older revision
+                    // back after the administrator has switched the route.
+                    std::lock_guard<std::mutex> chain_lock(chain_mutex);
                     std::string route_id;
                     if(!save_workflow_route(database_path.string(), batch_id, nodes,
                                             edges, route_id, workflow_error,
                                             allow_incomplete))
                     {
-                        status = workflow_error.find(
-                            "Cannot change a route after blocks have been committed") == 0
-                            ? "409 Conflict"
-                            : "500 Internal Server Error";
+                        status = "500 Internal Server Error";
                         body = json_error(workflow_error);
+                    }
+                    else if(!ensure_route_confirmation_policies(
+                                database_path.string(), route_id, nodes, edges))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error(
+                            "Failed to initialize route-node confirmation policies after route save");
                     }
                     else
                     {
@@ -3532,6 +3673,7 @@ int main(int argc, char* argv[])
                                "\",\"batchId\":\"" + json_escape(batch_id) +
                                "\",\"draft\":" + (allow_incomplete ? "true" : "false") +
                                ",\"saved\":true}";
+                        live_event_hub.publish("route_changed", batch_id);
                     }
                 }
             }
@@ -3805,7 +3947,14 @@ int main(int argc, char* argv[])
                     body = published->body;
                     if(published->status_code >= 200 &&
                        published->status_code < 300)
+                    {
                         status = "201 Created";
+                        const auto published_batch_id =
+                            json_string_value(published->body, "batchId");
+                        live_event_hub.publish(
+                            "snapshot_published",
+                            published_batch_id.value_or("") );
+                    }
                     else if(published->status_code == 503)
                         status = "503 Service Unavailable";
                     else
@@ -3987,6 +4136,23 @@ int main(int argc, char* argv[])
                                 }
                             }
                         }
+
+                        if(validation_error.empty() && user->role == "logistics" &&
+                           !local_datetime_range_is_valid(
+                               trim(form_field_value(*fields, "departureTime")),
+                               trim(form_field_value(*fields, "arrivalTime"))))
+                        {
+                            validation_error =
+                                "Arrival Time must be after Departure Time";
+                        }
+                        if(validation_error.empty() && user->role == "warehouse" &&
+                           !local_datetime_range_is_valid(
+                               trim(form_field_value(*fields, "inboundTime")),
+                               trim(form_field_value(*fields, "outboundTime"))))
+                        {
+                            validation_error =
+                                "Outbound Time must be after Inbound Time";
+                        }
                     }
 
                     if(validation_error.empty())
@@ -4031,15 +4197,7 @@ int main(int argc, char* argv[])
                         const SupplyRouteNode* policy_node = nullptr;
                         if(policy_workflow)
                         {
-                            if(!ensure_route_confirmation_policies(
-                                   database_path.string(),
-                                   policy_workflow->route_id,
-                                   policy_workflow->nodes))
-                            {
-                                validation_error =
-                                    "Failed to initialize route-node confirmation policies";
-                            }
-                            else if(is_supplier)
+                            if(is_supplier)
                             {
                                 for(const SupplyRouteNode& node : policy_workflow->nodes)
                                 {
@@ -4053,6 +4211,11 @@ int main(int argc, char* argv[])
                             }
                             else
                             {
+                                // The in-memory record list is updated by other
+                                // request workers after a successful Block
+                                // commit. Protect this progress read from a
+                                // concurrent vector mutation.
+                                std::lock_guard<std::mutex> chain_lock(chain_mutex);
                                 policy_node = next_pending_workflow_node(
                                     *policy_workflow, stored_records,
                                     trim(form_field_value(*fields, "batchId")));
@@ -4070,15 +4233,11 @@ int main(int argc, char* argv[])
                             validation_error =
                                 "This account is not assigned to the next route stage";
                         else if(validation_error.empty() && !is_supplier &&
-                                fields->count("routeId") &&
-                                !trim(form_field_value(*fields, "routeId")).empty() &&
                                 trim(form_field_value(*fields, "routeId")) !=
                                     policy_workflow->route_id)
                             validation_error =
                                 "The submitted route does not match the selected batch";
                         else if(validation_error.empty() && !is_supplier &&
-                                fields->count("routeNodeId") &&
-                                !trim(form_field_value(*fields, "routeNodeId")).empty() &&
                                 trim(form_field_value(*fields, "routeNodeId")) !=
                                     policy_node->node_id)
                             validation_error =
@@ -4129,20 +4288,12 @@ int main(int argc, char* argv[])
                                     ? fields->at("signaturePayload")
                                     : "";
 
-                                if(confirmation_method == "typed_name" &&
-                                   !policy.typed_name)
+                                if(confirmation_method != "typed_name")
                                     validation_error =
-                                        "The selected confirmation method is disabled";
-                                else if(confirmation_method == "handwritten" &&
-                                        !policy.handwritten)
+                                        "Only typed-name confirmation is supported";
+                                else if(!policy.typed_name)
                                     validation_error =
-                                        "The selected confirmation method is disabled";
-                                else if(confirmation_method == "face" && !policy.face)
-                                    validation_error =
-                                        "The selected confirmation method is disabled";
-                                else if(confirmation_method != "typed_name")
-                                    validation_error =
-                                        "Only typed-name confirmation is available in this demo";
+                                        "Typed-name confirmation is disabled for this route stage";
                                 else if(confirmation_name != effective_display_name(*user))
                                     validation_error =
                                         "The typed name must match the registered display name";
@@ -4284,6 +4435,18 @@ int main(int argc, char* argv[])
                     const SupplyRouteNode* destination_node = workflow && required_node
                         ? workflow_successor(*workflow, required_node->node_id)
                         : nullptr;
+                    const auto has_expected_sequence = [](const std::string& value,
+                                                          const std::string& expected) {
+                        return expected.size() >= 4 && value.size() >= 4 &&
+                            value.substr(value.size() - 4) ==
+                                expected.substr(expected.size() - 4);
+                    };
+                    const auto has_prefix = [](const std::string& value,
+                                               const std::string& first,
+                                               const std::string& second) {
+                        return value.rfind(first, 0) == 0 ||
+                            value.rfind(second, 0) == 0;
+                    };
                     std::string workflow_error;
                     SupplyChainBatch batch;
 
@@ -4324,9 +4487,67 @@ int main(int argc, char* argv[])
                         workflow_error = "The next route stage is assigned to " +
                             required_node->username;
                     }
+                    else if(!is_supplier &&
+                            trim(form_field_value(*fields, "routeId")) !=
+                                workflow->route_id)
+                    {
+                        workflow_error =
+                            "The route changed while this form was open; reload the assigned stage";
+                    }
+                    else if(!is_supplier &&
+                            trim(form_field_value(*fields, "routeNodeId")) !=
+                                required_node->node_id)
+                    {
+                        workflow_error =
+                            "The assigned route stage changed while this form was open";
+                    }
                     else if(user->role == "logistics" && !destination_node)
                     {
                         workflow_error = "The configured transport stage has no destination";
+                    }
+                    else if(user->role == "logistics" &&
+                            trim(form_field_value(*fields, "shipmentId")) !=
+                                default_transport_shipment_id(*workflow, *required_node))
+                    {
+                        workflow_error = "Shipment ID must be " +
+                            default_transport_shipment_id(*workflow, *required_node) +
+                            " for " + required_node->label;
+                    }
+                    else if(user->role == "logistics" &&
+                            (!has_prefix(
+                                 trim(form_field_value(*fields, "vehicleContainerId")),
+                                 "VEHICLE-", "CONTAINER-") ||
+                             !has_expected_sequence(
+                                 trim(form_field_value(*fields, "vehicleContainerId")),
+                                 default_transport_vehicle_id(*workflow, *required_node))))
+                    {
+                        const std::string expected_vehicle = default_transport_vehicle_id(
+                            *workflow, *required_node);
+                        workflow_error = "Vehicle / Container ID must use sequence " +
+                            expected_vehicle.substr(expected_vehicle.size() - 4) +
+                            " for " + required_node->label;
+                    }
+                    else if(user->role == "warehouse" &&
+                            trim(form_field_value(*fields, "storageLotId")) !=
+                                default_storage_lot_id(*workflow, *required_node))
+                    {
+                        workflow_error = "Storage Lot ID must be " +
+                            default_storage_lot_id(*workflow, *required_node) +
+                            " for " + required_node->label;
+                    }
+                    else if(user->role == "warehouse" &&
+                            (!has_prefix(
+                                 trim(form_field_value(*fields, "storageZoneRackId")),
+                                 "ZONE-", "RACK-") ||
+                             !has_expected_sequence(
+                                 trim(form_field_value(*fields, "storageZoneRackId")),
+                                 default_storage_zone_id(*workflow, *required_node))))
+                    {
+                        const std::string expected_zone =
+                            default_storage_zone_id(*workflow, *required_node);
+                        workflow_error = "Storage Zone / Rack ID must use sequence " +
+                            expected_zone.substr(expected_zone.size() - 4) +
+                            " for " + required_node->label;
                     }
                     else if(user->role == "logistics" &&
                             trim(form_field_value(*fields, "deliveryLocation")) !=
@@ -4444,15 +4665,16 @@ int main(int argc, char* argv[])
                             database_record.transport_vehicle_container_id = user->role == "logistics"
                                 ? form_field_value(*fields, "vehicleContainerId")
                                 : "";
-                            database_record.chain_status =
-                                required_node->role == "supermarket" ||
-                                std::none_of(
-                                    workflow->edges.begin(), workflow->edges.end(),
-                                    [&](const SupplyRouteEdge& edge) {
-                                        return edge.from_node_id == required_node->node_id;
-                                    })
-                                    ? "completed"
-                                    : "in_progress";
+                            database_record.chain_status = "in_progress";
+                            std::vector<SupplyChainRecord> projected_records =
+                                stored_records;
+                            projected_records.push_back(database_record);
+                            const WorkflowProgress projected_progress =
+                                evaluate_workflow_progress(
+                                    *workflow, projected_records, batch_id);
+                            if(projected_progress.error.empty() &&
+                               projected_progress.complete)
+                                database_record.chain_status = "completed";
                             database_record.block_hash = calculate_block_hash(database_record);
 
                             std::vector<BlockEdge> new_edges;
@@ -4477,6 +4699,13 @@ int main(int argc, char* argv[])
                                 stored_records.push_back(database_record);
                                 chain_edges.insert(
                                     chain_edges.end(), new_edges.begin(), new_edges.end());
+                                const WorkflowProgress updated_progress =
+                                    evaluate_workflow_progress(
+                                        *workflow, stored_records, batch_id);
+                                const SupplyRouteNode* next_required_node =
+                                    updated_progress.error.empty()
+                                        ? updated_progress.next_node
+                                        : nullptr;
                                 status = "201 Created";
                                 body = "{\"blockID\":" + std::to_string(block_id) +
                                        ",\"verified\":" +
@@ -4488,27 +4717,22 @@ int main(int argc, char* argv[])
                                        "\",\"batchId\":\"" +
                                        json_escape(database_record.batch_id) +
                                        "\",\"nextStage\":\"" +
-                                       json_escape(workflow_successor(
-                                           *workflow, required_node->node_id)
-                                               ? workflow_successor(
-                                                     *workflow, required_node->node_id)->role
-                                               : "") +
+                                       json_escape(next_required_node
+                                           ? next_required_node->role
+                                           : "") +
                                        "\",\"nextNodeId\":\"" +
-                                       json_escape(workflow_successor(
-                                           *workflow, required_node->node_id)
-                                               ? workflow_successor(
-                                                     *workflow, required_node->node_id)->node_id
-                                               : "") +
+                                       json_escape(next_required_node
+                                           ? next_required_node->node_id
+                                           : "") +
                                        "\",\"nextNodeLabel\":\"" +
-                                       json_escape(workflow_successor(
-                                           *workflow, required_node->node_id)
-                                               ? workflow_successor(
-                                                     *workflow, required_node->node_id)->label
-                                               : "") +
+                                       json_escape(next_required_node
+                                           ? next_required_node->label
+                                           : "") +
                                        "\",\"ipfsCount\":" +
                                        std::to_string(references.size()) +
                                        ",\"signatureVerified\":" +
                                        (database_record.signature_verified ? "true" : "false") + "}";
+                                live_event_hub.publish("batch_changed", database_record.batch_id);
                             }
                         }
                     }

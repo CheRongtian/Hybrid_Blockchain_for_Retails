@@ -286,7 +286,13 @@ button:hover {
 }
 
 .submission-actions button {
-    flex: 1;
+    flex: 1 1 0;
+}
+
+.submission-actions .secondary-button {
+    color: #dbeafe;
+    background: #16243a;
+    border: 1px solid #31506d;
 }
 
 .submission-actions .request-status {
@@ -352,6 +358,37 @@ dt {
 
 dd {
     margin: 0;
+}
+
+.submission-dialog {
+    width: min(620px, calc(100% - 32px));
+    margin: auto;
+    padding: clamp(26px, 5vw, 44px);
+    border: 1px solid #ffffff1f;
+    border-radius: 24px;
+    color: #eef2ff;
+    background: #11182b;
+    box-shadow: 0 30px 80px #000000aa;
+}
+
+.submission-dialog::backdrop {
+    background: #020617b8;
+    backdrop-filter: blur(4px);
+}
+
+.dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 28px;
+}
+
+.dialog-actions form {
+    display: block;
+    margin: 0;
+}
+
+.dialog-actions button {
+    min-width: 140px;
 }
 
 code {

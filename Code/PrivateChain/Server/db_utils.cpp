@@ -2,11 +2,50 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <ctime>
 #include <iostream>
+#include <mutex>
 #include <unordered_set>
 #include <unordered_map>
 #include <utility>
+
+std::unordered_set<std::string> supplier_route_path_node_ids(
+    const std::vector<SupplyRouteNode>& nodes,
+    const std::vector<SupplyRouteEdge>& edges)
+{
+    std::unordered_map<std::string, const SupplyRouteNode*> nodes_by_id;
+    std::unordered_map<std::string, std::string> outgoing;
+    const SupplyRouteNode* supplier = nullptr;
+    const SupplyRouteNode* supermarket = nullptr;
+    for(const SupplyRouteNode& node : nodes)
+    {
+        nodes_by_id[node.node_id] = &node;
+        if(!supplier && node.role == "supplier") supplier = &node;
+        if(!supermarket && node.role == "supermarket") supermarket = &node;
+    }
+    for(const SupplyRouteEdge& edge : edges)
+    {
+        if(nodes_by_id.count(edge.from_node_id) == 0 ||
+           nodes_by_id.count(edge.to_node_id) == 0 ||
+           outgoing.count(edge.from_node_id) != 0)
+            continue;
+        outgoing[edge.from_node_id] = edge.to_node_id;
+    }
+
+    std::unordered_set<std::string> connected;
+    if(!supplier || !supermarket || edges.empty()) return connected;
+    const SupplyRouteNode* current = supplier;
+    while(current && connected.insert(current->node_id).second)
+    {
+        if(current->node_id == supermarket->node_id) return connected;
+        const auto next = outgoing.find(current->node_id);
+        if(next == outgoing.end()) break;
+        const auto target = nodes_by_id.find(next->second);
+        current = target == nodes_by_id.end() ? nullptr : target->second;
+    }
+    return {};
+}
 
 namespace
 {
@@ -16,6 +55,9 @@ constexpr int PREVIOUS_DATABASE_SCHEMA_VERSION = 4;
 constexpr int ROLE_POLICY_DATABASE_SCHEMA_VERSION = 5;
 constexpr int ROUTE_DATABASE_SCHEMA_VERSION = 6;
 constexpr int LEGACY_CURRENT_DATABASE_SCHEMA_VERSION = 7;
+constexpr int ROUTE_POLICY_BUSY_TIMEOUT_MS = 5000;
+
+std::mutex route_confirmation_policy_mutex;
 
 std::string column_text(sqlite3_stmt* statement, int column)
 {
@@ -27,6 +69,140 @@ bool bind_text(sqlite3_stmt* statement, int index, const std::string& value)
 {
     return sqlite3_bind_text(statement, index, value.c_str(), -1,
                              SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
+bool load_route_components(sqlite3* db,
+                           const std::string& route_id,
+                           std::vector<SupplyRouteNode>& nodes,
+                           std::vector<SupplyRouteEdge>& edges)
+{
+    nodes.clear();
+    edges.clear();
+
+    sqlite3_stmt* statement = nullptr;
+    const char* node_sql =
+        "SELECT node_id, node_type, label, role, username, position_x, "
+        "position_y, step_index FROM route_nodes WHERE route_id = ? "
+        "ORDER BY step_index, node_id;";
+    if(sqlite3_prepare_v2(db, node_sql, -1, &statement, nullptr) != SQLITE_OK ||
+       !bind_text(statement, 1, route_id))
+    {
+        if(statement) sqlite3_finalize(statement);
+        return false;
+    }
+
+    int result = SQLITE_ROW;
+    while((result = sqlite3_step(statement)) == SQLITE_ROW)
+    {
+        nodes.push_back(SupplyRouteNode{
+            route_id,
+            column_text(statement, 0),
+            column_text(statement, 1),
+            column_text(statement, 2),
+            column_text(statement, 3),
+            column_text(statement, 4),
+            sqlite3_column_int(statement, 5),
+            sqlite3_column_int(statement, 6),
+            sqlite3_column_int(statement, 7)
+        });
+    }
+    sqlite3_finalize(statement);
+    if(result != SQLITE_DONE) return false;
+
+    const char* edge_sql =
+        "SELECT from_node_id, to_node_id FROM route_edges WHERE route_id = ? "
+        "ORDER BY from_node_id, to_node_id;";
+    statement = nullptr;
+    if(sqlite3_prepare_v2(db, edge_sql, -1, &statement, nullptr) != SQLITE_OK ||
+       !bind_text(statement, 1, route_id))
+    {
+        if(statement) sqlite3_finalize(statement);
+        return false;
+    }
+    result = SQLITE_ROW;
+    while((result = sqlite3_step(statement)) == SQLITE_ROW)
+    {
+        edges.push_back(SupplyRouteEdge{
+            route_id,
+            column_text(statement, 0),
+            column_text(statement, 1)
+        });
+    }
+    sqlite3_finalize(statement);
+    return result == SQLITE_DONE;
+}
+
+bool route_semantics_equal(const std::vector<SupplyRouteNode>& left_nodes,
+                           const std::vector<SupplyRouteEdge>& left_edges,
+                           const std::vector<SupplyRouteNode>& right_nodes,
+                           const std::vector<SupplyRouteEdge>& right_edges)
+{
+    if(left_nodes.size() != right_nodes.size() ||
+       left_edges.size() != right_edges.size())
+        return false;
+
+    auto normalized_nodes = [](const std::vector<SupplyRouteNode>& source) {
+        std::vector<SupplyRouteNode> result = source;
+        std::sort(result.begin(), result.end(),
+                  [](const SupplyRouteNode& left, const SupplyRouteNode& right) {
+                      return left.node_id < right.node_id;
+                  });
+        return result;
+    };
+    auto normalized_edges = [](const std::vector<SupplyRouteEdge>& source) {
+        std::vector<std::pair<std::string, std::string>> result;
+        result.reserve(source.size());
+        for(const SupplyRouteEdge& edge : source)
+            result.emplace_back(edge.from_node_id, edge.to_node_id);
+        std::sort(result.begin(), result.end());
+        return result;
+    };
+
+    const auto left = normalized_nodes(left_nodes);
+    const auto right = normalized_nodes(right_nodes);
+    for(std::size_t index = 0; index < left.size(); ++index)
+    {
+        const SupplyRouteNode& a = left[index];
+        const SupplyRouteNode& b = right[index];
+        if(a.node_id != b.node_id ||
+           a.node_type != b.node_type ||
+           a.label != b.label ||
+           a.role != b.role ||
+           a.username != b.username ||
+           a.step_index != b.step_index)
+            return false;
+    }
+    return normalized_edges(left_edges) == normalized_edges(right_edges);
+}
+
+std::string next_route_revision_id(sqlite3* db,
+                                   const std::string& base_route_id)
+{
+    const std::string prefix = base_route_id + "-v";
+    int maximum_revision = 0;
+    sqlite3_stmt* statement = nullptr;
+    if(sqlite3_prepare_v2(
+           db, "SELECT route_id FROM route_definitions;", -1,
+           &statement, nullptr) != SQLITE_OK)
+        return prefix + "1";
+
+    while(sqlite3_step(statement) == SQLITE_ROW)
+    {
+        const std::string candidate = column_text(statement, 0);
+        if(candidate.compare(0, prefix.size(), prefix) != 0) continue;
+        const std::string suffix = candidate.substr(prefix.size());
+        try
+        {
+            std::size_t parsed = 0;
+            const int revision = std::stoi(suffix, &parsed);
+            if(parsed == suffix.size()) maximum_revision = std::max(maximum_revision, revision);
+        }
+        catch(...)
+        {
+        }
+    }
+    sqlite3_finalize(statement);
+    return prefix + std::to_string(maximum_revision + 1);
 }
 
 bool execute_sql(sqlite3* db, const char* sql, const char* operation)
@@ -636,6 +812,7 @@ bool save_confirmation_policies(
     const std::string& db_path,
     const std::vector<ConfirmationPolicy>& policies)
 {
+    std::lock_guard<std::mutex> lock(route_confirmation_policy_mutex);
     if(policies.size() != 4) return false;
     for(const ConfirmationPolicy& policy : policies)
     {
@@ -651,6 +828,7 @@ bool save_confirmation_policies(
         if(db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
     if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
                     "Begin confirmation policy update failed"))
     {
@@ -705,9 +883,13 @@ bool save_confirmation_policies(
 bool ensure_route_confirmation_policies(
     const std::string& db_path,
     const std::string& route_id,
-    const std::vector<SupplyRouteNode>& nodes)
+    const std::vector<SupplyRouteNode>& nodes,
+    const std::vector<SupplyRouteEdge>& edges)
 {
+    std::lock_guard<std::mutex> lock(route_confirmation_policy_mutex);
     if(route_id.empty() || nodes.empty()) return false;
+    const std::unordered_set<std::string> connected_node_ids =
+        supplier_route_path_node_ids(nodes, edges);
 
     sqlite3* db = nullptr;
     if(sqlite3_open(db_path.c_str(), &db) != SQLITE_OK)
@@ -716,6 +898,7 @@ bool ensure_route_confirmation_policies(
         if(db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
     if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
                     "Begin route confirmation policy setup failed"))
     {
@@ -726,6 +909,15 @@ bool ensure_route_confirmation_policies(
     const char* legacy_sql =
         "SELECT typed_name, handwritten, face FROM confirmation_policy "
         "WHERE role = ? LIMIT 1;";
+    const char* inherited_sql =
+        "SELECT p.typed_name, p.handwritten, p.face "
+        "FROM route_node_confirmation_policy p "
+        "JOIN route_definitions source ON source.route_id = p.route_id "
+        "JOIN route_definitions target ON target.route_id = ? "
+        "WHERE p.route_id <> ? AND p.node_id = ? AND p.role = ? AND p.username = ? "
+        "AND (source.batch_id = target.batch_id OR source.is_default = 1) "
+        "ORDER BY CASE WHEN source.batch_id = target.batch_id THEN 0 ELSE 1 END, "
+        "p.updated_at DESC LIMIT 1;";
     const char* insert_sql =
         "INSERT OR IGNORE INTO route_node_confirmation_policy "
         "(route_id, node_id, node_label, role, username, typed_name, "
@@ -737,25 +929,56 @@ bool ensure_route_confirmation_policies(
     bool succeeded = true;
     for(const SupplyRouteNode& node : nodes)
     {
+        if(connected_node_ids.count(node.node_id) == 0) continue;
+
         bool typed_name = true;
         bool handwritten = false;
         bool face = false;
 
-        sqlite3_stmt* legacy_statement = nullptr;
-        if(sqlite3_prepare_v2(db, legacy_sql, -1, &legacy_statement, nullptr) !=
+        bool inherited = false;
+        sqlite3_stmt* inherited_statement = nullptr;
+        if(sqlite3_prepare_v2(db, inherited_sql, -1, &inherited_statement, nullptr) !=
            SQLITE_OK)
         {
             succeeded = false;
             break;
         }
-        if(bind_text(legacy_statement, 1, node.role) &&
-           sqlite3_step(legacy_statement) == SQLITE_ROW)
+        if(bind_text(inherited_statement, 1, route_id) &&
+           bind_text(inherited_statement, 2, route_id) &&
+           bind_text(inherited_statement, 3, node.node_id) &&
+           bind_text(inherited_statement, 4, node.role) &&
+           bind_text(inherited_statement, 5, node.username) &&
+           sqlite3_step(inherited_statement) == SQLITE_ROW)
         {
-            typed_name = sqlite3_column_int(legacy_statement, 0) != 0;
-            handwritten = sqlite3_column_int(legacy_statement, 1) != 0;
-            face = sqlite3_column_int(legacy_statement, 2) != 0;
+            typed_name = sqlite3_column_int(inherited_statement, 0) != 0;
+            handwritten = sqlite3_column_int(inherited_statement, 1) != 0;
+            face = sqlite3_column_int(inherited_statement, 2) != 0;
+            inherited = true;
         }
-        sqlite3_finalize(legacy_statement);
+        sqlite3_finalize(inherited_statement);
+
+        if(!inherited)
+        {
+            sqlite3_stmt* legacy_statement = nullptr;
+            if(sqlite3_prepare_v2(db, legacy_sql, -1, &legacy_statement, nullptr) !=
+               SQLITE_OK)
+            {
+                succeeded = false;
+                break;
+            }
+            if(bind_text(legacy_statement, 1, node.role) &&
+               sqlite3_step(legacy_statement) == SQLITE_ROW)
+            {
+                typed_name = sqlite3_column_int(legacy_statement, 0) != 0;
+                handwritten = sqlite3_column_int(legacy_statement, 1) != 0;
+                face = sqlite3_column_int(legacy_statement, 2) != 0;
+            }
+            sqlite3_finalize(legacy_statement);
+            // A newly introduced route node must always start with the one
+            // confirmation method that is fully operational in this system.
+            typed_name = true;
+        }
+        if(!typed_name && !handwritten && !face) typed_name = true;
 
         sqlite3_stmt* insert_statement = nullptr;
         if(!succeeded || sqlite3_prepare_v2(db, insert_sql, -1,
@@ -804,6 +1027,46 @@ bool ensure_route_confirmation_policies(
         }
     }
 
+    if(succeeded)
+    {
+        std::vector<std::string> stale_node_ids;
+        sqlite3_stmt* policy_nodes = nullptr;
+        const char* policy_nodes_sql =
+            "SELECT node_id FROM route_node_confirmation_policy WHERE route_id = ?;";
+        succeeded = sqlite3_prepare_v2(
+            db, policy_nodes_sql, -1, &policy_nodes, nullptr) == SQLITE_OK &&
+            bind_text(policy_nodes, 1, route_id);
+        int result = SQLITE_ROW;
+        while(succeeded && (result = sqlite3_step(policy_nodes)) == SQLITE_ROW)
+        {
+            const std::string node_id = column_text(policy_nodes, 0);
+            if(connected_node_ids.count(node_id) == 0)
+                stale_node_ids.push_back(node_id);
+        }
+        if(succeeded && result != SQLITE_DONE) succeeded = false;
+        if(policy_nodes) sqlite3_finalize(policy_nodes);
+
+        const char* cleanup_sql =
+            "DELETE FROM route_node_confirmation_policy "
+            "WHERE route_id = ? AND node_id = ?;";
+        for(const std::string& node_id : stale_node_ids)
+        {
+            sqlite3_stmt* cleanup_statement = nullptr;
+            if(!succeeded || sqlite3_prepare_v2(
+                   db, cleanup_sql, -1, &cleanup_statement, nullptr) != SQLITE_OK)
+            {
+                succeeded = false;
+                if(cleanup_statement) sqlite3_finalize(cleanup_statement);
+                break;
+            }
+            succeeded = bind_text(cleanup_statement, 1, route_id) &&
+                bind_text(cleanup_statement, 2, node_id) &&
+                sqlite3_step(cleanup_statement) == SQLITE_DONE;
+            sqlite3_finalize(cleanup_statement);
+            if(!succeeded) break;
+        }
+    }
+
     if(!succeeded)
     {
         execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy setup failed");
@@ -830,6 +1093,16 @@ bool load_route_confirmation_policy(const std::string& db_path,
     {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(db) << '\n';
         if(db) sqlite3_close(db);
+        return false;
+    }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
+
+    std::vector<SupplyRouteNode> route_nodes;
+    std::vector<SupplyRouteEdge> route_edges;
+    if(!load_route_components(db, route_id, route_nodes, route_edges) ||
+       supplier_route_path_node_ids(route_nodes, route_edges).count(node_id) == 0)
+    {
+        sqlite3_close(db);
         return false;
     }
 
@@ -884,13 +1157,25 @@ bool load_route_confirmation_policies(
         if(db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
+
+    std::vector<SupplyRouteNode> route_nodes;
+    std::vector<SupplyRouteEdge> route_edges;
+    if(!load_route_components(db, route_id, route_nodes, route_edges))
+    {
+        sqlite3_close(db);
+        return false;
+    }
+    const std::unordered_set<std::string> connected_node_ids =
+        supplier_route_path_node_ids(route_nodes, route_edges);
 
     const char* sql =
         "SELECT p.route_id, p.node_id, p.node_label, p.role, p.username, "
         "p.typed_name, p.handwritten, p.face, p.updated_by_uid, p.updated_at "
         "FROM route_node_confirmation_policy p "
         "JOIN route_nodes n ON n.route_id = p.route_id AND n.node_id = p.node_id "
-        "WHERE p.route_id = ? ORDER BY n.step_index ASC, p.node_id ASC;";
+        "WHERE p.route_id = ? "
+        "ORDER BY n.step_index ASC, p.node_id ASC;";
     sqlite3_stmt* statement = nullptr;
     if(sqlite3_prepare_v2(db, sql, -1, &statement, nullptr) != SQLITE_OK)
     {
@@ -909,6 +1194,7 @@ bool load_route_confirmation_policies(
     int result = SQLITE_ROW;
     while((result = sqlite3_step(statement)) == SQLITE_ROW)
     {
+        if(connected_node_ids.count(column_text(statement, 1)) == 0) continue;
         ConfirmationPolicy policy;
         policy.route_id = column_text(statement, 0);
         policy.node_id = column_text(statement, 1);
@@ -936,6 +1222,7 @@ bool save_route_confirmation_policies(
     const std::string& route_id,
     const std::vector<ConfirmationPolicy>& policies)
 {
+    std::lock_guard<std::mutex> lock(route_confirmation_policy_mutex);
     if(route_id.empty() || policies.empty()) return false;
     std::unordered_set<std::string> submitted_node_ids;
     for(const ConfirmationPolicy& policy : policies)
@@ -953,6 +1240,7 @@ bool save_route_confirmation_policies(
         if(db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
     if(!execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
                     "Begin route confirmation policy update failed"))
     {
@@ -960,20 +1248,17 @@ bool save_route_confirmation_policies(
         return false;
     }
 
-    const char* count_sql =
-        "SELECT COUNT(*) FROM route_nodes WHERE route_id = ?;";
-    sqlite3_stmt* count_statement = nullptr;
-    const bool count_prepared =
-        sqlite3_prepare_v2(db, count_sql, -1, &count_statement, nullptr) == SQLITE_OK;
-    const bool count_bound = count_prepared &&
-        bind_text(count_statement, 1, route_id);
-    const bool count_read = count_bound &&
-        sqlite3_step(count_statement) == SQLITE_ROW;
-    const int route_node_count = count_read
-        ? sqlite3_column_int(count_statement, 0)
-        : -1;
-    if(count_statement) sqlite3_finalize(count_statement);
-    if(route_node_count != static_cast<int>(submitted_node_ids.size()))
+    std::vector<SupplyRouteNode> route_nodes;
+    std::vector<SupplyRouteEdge> route_edges;
+    if(!load_route_components(db, route_id, route_nodes, route_edges))
+    {
+        execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy update failed");
+        sqlite3_close(db);
+        return false;
+    }
+    const std::unordered_set<std::string> connected_node_ids =
+        supplier_route_path_node_ids(route_nodes, route_edges);
+    if(connected_node_ids.size() != submitted_node_ids.size())
     {
         execute_sql(db, "ROLLBACK;", "Rollback route confirmation policy update failed");
         sqlite3_close(db);
@@ -994,6 +1279,11 @@ bool save_route_confirmation_policies(
     bool succeeded = true;
     for(const ConfirmationPolicy& policy : policies)
     {
+        if(connected_node_ids.count(policy.node_id) == 0)
+        {
+            succeeded = false;
+            break;
+        }
         sqlite3_stmt* node_statement = nullptr;
         if(sqlite3_prepare_v2(db, node_sql, -1, &node_statement, nullptr) != SQLITE_OK)
         {
@@ -1817,6 +2107,7 @@ bool save_workflow_route(const std::string& db_path,
                          bool allow_incomplete)
 {
     error.clear();
+    static_cast<void>(allow_incomplete);
     if(!route_node_ids_are_unique(nodes))
     {
         error = "Workflow contains an invalid or duplicate node ID";
@@ -1843,6 +2134,7 @@ bool save_workflow_route(const std::string& db_path,
         if(db) sqlite3_close(db);
         return false;
     }
+    sqlite3_busy_timeout(db, ROUTE_POLICY_BUSY_TIMEOUT_MS);
     bool succeeded = execute_sql(db, "BEGIN IMMEDIATE TRANSACTION;",
                                  "Begin workflow save failed");
     sqlite3_stmt* statement = nullptr;
@@ -1935,241 +2227,6 @@ bool save_workflow_route(const std::string& db_path,
         if(succeeded && current_route_id.empty()) current_route_id = "route-default";
     }
 
-    auto current_route_matches = [&]() {
-        std::vector<SupplyRouteNode> current_nodes;
-        std::vector<SupplyRouteEdge> current_edges;
-
-        const char* node_sql =
-            "SELECT node_id, node_type, label, role, username, position_x, "
-            "position_y, step_index FROM route_nodes WHERE route_id = ? "
-            "ORDER BY step_index ASC, position_x ASC, node_id ASC;";
-        sqlite3_stmt* node_query = nullptr;
-        if(sqlite3_prepare_v2(db, node_sql, -1, &node_query, nullptr) != SQLITE_OK)
-            return false;
-        bool bound = bind_text(node_query, 1, current_route_id);
-        int result = SQLITE_ROW;
-        while(bound && (result = sqlite3_step(node_query)) == SQLITE_ROW)
-        {
-            current_nodes.push_back(SupplyRouteNode{
-                current_route_id,
-                column_text(node_query, 0),
-                column_text(node_query, 1),
-                column_text(node_query, 2),
-                column_text(node_query, 3),
-                column_text(node_query, 4),
-                sqlite3_column_int(node_query, 5),
-                sqlite3_column_int(node_query, 6),
-                sqlite3_column_int(node_query, 7)
-            });
-        }
-        bound = bound && result == SQLITE_DONE;
-        sqlite3_finalize(node_query);
-        if(!bound) return false;
-
-        const char* edge_sql =
-            "SELECT from_node_id, to_node_id FROM route_edges "
-            "WHERE route_id = ? ORDER BY from_node_id ASC, to_node_id ASC;";
-        sqlite3_stmt* edge_query = nullptr;
-        if(sqlite3_prepare_v2(db, edge_sql, -1, &edge_query, nullptr) != SQLITE_OK)
-            return false;
-        bound = bind_text(edge_query, 1, current_route_id);
-        result = SQLITE_ROW;
-        while(bound && (result = sqlite3_step(edge_query)) == SQLITE_ROW)
-        {
-            current_edges.push_back(SupplyRouteEdge{
-                current_route_id,
-                column_text(edge_query, 0),
-                column_text(edge_query, 1)
-            });
-        }
-        bound = bound && result == SQLITE_DONE;
-        sqlite3_finalize(edge_query);
-        if(!bound || current_nodes.size() != nodes.size() ||
-           current_edges.size() != edges.size())
-            return false;
-
-        std::unordered_map<std::string, SupplyRouteNode> current_by_id;
-        for(const SupplyRouteNode& node : current_nodes)
-            current_by_id[node.node_id] = node;
-        for(const SupplyRouteNode& node : nodes)
-        {
-            const auto current = current_by_id.find(node.node_id);
-            if(current == current_by_id.end() ||
-               current->second.node_type != node.node_type ||
-               current->second.label != node.label ||
-               current->second.role != node.role ||
-               current->second.username != node.username ||
-               current->second.step_index != node.step_index)
-                return false;
-        }
-
-        std::unordered_set<std::string> current_edge_keys;
-        for(const SupplyRouteEdge& edge : current_edges)
-            current_edge_keys.insert(edge.from_node_id + "\x1f" + edge.to_node_id);
-        for(const SupplyRouteEdge& edge : edges)
-        {
-            if(current_edge_keys.count(edge.from_node_id + "\x1f" + edge.to_node_id) == 0)
-                return false;
-        }
-        return true;
-    };
-
-    auto committed_route_change_is_safe = [&]() {
-        if(batch_id.empty())
-            return allow_incomplete ? true : current_route_matches();
-
-        struct CommittedStage
-        {
-            int block_id = -1;
-            int parent_block_id = -1;
-            std::string route_id;
-            std::string route_node_id;
-            int route_step_index = -1;
-            std::string role;
-            std::string username;
-        };
-
-        std::vector<CommittedStage> committed;
-        const char* record_sql =
-            "SELECT block_id, parent_block_id, route_id, route_node_id, "
-            "route_step_index, role, confirmed_by FROM supply_chain_records "
-            "WHERE batch_id = ? ORDER BY block_id ASC;";
-        sqlite3_stmt* record_query = nullptr;
-        if(sqlite3_prepare_v2(db, record_sql, -1, &record_query, nullptr) != SQLITE_OK)
-            return false;
-        bool bound = bind_text(record_query, 1, batch_id);
-        int result = SQLITE_ROW;
-        while(bound && (result = sqlite3_step(record_query)) == SQLITE_ROW)
-        {
-            committed.push_back(CommittedStage{
-                sqlite3_column_int(record_query, 0),
-                sqlite3_column_int(record_query, 1),
-                column_text(record_query, 2),
-                column_text(record_query, 3),
-                sqlite3_column_int(record_query, 4),
-                column_text(record_query, 5),
-                column_text(record_query, 6)
-            });
-        }
-        bound = bound && result == SQLITE_DONE;
-        sqlite3_finalize(record_query);
-        if(!bound || committed.empty()) return true;
-
-        std::unordered_map<std::string, const SupplyRouteNode*> candidate_by_id;
-        for(const SupplyRouteNode& node : nodes)
-            candidate_by_id[node.node_id] = &node;
-
-        std::unordered_set<std::string> committed_node_ids;
-        std::unordered_map<int, std::string> node_by_block;
-        for(const CommittedStage& stage : committed)
-        {
-            if(!stage.route_id.empty() && stage.route_id != current_route_id)
-                return false;
-
-            const SupplyRouteNode* candidate = nullptr;
-            if(!stage.route_node_id.empty())
-            {
-                const auto item = candidate_by_id.find(stage.route_node_id);
-                if(item != candidate_by_id.end()) candidate = item->second;
-            }
-            else
-            {
-                for(const SupplyRouteNode& node : nodes)
-                {
-                    if(node.role != stage.role ||
-                       node.username != stage.username ||
-                       (stage.route_step_index >= 0 &&
-                        node.step_index != stage.route_step_index))
-                        continue;
-                    if(candidate) return false;
-                    candidate = &node;
-                }
-            }
-
-            if(!candidate || candidate->role != stage.role ||
-               candidate->username != stage.username ||
-               (stage.route_node_id.empty() && stage.route_step_index >= 0 &&
-                candidate->step_index != stage.route_step_index) ||
-               !committed_node_ids.insert(candidate->node_id).second)
-                return false;
-
-            node_by_block[stage.block_id] = candidate->node_id;
-        }
-
-        auto candidate_reaches = [&](const std::string& from_node_id,
-                                     const std::string& to_node_id) {
-            if(from_node_id == to_node_id) return true;
-            std::vector<std::string> pending{from_node_id};
-            std::unordered_set<std::string> visited;
-            while(!pending.empty())
-            {
-                const std::string current = pending.back();
-                pending.pop_back();
-                if(!visited.insert(current).second) continue;
-                for(const SupplyRouteEdge& edge : edges)
-                {
-                    if(edge.from_node_id != current) continue;
-                    if(edge.to_node_id == to_node_id) return true;
-                    pending.push_back(edge.to_node_id);
-                }
-            }
-            return false;
-        };
-
-        if(!allow_incomplete)
-        {
-            for(const CommittedStage& stage : committed)
-            {
-                if(stage.parent_block_id < 0) continue;
-                const auto parent = node_by_block.find(stage.parent_block_id);
-                const auto child = node_by_block.find(stage.block_id);
-                if(parent == node_by_block.end() || child == node_by_block.end() ||
-                   !candidate_reaches(parent->second, child->second))
-                    return false;
-            }
-        }
-        return true;
-    };
-
-    auto has_records = [&](const std::string& candidate) {
-        sqlite3_stmt* query = nullptr;
-        const char* sql = batch_id.empty()
-            ? "SELECT EXISTS(SELECT 1 FROM supply_chain_records WHERE route_id = ?);"
-            : "SELECT EXISTS(SELECT 1 FROM supply_chain_records "
-              "WHERE batch_id = ?);";
-        if(sqlite3_prepare_v2(db, sql, -1, &query, nullptr) != SQLITE_OK)
-            return false;
-        bool bound = batch_id.empty()
-            ? bind_text(query, 1, candidate)
-            : bind_text(query, 1, batch_id);
-        const bool exists = bound && sqlite3_step(query) == SQLITE_ROW &&
-            sqlite3_column_int(query, 0) != 0;
-        sqlite3_finalize(query);
-        return exists;
-    };
-
-    std::string base_route_id = current_route_id;
-    if(!batch_id.empty() && current_route_id == "route-default")
-        base_route_id = workflow_route_id(batch_id);
-
-    const bool current_has_records = has_records(current_route_id);
-    if(current_has_records)
-    {
-        if(!committed_route_change_is_safe())
-        {
-            fail("Cannot change a route after blocks have been committed. "
-                 "Only changes after the last committed stage are allowed.");
-        }
-        else
-        {
-            route_id = current_route_id;
-        }
-    }
-    else
-    {
-        route_id = base_route_id;
-    }
-
     if(!succeeded)
     {
         execute_sql(db, "ROLLBACK;", "Rollback workflow route selection failed");
@@ -2177,15 +2234,108 @@ bool save_workflow_route(const std::string& db_path,
         return false;
     }
 
-    if(batch_id.empty() && route_id != current_route_id)
+    std::vector<SupplyRouteNode> current_nodes;
+    std::vector<SupplyRouteEdge> current_edges;
+    if(!load_route_components(db, current_route_id, current_nodes, current_edges))
     {
-        sqlite3_stmt* deactivate = nullptr;
-        const char* sql =
-            "UPDATE route_definitions SET is_default = 0 WHERE route_id = ?;";
-        succeeded = sqlite3_prepare_v2(db, sql, -1, &deactivate, nullptr) == SQLITE_OK &&
-            bind_text(deactivate, 1, current_route_id) &&
-            sqlite3_step(deactivate) == SQLITE_DONE;
-        if(deactivate) sqlite3_finalize(deactivate);
+        execute_sql(db, "ROLLBACK;", "Rollback workflow route read failed");
+        sqlite3_close(db);
+        error = "Failed to read the current workflow route";
+        return false;
+    }
+
+    bool current_route_owned_by_batch = true;
+    if(!batch_id.empty())
+    {
+        sqlite3_stmt* owner_statement = nullptr;
+        const char* owner_sql =
+            "SELECT COALESCE(batch_id, '') FROM route_definitions "
+            "WHERE route_id = ? LIMIT 1;";
+        if(sqlite3_prepare_v2(db, owner_sql, -1, &owner_statement, nullptr) !=
+           SQLITE_OK ||
+           !bind_text(owner_statement, 1, current_route_id) ||
+           sqlite3_step(owner_statement) != SQLITE_ROW)
+        {
+            if(owner_statement) sqlite3_finalize(owner_statement);
+            execute_sql(db, "ROLLBACK;", "Rollback workflow owner read failed");
+            sqlite3_close(db);
+            error = "Failed to identify the current workflow owner";
+            return false;
+        }
+        current_route_owned_by_batch =
+            column_text(owner_statement, 0) == batch_id;
+        sqlite3_finalize(owner_statement);
+    }
+
+    const bool semantics_changed =
+        !current_route_owned_by_batch ||
+        !route_semantics_equal(nodes, edges, current_nodes, current_edges);
+    route_id = current_route_id;
+    if(semantics_changed)
+    {
+        // Reuse an earlier revision when the administrator restores an exact
+        // route. This makes undo/delete return to the prior active topology
+        // without rewriting any historical Block.
+        sqlite3_stmt* revisions = nullptr;
+        std::vector<std::string> revision_ids;
+        const char* revisions_sql = batch_id.empty()
+            ? "SELECT route_id FROM route_definitions WHERE COALESCE(batch_id, '') = '' "
+              "ORDER BY updated_at DESC, route_id DESC;"
+            : "SELECT route_id FROM route_definitions WHERE batch_id = ? "
+              "ORDER BY updated_at DESC, route_id DESC;";
+        if(sqlite3_prepare_v2(db, revisions_sql, -1, &revisions, nullptr) != SQLITE_OK)
+        {
+            succeeded = false;
+        }
+        else
+        {
+            if(!batch_id.empty()) succeeded = bind_text(revisions, 1, batch_id);
+            int revision_result = SQLITE_ROW;
+            while(succeeded &&
+                  (revision_result = sqlite3_step(revisions)) == SQLITE_ROW)
+            {
+                revision_ids.push_back(column_text(revisions, 0));
+            }
+            if(succeeded && revision_result != SQLITE_DONE) succeeded = false;
+            sqlite3_finalize(revisions);
+
+            // Finish the route-definition cursor before opening component
+            // cursors on the same connection. This keeps revision lookup
+            // deterministic while an administrator edits the route quickly.
+            for(const std::string& candidate_id : revision_ids)
+            {
+                if(!succeeded || candidate_id == current_route_id) continue;
+                std::vector<SupplyRouteNode> candidate_nodes;
+                std::vector<SupplyRouteEdge> candidate_edges;
+                if(!load_route_components(
+                       db, candidate_id, candidate_nodes, candidate_edges))
+                {
+                    succeeded = false;
+                    break;
+                }
+                if(route_semantics_equal(nodes, edges, candidate_nodes, candidate_edges))
+                {
+                    route_id = candidate_id;
+                    break;
+                }
+            }
+        }
+
+        if(succeeded && route_id == current_route_id)
+        {
+            const std::string base_route_id = batch_id.empty()
+                ? "route-default"
+                : workflow_route_id(batch_id);
+            route_id = next_route_revision_id(db, base_route_id);
+        }
+    }
+
+    if(batch_id.empty() && succeeded)
+    {
+        succeeded = execute_sql(
+            db,
+            "UPDATE route_definitions SET is_default = 0 WHERE is_default = 1;",
+            "Deactivate previous default routes failed");
     }
 
     const char* definition_sql =
@@ -2210,7 +2360,7 @@ bool save_workflow_route(const std::string& db_path,
         succeeded = false;
     }
 
-    if(succeeded && route_id == current_route_id)
+    if(succeeded)
     {
         sqlite3_stmt* delete_statement = nullptr;
         succeeded = sqlite3_prepare_v2(
@@ -2220,7 +2370,7 @@ bool save_workflow_route(const std::string& db_path,
             sqlite3_step(delete_statement) == SQLITE_DONE;
         if(delete_statement) sqlite3_finalize(delete_statement);
     }
-    if(succeeded && route_id == current_route_id)
+    if(succeeded)
     {
         sqlite3_stmt* delete_statement = nullptr;
         succeeded = sqlite3_prepare_v2(

@@ -38,7 +38,6 @@
                     <p id="identity-status"></p>
                 </div>
                 <div class="header-actions">
-                    <button id="refresh-button" type="button">Refresh Records</button>
                     <button id="logout-button" type="button">Log Out</button>
                 </div>
             </header>
@@ -90,7 +89,6 @@
                     <button id="workflow-redo" class="workflow-secondary" type="button" disabled>
                         Redo
                     </button>
-                    <button id="workflow-save" type="button">Save route</button>
                 </div>
                 <p class="workflow-help">
                     Drag nodes or the background to navigate. Pinch to zoom. Use handles to connect stages. Click a connection or its × to remove it. New nodes appear without connections; drag them into place and connect them manually.
@@ -118,7 +116,7 @@
                     <div>
                         <p class="eyebrow">CONFIRMATION POLICY</p>
                         <h2 id="policy-title">User confirmation methods</h2>
-                        <p>Configure methods by route node and assigned account.</p>
+                        <p>Configure methods for each connected route node and assigned account.</p>
                     </div>
                     <span id="policy-role-count" class="badge pending">Loading policies</span>
                 </summary>
@@ -126,8 +124,11 @@
                     <form id="confirmation-policy-form" class="policy-form">
                         <div id="role-policy-list" class="role-policy-list"></div>
                         <div class="policy-actions">
-                            <button id="save-policy-button" type="submit">Save Route Node Policies</button>
-                            <p id="policy-status" class="status" role="status" aria-live="polite"></p>
+                            <button id="save-policy-button" type="submit">
+                                Save Route Node Policies
+                            </button>
+                            <p id="policy-status" class="status" role="status"
+                               aria-live="polite"></p>
                         </div>
                     </form>
                 </div>

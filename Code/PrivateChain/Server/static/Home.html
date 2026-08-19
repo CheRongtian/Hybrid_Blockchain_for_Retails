@@ -171,7 +171,7 @@
                     <label>
                         Vehicle / Container ID
                         <input name="vehicleContainerId"
-                               value="VEHICLE-0001"
+                               placeholder="Assigned for this route transport stage"
                                pattern="(VEHICLE|CONTAINER)-[0-9]{4}"
                                title="Use VEHICLE-0001 or CONTAINER-0001"
                                maxlength="256">
@@ -185,7 +185,8 @@
                     </div>
                     <label>
                         Storage Lot ID
-                        <input name="storageLotId" value="STORAGE-0001"
+                        <input name="storageLotId"
+                               placeholder="Assigned for this route warehouse stage"
                                pattern="STORAGE-[0-9]{4}"
                                title="Use the format STORAGE-0001" maxlength="256">
                     </label>
@@ -225,7 +226,7 @@
                     <label>
                         Storage Zone / Rack ID
                         <input name="storageZoneRackId"
-                               value="ZONE-0001"
+                               placeholder="Assigned for this route warehouse stage"
                                pattern="(ZONE|RACK)-[0-9]{4}"
                                title="Use ZONE-0001 or RACK-0001" maxlength="256">
                     </label>
@@ -303,6 +304,9 @@
                     <button id="submit-record" type="submit">
                         Confirm and Create Merkle Block
                     </button>
+                    <button id="clear-form-button" type="button" class="secondary-button">
+                        Clear form
+                    </button>
                     <p id="request-status" class="request-status" role="status"
                        aria-live="polite"></p>
                 </div>
@@ -312,7 +316,7 @@
             <button id="logout-button" type="button">Log Out</button>
         </section>
 
-        <section id="result-card" class="card result-card" hidden>
+        <dialog id="submission-dialog" class="result-card submission-dialog">
             <p class="eyebrow">SUBMISSION RESULT</p>
             <h2 id="verification-title">Block details</h2>
             <dl>
@@ -333,7 +337,12 @@
                     <dd id="ipfs-count"></dd>
                 </div>
             </dl>
-        </section>
+            <div class="dialog-actions">
+                <form method="dialog">
+                    <button id="submission-acknowledge" type="submit">Confirm</button>
+                </form>
+            </div>
+        </dialog>
     </main>
 
     <script src="/js/main.js" defer></script>

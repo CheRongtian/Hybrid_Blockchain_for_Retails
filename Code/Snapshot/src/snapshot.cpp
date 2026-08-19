@@ -200,29 +200,77 @@ const StageInput* stage_for_block_id(const BatchInput& input, int block_id)
     return nullptr;
 }
 
-bool route_reaches(const BatchInput& input,
-                   const std::string& from_node_id,
-                   const std::string& to_node_id)
+const HistoricalBlockInput* historical_block_for_id(
+    const BatchInput& input,
+    int block_id)
 {
-    if(from_node_id.empty() || to_node_id.empty()) return false;
-    if(from_node_id == to_node_id) return true;
-
-    std::vector<std::string> pending{from_node_id};
-    std::set<std::string> visited;
-    while(!pending.empty())
+    for(const HistoricalBlockInput& block : input.historical_blocks)
     {
-        const std::string current = pending.back();
-        pending.pop_back();
-        if(!visited.insert(current).second) continue;
-        for(const RouteEdgeInput& edge : input.route_edges)
-        {
-            if(edge.from_node_id != current) continue;
-            if(edge.to_node_id == to_node_id) return true;
-            pending.push_back(edge.to_node_id);
-        }
+        if(block.block_id == block_id) return &block;
     }
-    return false;
+    return nullptr;
 }
+
+bool route_is_complete_linear(const BatchInput& input)
+{
+    if(input.route_nodes.size() < 2 ||
+       input.route_edges.size() + 1 != input.route_nodes.size())
+        return false;
+
+    std::map<std::string, int> incoming;
+    std::map<std::string, std::string> outgoing;
+    std::map<std::string, const RouteNodeInput*> nodes_by_id;
+    for(const RouteNodeInput& node : input.route_nodes)
+    {
+        if(node.node_id.empty() || incoming.count(node.node_id) != 0) return false;
+        incoming[node.node_id] = 0;
+        nodes_by_id[node.node_id] = &node;
+    }
+    for(const RouteEdgeInput& edge : input.route_edges)
+    {
+        if(edge.from_node_id == edge.to_node_id ||
+           incoming.count(edge.from_node_id) == 0 ||
+           incoming.count(edge.to_node_id) == 0 ||
+           outgoing.count(edge.from_node_id) != 0)
+            return false;
+        outgoing[edge.from_node_id] = edge.to_node_id;
+        if(++incoming[edge.to_node_id] > 1) return false;
+    }
+
+    const RouteNodeInput* first = nullptr;
+    for(const RouteNodeInput& node : input.route_nodes)
+    {
+        if(incoming[node.node_id] != 0) continue;
+        if(first) return false;
+        first = &node;
+    }
+    if(!first || first->role != "supplier") return false;
+
+    std::set<std::string> visited;
+    std::string current = first->node_id;
+    int expected_step_index = 0;
+    while(!current.empty() && visited.insert(current).second)
+    {
+        const auto node = nodes_by_id.find(current);
+        if(node == nodes_by_id.end() ||
+           node->second->step_index != expected_step_index)
+            return false;
+        const auto next = outgoing.find(current);
+        current = next == outgoing.end() ? "" : next->second;
+        ++expected_step_index;
+    }
+    if(!current.empty() || visited.size() != input.route_nodes.size()) return false;
+
+    const RouteNodeInput* last = nullptr;
+    for(const RouteNodeInput& node : input.route_nodes)
+    {
+        if(outgoing.count(node.node_id) != 0) continue;
+        if(last) return false;
+        last = &node;
+    }
+    return last && last->role == "supermarket";
+}
+
 }
 
 std::string route_fingerprint(
@@ -303,6 +351,10 @@ Eligibility evaluate_eligibility(const BatchInput& input)
     {
         result.errors.push_back("The batch has no saved route definition");
     }
+    else if(!route_is_complete_linear(input))
+    {
+        result.errors.push_back("The saved route is not one complete linear path");
+    }
     else if(ordered_route_nodes.size() != input.stages.size())
     {
         result.errors.push_back(
@@ -350,21 +402,19 @@ Eligibility evaluate_eligibility(const BatchInput& input)
         }
         else
         {
-            const StageInput& previous_route_stage = input.stages[index - 1];
-            const StageInput* parent =
+            const StageInput* parent_stage =
                 stage_for_block_id(input, stage.parent_block_id);
-            const bool parent_hash_matches = parent &&
-                stage.parent_block_hash == parent->block_hash;
-            const bool direct_route_link = parent == &previous_route_stage;
-            const bool historical_route_link = parent &&
-                (route_reaches(input, parent->route_node_id,
-                               stage.route_node_id) ||
-                 route_reaches(input, stage.route_node_id,
-                               parent->route_node_id));
-            if(!parent_hash_matches || stage.parent_block_id >= stage.block_id ||
-               (!direct_route_link && !historical_route_link))
+            const HistoricalBlockInput* parent_history = parent_stage
+                ? nullptr
+                : historical_block_for_id(input, stage.parent_block_id);
+            const std::string parent_hash = parent_stage
+                ? parent_stage->block_hash
+                : parent_history ? parent_history->block_hash : "";
+            const bool parent_hash_matches =
+                !parent_hash.empty() && stage.parent_block_hash == parent_hash;
+            if(!parent_hash_matches || stage.parent_block_id >= stage.block_id)
             {
-                result.errors.push_back(label + " does not link to the previous stage");
+                result.errors.push_back(label + " does not link to immutable block history");
             }
         }
 
@@ -410,11 +460,23 @@ std::optional<Preview> build_preview(
     }
 
     const StageInput& supermarket = input.stages.back();
-    const StageInput* latest_block = &input.stages.front();
+    int latest_block_id = -1;
+    std::string latest_block_hash;
     for(const StageInput& stage : input.stages)
     {
-        if(stage.block_id > latest_block->block_id)
-            latest_block = &stage;
+        if(stage.block_id > latest_block_id && !stage.block_hash.empty())
+        {
+            latest_block_id = stage.block_id;
+            latest_block_hash = stage.block_hash;
+        }
+    }
+    for(const HistoricalBlockInput& block : input.historical_blocks)
+    {
+        if(block.block_id > latest_block_id && !block.block_hash.empty())
+        {
+            latest_block_id = block.block_id;
+            latest_block_hash = block.block_hash;
+        }
     }
 
     struct PublicRouteStage
@@ -500,7 +562,7 @@ std::optional<Preview> build_preview(
                           timestamp_id_component(preview.generated_at) + "-" +
                           version_suffix(SNAPSHOT_VERSION);
     preview.batch_id = input.batch_id;
-    preview.final_private_block_hash = latest_block->block_hash;
+    preview.final_private_block_hash = latest_block_hash;
     preview.route_fingerprint = route_fingerprint(
         input.route_nodes, input.route_edges);
     preview.public_evidence = public_evidence;

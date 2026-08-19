@@ -8,7 +8,7 @@ const logoutButton = document.querySelector("#logout-button");
 const form = document.querySelector("#record-form");
 const currentStage = document.querySelector("#current-stage");
 const statusLine = document.querySelector("#request-status");
-const resultCard = document.querySelector("#result-card");
+const submissionDialog = document.querySelector("#submission-dialog");
 const verificationTitle = document.querySelector("#verification-title");
 const productInput = document.querySelector("#product-input");
 const supplierMasterFields = document.querySelector("#supplier-master-fields");
@@ -20,10 +20,14 @@ const batchFarmLocation = document.querySelector("#batch-farm-location");
 const batchStatus = document.querySelector("#batch-status");
 const deliveryLocationInput = document.querySelector("[name=deliveryLocation]");
 const shipmentIdInput = document.querySelector("[name=shipmentId]");
+const vehicleContainerIdInput = document.querySelector("[name=vehicleContainerId]");
+const storageLotIdInput = document.querySelector("[name=storageLotId]");
+const storageZoneRackIdInput = document.querySelector("[name=storageZoneRackId]");
 const attachmentCategory = document.querySelector("#attachment-category");
 const ipfsFiles = document.querySelector("#ipfs-files");
 const attachmentList = document.querySelector("#attachment-list");
 const submitRecord = document.querySelector("#submit-record");
+const clearFormButton = document.querySelector("#clear-form-button");
 const storeLocationNumber = document.querySelector("#store-location-number");
 const storeLocationId = document.querySelector("#store-location-id");
 const confirmationPanel = document.querySelector("#confirmation-panel");
@@ -112,6 +116,12 @@ let availableBatches = [];
 let uploadedReferences = [];
 let confirmationPolicy = null;
 let confirmationPolicyRequestId = 0;
+let batchLoadRequestId = 0;
+let liveEventSource = null;
+let recordSubmissionInFlight = false;
+let submissionCompleted = false;
+let liveRefreshInFlight = false;
+let liveRefreshQueued = false;
 
 function currentRole() {
     return session?.user?.role || "";
@@ -132,7 +142,21 @@ function resetSubmissionState() {
     statusLine.className = "request-status";
     signatureStatus.textContent = "";
     signatureStatus.className = "signature-status";
-    resultCard.hidden = true;
+    if (submissionDialog?.open) submissionDialog.close();
+}
+
+function clearRecordForm() {
+    if (!session) return;
+    if (submissionDialog?.open) submissionDialog.close();
+    form.reset();
+    clearAttachmentState();
+    submissionCompleted = false;
+    liveRefreshQueued = false;
+    confirmationPolicy = null;
+    confirmationMethods.replaceChildren();
+    confirmationPanel.hidden = true;
+    confirmationError.textContent = "";
+    configureRole();
 }
 
 function showSession(result) {
@@ -143,6 +167,7 @@ function showSession(result) {
     identityStatus.textContent =
         "Logged in: " + result.user.username + " · " +
         result.user.role + " · " + result.user.organizationId;
+    startLiveUpdates();
     configureRole();
 }
 
@@ -177,6 +202,9 @@ function clearAttachmentState() {
 }
 
 function clearSession() {
+    stopLiveUpdates();
+    batchLoadRequestId += 1;
+    confirmationPolicyRequestId += 1;
     session = null;
     availableBatches = [];
     sessionStorage.removeItem(sessionKey);
@@ -190,6 +218,56 @@ function clearSession() {
     confirmationError.textContent = "";
     form.reset();
     clearAttachmentState();
+}
+
+function stopLiveUpdates() {
+    if (liveEventSource) {
+        liveEventSource.close();
+        liveEventSource = null;
+    }
+    recordSubmissionInFlight = false;
+    submissionCompleted = false;
+    liveRefreshInFlight = false;
+    liveRefreshQueued = false;
+}
+
+async function refreshAssignedStageFromLiveEvent() {
+    if (!session || submissionCompleted) return;
+    if (recordSubmissionInFlight || liveRefreshInFlight) {
+        liveRefreshQueued = true;
+        return;
+    }
+
+    liveRefreshInFlight = true;
+    liveRefreshQueued = false;
+    try {
+        if (currentRole() === "supplier") {
+            await loadConfirmationPolicyForBatch(null);
+        } else {
+            await loadBatches(currentRole(), { preserveForm: true, background: true });
+        }
+    } finally {
+        liveRefreshInFlight = false;
+        if (liveRefreshQueued && session && !submissionCompleted) {
+            liveRefreshQueued = false;
+            window.queueMicrotask(refreshAssignedStageFromLiveEvent);
+        }
+    }
+}
+
+function startLiveUpdates() {
+    stopLiveUpdates();
+    liveEventSource = new EventSource(controlApiBase + "/events");
+    liveEventSource.onmessage = (event) => {
+        if (!event.data || submissionCompleted) return;
+        try {
+            const payload = JSON.parse(event.data);
+            if (!["state_sync", "route_changed", "batch_changed"].includes(payload.type)) return;
+            refreshAssignedStageFromLiveEvent();
+        } catch {
+            // Ignore malformed broadcast data; the normal form remains usable.
+        }
+    };
 }
 
 function setConfirmationError(message) {
@@ -227,47 +305,41 @@ function renderConfirmationPolicy(policy) {
     confirmationPolicy = policy;
     confirmationMethods.replaceChildren();
     confirmationPanel.hidden = false;
-    const configured = [
-        ["typed_name", "Typed name", Boolean(policy.typedName), true],
-        ["handwritten", "Handwritten signature", Boolean(policy.handwritten), false],
-        ["face", "Face confirmation", Boolean(policy.face), false]
-    ];
-    const available = configured.filter(([, , enabled, implemented]) =>
-        enabled && implemented
-    );
     const nodeLabel = policy.nodeLabel || roleLabels[policy.role] || policy.role;
     const accountLabel = policy.username ? ` (${policy.username})` : "";
     confirmationPolicySummary.textContent =
         `Select one method enabled for ${nodeLabel}${accountLabel}.`;
 
-    for (const [value, label, enabled, implemented] of configured) {
-        if (!enabled) continue;
+    const methods = [
+        { property: "typedName", value: "typed_name", label: "Typed name", supported: true },
+        { property: "handwritten", value: "handwritten", label: "Handwritten", supported: false },
+        { property: "face", value: "face", label: "Face", supported: false }
+    ];
+    let selected = false;
+    for (const method of methods) {
+        if (!policy[method.property]) continue;
         const wrapper = document.createElement("label");
-        wrapper.className = implemented
-            ? "confirmation-method"
-            : "confirmation-method disabled";
+        wrapper.className = "confirmation-method";
         const input = document.createElement("input");
         input.type = "radio";
         input.name = "confirmation-method";
-        input.value = value;
-        input.disabled = !implemented;
+        input.value = method.value;
+        input.disabled = !method.supported;
+        if (method.supported && !selected) {
+            input.checked = true;
+            selected = true;
+        }
         const text = document.createElement("span");
-        text.textContent = implemented ? label : `${label} (Unavailable in this demo)`;
+        text.textContent = method.label;
         wrapper.append(input, text);
         confirmationMethods.append(wrapper);
         input.addEventListener("change", updateTypedNameState);
     }
-
-    const selected = selectedConfirmationMethod();
-    if (available.length === 0) {
-        confirmationPolicySummary.textContent =
-            "No usable confirmation method is available in this demo. Enable Typed name in the control panel.";
-        setConfirmationError("A usable confirmation method is required for this demo.");
-    } else if (!selected) {
-        setConfirmationError("Select a confirmation method to continue.");
-    } else {
-        updateTypedNameState();
+    if (!selected) {
+        setConfirmationError("No usable confirmation method is configured for this route stage.");
+        return;
     }
+    updateTypedNameState();
 }
 
 function clearConfirmationPolicy() {
@@ -423,6 +495,58 @@ function selectedBatch() {
     return availableBatches.find((batch) => batch.batchId === batchSelect.value);
 }
 
+function captureEditableFormState() {
+    const values = {};
+    const activeSection = document.querySelector(
+        `[data-role-section="${currentRole()}"]`
+    );
+    const elements = [
+        ...(activeSection
+            ? [...activeSection.querySelectorAll("input, select, textarea")]
+            : []),
+        ...form.querySelectorAll("#confirmed, #typed-confirmation-name")
+    ];
+    for (const element of elements) {
+        if (!element.name && element.id !== "typed-confirmation-name") continue;
+        if (element.type === "file" || element.readOnly) continue;
+        const key = element.name || element.id;
+        values[key] = element.type === "checkbox" || element.type === "radio"
+            ? element.checked
+            : element.value;
+    }
+    return { batchId: batchSelect.value, values };
+}
+
+function restoreEditableFormState(state) {
+    if (!state) return;
+    if ([...batchSelect.options].some((option) => option.value === state.batchId)) {
+        batchSelect.value = state.batchId;
+        updateBatchSummary();
+    }
+    const activeSection = document.querySelector(
+        `[data-role-section="${currentRole()}"]`
+    );
+    const elements = [
+        ...(activeSection
+            ? [...activeSection.querySelectorAll("input, select, textarea")]
+            : []),
+        ...form.querySelectorAll("#confirmed, #typed-confirmation-name")
+    ];
+    for (const element of elements) {
+        if (!element.name && element.id !== "typed-confirmation-name") continue;
+        if (element.type === "file" || element.readOnly) continue;
+        const key = element.name || element.id;
+        if (!(key in state.values)) continue;
+        if (element.type === "checkbox" || element.type === "radio") {
+            element.checked = Boolean(state.values[key]);
+        } else {
+            element.value = state.values[key];
+        }
+    }
+    syncStoreLocationId();
+    renderAttachmentList();
+}
+
 function updateBatchSummary() {
     const batch = selectedBatch();
     setCurrentStage(currentRole(), batch);
@@ -437,11 +561,30 @@ function updateBatchSummary() {
         shipmentIdInput.value = currentRole() === "logistics"
             ? batch?.nextShipmentId || ""
             : "";
+        shipmentIdInput.readOnly = currentRole() === "logistics";
+    }
+    if (vehicleContainerIdInput) {
+        vehicleContainerIdInput.value = currentRole() === "logistics"
+            ? batch?.nextVehicleContainerId || ""
+            : "";
+        vehicleContainerIdInput.readOnly = currentRole() === "logistics";
+    }
+    if (storageLotIdInput) {
+        storageLotIdInput.value = currentRole() === "warehouse"
+            ? batch?.nextStorageLotId || ""
+            : "";
+        storageLotIdInput.readOnly = currentRole() === "warehouse";
+    }
+    if (storageZoneRackIdInput) {
+        storageZoneRackIdInput.value = currentRole() === "warehouse"
+            ? batch?.nextStorageZoneRackId || ""
+            : "";
+        storageZoneRackIdInput.readOnly = currentRole() === "warehouse";
     }
     const destination = batch?.nextDestinationLabel
         ? " Destination: " + batch.nextDestinationLabel + "."
         : "";
-    submitRecord.disabled = !batch ||
+    submitRecord.disabled = submissionCompleted || !batch ||
         (currentRole() === "logistics" && !batch?.nextDestinationLabel);
     batchStatus.textContent = batch
         ? "Next route stage: " + (batch.nextNodeLabel ||
@@ -462,12 +605,17 @@ function populateBatchSelect() {
     updateBatchSummary();
 }
 
-async function loadBatches(role) {
+async function loadBatches(role, { preserveForm = false, background = false } = {}) {
     if (!session || role === "supplier") return;
+    const requestId = ++batchLoadRequestId;
 
-    batchStatus.textContent = "Loading batches...";
-    batchStatus.className = "request-status pending";
-    submitRecord.disabled = true;
+    const preservedFormState = preserveForm ? captureEditableFormState() : null;
+
+    if (!background) {
+        batchStatus.textContent = "Loading batches...";
+        batchStatus.className = "request-status pending";
+        submitRecord.disabled = true;
+    }
 
     try {
         const response = await fetch(controlApiBase + "/batches", {
@@ -484,6 +632,7 @@ async function loadBatches(role) {
         if (!Array.isArray(result)) {
             throw new Error("The route batch response is malformed.");
         }
+        if (requestId !== batchLoadRequestId || !session || currentRole() !== role) return;
 
         availableBatches = result.filter((batch) =>
             typeof batch.batchId === "string" &&
@@ -494,12 +643,14 @@ async function loadBatches(role) {
             batch.status !== "completed"
         );
         populateBatchSelect();
+        restoreEditableFormState(preservedFormState);
         await loadConfirmationPolicyForBatch(selectedBatch());
         if (availableBatches.length === 0) {
             batchStatus.textContent = "No batch is waiting for this route stage.";
             batchStatus.className = "request-status pending";
         }
     } catch (error) {
+        if (requestId !== batchLoadRequestId || !session || currentRole() !== role) return;
         availableBatches = [];
         populateBatchSelect();
         clearConfirmationPolicy();
@@ -534,7 +685,7 @@ function configureRole() {
     setCurrentStage(role);
     syncStoreLocationId();
     if (supplier) {
-        submitRecord.disabled = false;
+        submitRecord.disabled = submissionCompleted;
         batchStatus.textContent = "";
         loadConfirmationPolicyForBatch(null);
     } else {
@@ -814,6 +965,7 @@ ipfsFiles.addEventListener("change", renderAttachmentList);
 attachmentCategory.addEventListener("change", renderAttachmentList);
 storeLocationNumber.addEventListener("input", syncStoreLocationId);
 typedConfirmationName.addEventListener("input", updateTypedNameState);
+clearFormButton.addEventListener("click", clearRecordForm);
 
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -824,8 +976,8 @@ form.addEventListener("submit", async (event) => {
     const role = currentRole();
     statusLine.textContent = "Submitting record...";
     statusLine.className = "request-status pending";
-    resultCard.hidden = true;
     submitRecord.disabled = true;
+    recordSubmissionInFlight = true;
 
     try {
         await uploadSelectedFiles();
@@ -859,37 +1011,34 @@ form.addEventListener("submit", async (event) => {
         document.querySelector("#next-stage").textContent =
             result.nextNodeLabel || roleLabels[result.nextStage] || "Route complete";
         document.querySelector("#ipfs-count").textContent = result.ipfsCount;
-        resultCard.hidden = false;
-        form.reset();
-        clearAttachmentState();
-        configureRole();
+        submissionCompleted = true;
 
-        statusLine.textContent = result.verified
-            ? (result.signatureVerified
-                ? "Verified ✓ Digital signature and Merkle record saved."
-                : "Verified ✓ Merkle record saved.")
-            : "Verification failed. Record saved.";
-        statusLine.className = result.verified
-            ? "request-status success"
-            : "request-status error";
-        signatureStatus.textContent = result.signatureVerified
-            ? "Digital signature verified by the server."
-            : confirmation
-                ? "Digital signature verification failed."
-                : "The selected confirmation method did not produce a verified signature.";
-        signatureStatus.className = result.signatureVerified
-            ? "signature-status success"
-            : confirmation
-                ? "signature-status error"
-                : "signature-status";
+        statusLine.textContent = "";
+        statusLine.className = "request-status";
+        signatureStatus.textContent = "";
+        signatureStatus.className = "signature-status";
+        if (submissionDialog && !submissionDialog.open) submissionDialog.showModal();
     } catch (error) {
-        statusLine.textContent = error.message;
-        statusLine.className = "request-status error";
-        if (signatureStatus.classList.contains("pending")) {
-            signatureStatus.textContent = error.message;
-            signatureStatus.className = "signature-status error";
+        statusLine.textContent = "";
+        statusLine.className = "request-status";
+        signatureStatus.textContent = "";
+        signatureStatus.className = "signature-status";
+        if (session) {
+            submitRecord.disabled = false;
+            verificationTitle.textContent = "Submission failed";
+            verificationTitle.className = "failed";
+            document.querySelector("#batch-id-result").textContent = batchSelect.value || "Not created";
+            document.querySelector("#block-id").textContent = "No block created";
+            document.querySelector("#next-stage").textContent = error.message;
+            document.querySelector("#ipfs-count").textContent = uploadedReferences.length;
+            if (submissionDialog && !submissionDialog.open) submissionDialog.showModal();
         }
-        if (session) submitRecord.disabled = false;
+    } finally {
+        recordSubmissionInFlight = false;
+        if (submissionCompleted) liveRefreshQueued = false;
+        if (liveRefreshQueued && !submissionCompleted && session) {
+            refreshAssignedStageFromLiveEvent();
+        }
     }
 });
 

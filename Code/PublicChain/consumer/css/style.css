@@ -76,13 +76,13 @@ button:disabled { opacity: 0.55; cursor: wait; }
 
 .route-section, .evidence-section, .technical { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #263b58; }
 .route-state { background: rgba(54, 210, 160, 0.12); color: #60e1b4; }
-.route { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; align-items: stretch; gap: 0.6rem; margin-top: 1.25rem; }
-.route-node { position: relative; min-width: 0; padding: 1rem; border: 1px solid #31506d; border-radius: 1rem; background: #081525; }
+.route { display: flex; align-items: stretch; gap: 0.75rem; margin-top: 1.25rem; padding-bottom: 0.75rem; overflow-x: auto; }
+.route-node { position: relative; flex: 0 0 15rem; min-width: 15rem; padding: 1rem; border: 1px solid #31506d; border-radius: 1rem; background: #081525; }
 .route-index { display: grid; width: 1.7rem; height: 1.7rem; place-items: center; margin-bottom: 0.8rem; border-radius: 50%; background: #163b4e; color: #6fd6ff; font-size: 0.75rem; font-weight: 800; }
 .route-node p { margin-bottom: 0.3rem; color: #6fd6ff; font-weight: 800; }
 .route-node strong, .route-node small { display: block; overflow-wrap: anywhere; }
 .route-node small { margin-top: 0.5rem; color: #91a2b9; line-height: 1.45; }
-.connector { align-self: center; color: #59d6b0; font-size: 1.5rem; font-weight: 900; }
+.connector { flex: 0 0 auto; align-self: center; color: #59d6b0; font-size: 1.5rem; font-weight: 900; }
 
 .evidence-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
 .evidence-item { padding: 0.9rem; border: 1px solid #263b58; border-radius: 0.9rem; background: #081525; }
@@ -98,8 +98,6 @@ button:disabled { opacity: 0.55; cursor: wait; }
 
 @media (max-width: 900px) {
   .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .route { grid-template-columns: 1fr; }
-  .connector { transform: rotate(90deg); justify-self: center; }
 }
 
 @media (max-width: 560px) {

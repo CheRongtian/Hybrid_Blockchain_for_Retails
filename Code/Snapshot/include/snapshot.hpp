@@ -49,6 +49,16 @@ struct StageInput
     std::string route_node_username;
 };
 
+struct HistoricalBlockInput
+{
+    int block_id = -1;
+    int parent_block_id = -1;
+    std::string parent_block_hash = "GENESIS";
+    std::string block_hash;
+    std::string route_node_id;
+    int route_step_index = -1;
+};
+
 struct BatchInput
 {
     std::string batch_id;
@@ -58,6 +68,7 @@ struct BatchInput
     std::string certificate_id;
     std::string status;
     std::vector<StageInput> stages;
+    std::vector<HistoricalBlockInput> historical_blocks;
     std::vector<RouteNodeInput> route_nodes;
     std::vector<RouteEdgeInput> route_edges;
     std::vector<std::string> source_errors;

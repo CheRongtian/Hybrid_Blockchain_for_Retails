@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 struct PersistentAuthSession
@@ -26,7 +27,8 @@ bool save_confirmation_policies(
 bool ensure_route_confirmation_policies(
     const std::string& db_path,
     const std::string& route_id,
-    const std::vector<SupplyRouteNode>& nodes);
+    const std::vector<SupplyRouteNode>& nodes,
+    const std::vector<SupplyRouteEdge>& edges);
 bool load_route_confirmation_policy(const std::string& db_path,
                                     const std::string& route_id,
                                     const std::string& node_id,
@@ -39,6 +41,9 @@ bool save_route_confirmation_policies(
     const std::string& db_path,
     const std::string& route_id,
     const std::vector<ConfirmationPolicy>& policies);
+std::unordered_set<std::string> supplier_route_path_node_ids(
+    const std::vector<SupplyRouteNode>& nodes,
+    const std::vector<SupplyRouteEdge>& edges);
 bool insert_user_account(const std::string& db_path,
                          const UserAccount& account);
 bool save_user_public_key(const std::string& db_path,

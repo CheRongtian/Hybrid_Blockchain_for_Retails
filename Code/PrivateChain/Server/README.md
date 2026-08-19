@@ -142,9 +142,8 @@ The Canvas supports the following editing actions:
   manually; existing connections, node positions, canvas size, pan, and zoom
   remain unchanged;
 - use **Undo** and **Redo**, including Command/Ctrl+Z and Command/Ctrl+Y;
-- choose **Auto arrange** to rebuild a compact left-to-right layout; and
-- use **Save route** when an explicit final save is useful; Canvas edits already
-  synchronize automatically, including temporarily incomplete drafts.
+- choose **Auto arrange** to rebuild a compact left-to-right layout; Canvas
+  edits synchronize automatically, including temporarily incomplete drafts.
 
 The Canvas is a lightweight static SVG/DOM editor. It does not add a frontend
 framework or a separate graph database. Node positions and connections continue
@@ -158,8 +157,8 @@ into a single horizontal row.
 
 The browser reports duplicate connections, invalid endpoints, cycles, and
 disconnected nodes immediately. Draft synchronization validates node, account,
-and edge references. The server validates the complete route when it is finally
-saved and when a participant submits an event.
+and edge references. The server requires one complete Supplier-to-Supermarket
+path before a participant can submit an event or a Snapshot can be generated.
 
 Supplier creates the batch master data. The server generates the batch ID from
 the normalized product name and a product-specific four-digit sequence. Later
@@ -183,11 +182,11 @@ VEHICLE-0001    CONTAINER-0001  ZONE-0001
 RACK-0001       STORE-0001
 ```
 
-The user page derives the default shipment ID from the Logistics node's order
-within the selected batch route. The first Logistics stage receives
-`SHIP-0001`, the second receives `SHIP-0002`, and so on. Participants may still
-replace the suggested value with another valid shipment ID when the same
-physical shipment is intentionally reused for that route stage.
+The user page derives shipment, vehicle/container, storage-lot, and zone/rack
+identifiers from the matching role's order within the selected batch route. The
+first Logistics stage receives `SHIP-0001` and `VEHICLE-0001`, the second
+receives `SHIP-0002` and `VEHICLE-0002`, and so on. These route-controlled
+values are verified again by the server when the event is submitted.
 
 The same shipment ID can appear in multiple batch records when one shipment
 carries multiple batches. The ID format is validated by the server; shipment

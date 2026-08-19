@@ -7,7 +7,6 @@ const identityStatus = document.querySelector("#identity-status");
 const logoutButton = document.querySelector("#logout-button");
 const list = document.querySelector("#record-list");
 const statusLine = document.querySelector("#load-status");
-const refreshButton = document.querySelector("#refresh-button");
 const workflowCanvas = document.querySelector("#workflow-canvas");
 const workflowStatus = document.querySelector("#workflow-status");
 const workflowRouteBadge = document.querySelector("#workflow-route-badge");
@@ -21,7 +20,6 @@ const workflowAutoLayout = document.querySelector("#workflow-auto-layout");
 const workflowResetRoute = document.querySelector("#workflow-reset-route");
 const workflowUndo = document.querySelector("#workflow-undo");
 const workflowRedo = document.querySelector("#workflow-redo");
-const workflowSave = document.querySelector("#workflow-save");
 const workflowScene = document.querySelector("#workflow-scene");
 const workflowEdgeLayer = document.querySelector("#workflow-edge-layer");
 const workflowNodeLayer = document.querySelector("#workflow-node-layer");
@@ -64,16 +62,24 @@ let workflowHistory = { past: [], future: [] };
 let workflowWheelState = { pendingDelta: 0, anchor: null, frame: 0 };
 let snapshotBatches = [];
 let publicationCandidate = null;
+let snapshotPreviewBatchId = "";
+let snapshotPreviewRouteFingerprint = "";
+let snapshotPreviewPrivateHash = "";
 let workflowRouteDirty = false;
 let workflowAutoSaveTimer = 0;
 let workflowAutoSaveInFlight = false;
 let workflowAutoSaveQueued = false;
-let snapshotRefreshTimer = 0;
 let snapshotRefreshInFlight = false;
 let snapshotRefreshQueued = false;
 let confirmationPolicies = [];
+let confirmationPolicyLoadId = 0;
+let workflowLoadId = 0;
 let chainGraph = { nodes: [], edges: [] };
 let chainGraphLoaded = false;
+let liveEventSource = null;
+let liveRefreshInFlight = false;
+let liveRefreshQueued = false;
+let liveRefreshQueuedType = "";
 
 function showSession(result) {
     session = result;
@@ -81,6 +87,7 @@ function showSession(result) {
     dashboard.hidden = false;
     identityStatus.textContent =
         `Logged in: ${result.user.username} · ${result.user.role} · ${result.user.organizationId}`;
+    startLiveUpdates();
 }
 
 function saveSession(result, remember) {
@@ -108,13 +115,12 @@ async function readJsonResponse(response) {
 }
 
 function clearSession() {
+    stopLiveUpdates();
+    workflowLoadId += 1;
+    confirmationPolicyLoadId += 1;
     if (workflowAutoSaveTimer) {
         window.clearTimeout(workflowAutoSaveTimer);
         workflowAutoSaveTimer = 0;
-    }
-    if (snapshotRefreshTimer) {
-        window.clearInterval(snapshotRefreshTimer);
-        snapshotRefreshTimer = 0;
     }
     session = null;
     sessionStorage.removeItem(sessionKey);
@@ -142,11 +148,82 @@ function clearSession() {
     snapshotEvidenceList.replaceChildren();
     snapshotPreview.hidden = true;
     publicationCandidate = null;
+    snapshotPreviewBatchId = "";
+    snapshotPreviewRouteFingerprint = "";
+    snapshotPreviewPrivateHash = "";
     workflowRouteDirty = false;
     workflowAutoSaveInFlight = false;
     workflowAutoSaveQueued = false;
     snapshotRefreshInFlight = false;
     snapshotRefreshQueued = false;
+}
+
+function stopLiveUpdates() {
+    if (liveEventSource) {
+        liveEventSource.close();
+        liveEventSource = null;
+    }
+    liveRefreshInFlight = false;
+    liveRefreshQueued = false;
+    liveRefreshQueuedType = "";
+}
+
+function queueLiveRefreshType(eventType) {
+    liveRefreshQueued = true;
+    if (eventType === "state_sync" || eventType === "route_changed") {
+        liveRefreshQueuedType = eventType;
+    } else if (!liveRefreshQueuedType) {
+        liveRefreshQueuedType = eventType;
+    }
+}
+
+function queueLiveRefresh(eventType = "") {
+    if (!session) return;
+    if (workflowRouteDirty || workflowAutoSaveInFlight) {
+        queueLiveRefreshType(eventType);
+        return;
+    }
+    if (liveRefreshInFlight) {
+        queueLiveRefreshType(eventType);
+        return;
+    }
+    liveRefreshInFlight = true;
+    (async () => {
+        try {
+            if (eventType === "route_changed" || eventType === "state_sync") {
+                const selectedBatchId = workflowBatchId;
+                await loadWorkflowScopes();
+                if (!workflowRouteDirty) await loadWorkflow(selectedBatchId);
+            }
+            await Promise.all([loadChains(), loadSnapshotCandidates()]);
+        } catch {
+            // The page's individual loaders expose their own actionable errors.
+        } finally {
+            liveRefreshInFlight = false;
+            if (liveRefreshQueued && !workflowRouteDirty) {
+                const queuedType = liveRefreshQueuedType;
+                liveRefreshQueued = false;
+                liveRefreshQueuedType = "";
+                queueLiveRefresh(queuedType);
+            }
+        }
+    })();
+}
+
+function startLiveUpdates() {
+    stopLiveUpdates();
+    liveEventSource = new EventSource("/api/events");
+    liveEventSource.onmessage = (event) => {
+        if (!event.data) return;
+        try {
+            const payload = JSON.parse(event.data);
+            if (["state_sync", "route_changed", "batch_changed", "snapshot_published"].includes(payload.type)) {
+                queueLiveRefresh(payload.type);
+            }
+        } catch {
+            // Ignore malformed broadcast data; normal API loads remain available.
+        }
+    };
 }
 
 async function logout() {
@@ -262,15 +339,18 @@ function renderConfirmationPolicies(policies = confirmationPolicies) {
         roleName.append(name, account);
         const typed = policyOption(nodeId, "typedName", "Typed name", policy.typedName);
         const handwritten = policyOption(
-            nodeId, "handwritten", "Handwritten (configuration only)", policy.handwritten
+            nodeId, "handwritten", "Handwritten", policy.handwritten
         );
-        const face = policyOption(
-            nodeId, "face", "Face (configuration only)", policy.face
-        );
+        const face = policyOption(nodeId, "face", "Face", policy.face);
         row.append(roleName, typed, handwritten, face);
         rolePolicyList.append(row);
     }
     policyRoleCount.textContent = `${confirmationPolicies.length} route nodes configured`;
+}
+
+function workflowLinkedNodes(workflow = workflowData) {
+    if (!(workflow?.edges || []).length) return [];
+    return workflowPreviewRouteOrder(workflow);
 }
 
 function hasSameRouteNodeIds(policies, nodes) {
@@ -282,15 +362,34 @@ function hasSameRouteNodeIds(policies, nodes) {
 
 async function loadConfirmationPolicy() {
     if (!session) return;
+    const loadId = ++confirmationPolicyLoadId;
+    const requestedBatchId = workflowBatchId;
+    const requestedRouteId = workflowData?.routeId || "";
+    const requestedWorkflowSnapshot = workflowSnapshot();
+    const requestedLinkedNodes = workflowLinkedNodes(workflowData);
     confirmationPolicies = [];
     rolePolicyList.replaceChildren();
     policyRoleCount.textContent = "Loading route-node policies";
+    savePolicyButton.disabled = true;
+    if (!workflowData?.nodes?.length) {
+        policyRoleCount.textContent = "No route loaded";
+        setPolicyStatus("Load a route before configuring route-node policies.", "pending");
+        return;
+    }
+    if (!requestedLinkedNodes.length) {
+        policyRoleCount.textContent = "No connected route nodes";
+        setPolicyStatus(
+            "Connect route nodes before configuring route-node policies.",
+            "pending"
+        );
+        return;
+    }
     try {
         const query = new URLSearchParams();
-        if (workflowBatchId) {
-            query.set("batchId", workflowBatchId);
-        } else if (workflowData?.routeId) {
-            query.set("routeId", workflowData.routeId);
+        if (requestedBatchId) {
+            query.set("batchId", requestedBatchId);
+        } else if (requestedRouteId) {
+            query.set("routeId", requestedRouteId);
         }
         const suffix = query.toString() ? `?${query.toString()}` : "";
         const response = await fetch("/api/confirmation-policy" + suffix, {
@@ -305,23 +404,40 @@ async function loadConfirmationPolicy() {
         if (!Array.isArray(result.policies)) {
             throw new Error("The route-node policy response is malformed.");
         }
-        if (workflowData?.nodes?.length &&
-            !hasSameRouteNodeIds(result.policies, workflowData.nodes)) {
+        if (loadId !== confirmationPolicyLoadId ||
+            workflowBatchId !== requestedBatchId ||
+            workflowData?.routeId !== requestedRouteId ||
+            workflowSnapshot() !== requestedWorkflowSnapshot) {
+            return;
+        }
+        if (!hasSameRouteNodeIds(result.policies, requestedLinkedNodes)) {
             throw new Error("The server returned an incomplete route-node policy set.");
         }
         renderConfirmationPolicies(result.policies);
+        savePolicyButton.disabled = false;
         setPolicyStatus(
-            "Enable at least one confirmation method for every route node. Typed name is available in this demo; handwritten and face are configuration-only.",
+            "Select at least one confirmation method for every connected route node.",
             "success"
         );
     } catch (error) {
-        setPolicyStatus(error.message, "error");
+        if (loadId === confirmationPolicyLoadId &&
+            workflowBatchId === requestedBatchId &&
+            workflowData?.routeId === requestedRouteId &&
+            workflowSnapshot() === requestedWorkflowSnapshot) {
+            policyRoleCount.textContent = "Policies unavailable";
+            savePolicyButton.disabled = true;
+            setPolicyStatus(error.message, "error");
+        }
     }
 }
 
 async function saveConfirmationPolicy(event) {
     event.preventDefault();
-    if (!session) return;
+    if (!session || !workflowData) return;
+    if (workflowRouteDirty || workflowAutoSaveInFlight) {
+        setPolicyStatus("Wait for the route change to finish synchronizing.", "pending");
+        return;
+    }
 
     const rows = [...rolePolicyList.querySelectorAll(".role-policy")];
     const policies = [];
@@ -330,26 +446,26 @@ async function saveConfirmationPolicy(event) {
         const enabled = [...row.querySelectorAll("input[data-policy-suffix]:checked")];
         if (!nodeId || enabled.length === 0) {
             const label = row.querySelector(".policy-role-name strong")?.textContent || nodeId;
-            setPolicyStatus(`Enable at least one method for ${label}.`, "error");
+            setPolicyStatus(`Select at least one method for ${label}.`, "error");
             return;
         }
-        const methods = new Map(
-            enabled.map((input) => [input.dataset.policySuffix, "true"])
-        );
+        const methods = new Set(enabled.map((input) => input.dataset.policySuffix));
         policies.push([
             nodeId,
-            methods.get("typedName") || "false",
-            methods.get("handwritten") || "false",
-            methods.get("face") || "false"
+            methods.has("typedName") ? "true" : "false",
+            methods.has("handwritten") ? "true" : "false",
+            methods.has("face") ? "true" : "false"
         ].join("|"));
     }
     if (policies.length === 0) {
-        setPolicyStatus("Load a route before saving route-node policies.", "error");
+        setPolicyStatus("Connect the route before saving confirmation methods.", "error");
         return;
     }
 
+    const routeId = workflowData.routeId || "";
+    const batchId = workflowBatchId;
     savePolicyButton.disabled = true;
-    setPolicyStatus("Saving confirmation policy...", "pending");
+    setPolicyStatus("Saving confirmation methods...", "pending");
     try {
         const response = await fetch("/api/confirmation-policy", {
             method: "POST",
@@ -358,8 +474,8 @@ async function saveConfirmationPolicy(event) {
                 Authorization: `Bearer ${session.token}`
             },
             body: new URLSearchParams({
-                batchId: workflowBatchId,
-                routeId: workflowData?.routeId || "",
+                batchId,
+                routeId,
                 policies: policies.join(";")
             }).toString()
         });
@@ -368,17 +484,23 @@ async function saveConfirmationPolicy(event) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
-        if (!response.ok) throw new Error(result.error || "Unable to save confirmation policy.");
+        if (!response.ok) {
+            throw new Error(result.error || "Unable to save confirmation methods.");
+        }
         if (!Array.isArray(result.policies) ||
-            !hasSameRouteNodeIds(result.policies, rows.map((row) => ({ id: row.dataset.nodeId })))) {
-            throw new Error("The server returned an incomplete saved policy set.");
+            !hasSameRouteNodeIds(
+                result.policies,
+                rows.map((row) => ({ id: row.dataset.nodeId })))) {
+            throw new Error("The saved confirmation-method response is incomplete.");
         }
         renderConfirmationPolicies(result.policies);
-        setPolicyStatus("Route-node confirmation policies saved.", "success");
+        setPolicyStatus("Route-node confirmation methods saved.", "success");
     } catch (error) {
         setPolicyStatus(error.message, "error");
     } finally {
-        savePolicyButton.disabled = false;
+        if (session && workflowData?.routeId === routeId && workflowBatchId === batchId) {
+            savePolicyButton.disabled = false;
+        }
     }
 }
 
@@ -688,7 +810,7 @@ function renderPendingChainNode(record) {
 
     const status = document.createElement("p");
     status.className = "chain-node-pending-status";
-    status.textContent = "No block yet. Connect this stage and submit its participant data.";
+    status.textContent = "No block yet. Submit this stage's participant data to create it.";
 
     node.append(header, summary, status);
     return node;
@@ -716,7 +838,7 @@ function renderChain(batchId, nodes, edges, options = {}) {
     title.textContent = `Batch ${batchId}`;
     const badge = document.createElement("span");
     const completed = !routeIncomplete && nodes.length > 0 && nodes.every((node) =>
-        !node.pending && node.chainStatus === "completed");
+        !node.pending && node.verified === true && node.signatureVerified === true);
     const hasPending = nodes.some((node) => node.pending);
     badge.className = completed ? "badge verified" : "badge pending";
     badge.textContent = completed ? "Completed" : hasPending ? "Pending route changes" : "In Progress";
@@ -779,26 +901,29 @@ function renderChain(batchId, nodes, edges, options = {}) {
 }
 
 function findWorkflowRecord(routeNode, records, usedRecords, routeId = "") {
+    const isUsableRecord = (record) =>
+        record.verified === true && record.signatureVerified === true &&
+        record.role === routeNode.role &&
+        record.routeNodeUsername === routeNode.username;
     const exact = records.find((record) =>
         !usedRecords.has(record) &&
+        isUsableRecord(record) &&
         record.routeId === routeId &&
         record.routeNodeId === routeNode.id);
     if (exact) return exact;
 
     const stableMatches = records.filter((record) =>
         !usedRecords.has(record) &&
-        record.routeNodeId === routeNode.id &&
-        record.role === routeNode.role &&
-        record.routeNodeUsername === routeNode.username
+        isUsableRecord(record) &&
+        record.routeNodeId === routeNode.id
     );
     if (stableMatches.length === 1) return stableMatches[0];
 
     const legacyMatches = records.filter((record) =>
         !usedRecords.has(record) &&
+        isUsableRecord(record) &&
         !record.routeId &&
-        !record.routeNodeId &&
-        record.role === routeNode.role &&
-        record.routeNodeUsername === routeNode.username
+        !record.routeNodeId
     );
     return legacyMatches.length === 1 ? legacyMatches[0] : null;
 }
@@ -825,18 +950,23 @@ function buildWorkflowChainPreview(batchId, records, graphEdges, activeBatchId =
     }
 
     const orderedRouteNodes = workflowPreviewRouteOrder(workflowData);
+    const hasCompleteRoutePath = orderedRouteNodes.length > 0;
+    const routeNodesForPreview = hasCompleteRoutePath
+        ? orderedRouteNodes
+        : routeOrder(workflowData);
     const usedRecords = new Set();
     const previewNodes = [];
     const previewKeys = new Map();
     const recordsByRouteNode = new Map();
     const product = records.find((record) => record.product)?.product || "";
-    for (const routeNode of orderedRouteNodes) {
+    for (const routeNode of routeNodesForPreview) {
         const record = findWorkflowRecord(
             routeNode,
             records,
             usedRecords,
             workflowData.routeId || ""
         );
+        if (!record && !hasCompleteRoutePath) continue;
         const preview = record
             ? {
                   ...record,
@@ -881,8 +1011,9 @@ function buildWorkflowChainPreview(batchId, records, graphEdges, activeBatchId =
         })
         .filter(Boolean);
     const routeValidation = workflowValidation(workflowData);
-    const missingRouteRecord = orderedRouteNodes.some((routeNode) =>
-        !recordsByRouteNode.has(routeNode.id));
+    const missingRouteRecord = !hasCompleteRoutePath ||
+        orderedRouteNodes.some((routeNode) =>
+            !recordsByRouteNode.has(routeNode.id));
 
     return {
         nodes: previewNodes,
@@ -970,19 +1101,18 @@ function workflowPreviewRouteOrder(workflow) {
 
     const reachable = new Set();
     const supplier = nodes.find((node) => node.role === "supplier");
+    const supermarket = nodes.find((node) => node.role === "supermarket");
+    if (!supplier || !supermarket) return [];
     let current = supplier;
     while (current && !reachable.has(current.id)) {
         reachable.add(current.id);
+        if (current.id === supermarket.id) break;
         const nextId = (outgoing.get(current.id) || [])[0];
         current = nextId ? byId.get(nextId) : null;
     }
 
-    const supermarket = nodes.find((node) => node.role === "supermarket");
-    const preview = ordered.filter((node) =>
-        node.role !== "supermarket" && reachable.has(node.id)
-    );
-    if (supermarket && reachable.has(supermarket.id)) preview.push(supermarket);
-    return preview;
+    if (!reachable.has(supermarket.id)) return [];
+    return ordered.filter((node) => reachable.has(node.id));
 }
 
 function workflowInteger(value, fallback = 0) {
@@ -1384,6 +1514,26 @@ function nextWorkflowAccount(role) {
     )?.username || "";
 }
 
+function nextWorkflowNodeSequence(type) {
+    const labelPrefix = type === "warehouse" ? "Warehouse" : "Transport";
+    let maximum = 0;
+    for (const node of workflowData?.nodes || []) {
+        if (node.nodeType !== type) continue;
+        const match = String(node.label || "").match(
+            new RegExp(`^${labelPrefix}\\s+(\\d+)$`, "i")
+        );
+        if (match) maximum = Math.max(maximum, Number(match[1]));
+    }
+    return maximum + 1;
+}
+
+function createWorkflowNodeId(prefix) {
+    const uniquePart = window.crypto?.randomUUID
+        ? window.crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${uniquePart}`;
+}
+
 function populateWorkflowNodeAccounts(role, preferred = "") {
     if (!workflowNodeAccount) return "";
     const accounts = availableWorkflowAccountsForRole(role, preferred);
@@ -1641,7 +1791,6 @@ function renderWorkflow(workflow, options = {}) {
     workflowRouteBadge.className = "badge " + (validation.valid ? "verified" : "pending");
     workflowDeleteNode.disabled = !workflowSelectedNodeId;
     workflowDeleteEdge.disabled = workflowSelectedEdgeIndex < 0;
-    workflowSave.disabled = !validation.valid;
     workflowStatus.textContent = validation.valid
         ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes or use the handles to edit the route.`
         : `Route error: ${validation.error}`;
@@ -1739,10 +1888,6 @@ function invalidateSnapshotForRouteChange(
     message = "Route changed. The previous Snapshot is no longer valid."
 ) {
     renderSnapshotBatches([]);
-    snapshotPreview.hidden = true;
-    publicationCandidate = null;
-    publishSnapshotButton.disabled = true;
-    snapshotPublishStatus.textContent = "";
     setSnapshotStatus(message, "pending");
 }
 
@@ -1787,6 +1932,8 @@ async function syncWorkflowDraft() {
     workflowAutoSaveQueued = false;
     workflowStatus.textContent = "Synchronizing route draft...";
     workflowStatus.className = "status pending";
+    let routeConflictReloaded = false;
+    let synchronizedSnapshot = sentSnapshot;
     try {
         const response = await fetch("/api/workflow", {
             method: "POST",
@@ -1801,27 +1948,54 @@ async function syncWorkflowDraft() {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
-        if (!response.ok) throw new Error(result.error || "Unable to synchronize route draft.");
+        if (!response.ok) {
+            const error = new Error(result.error || "Unable to synchronize route draft.");
+            error.routeConflict = response.status === 409;
+            throw error;
+        }
 
         if (workflowBatchId === sentBatchId && workflowSnapshot() === sentSnapshot) {
+            workflowData.routeId = result.routeId || workflowData.routeId;
+            workflowRouteBadge.textContent = workflowData.routeId || "Route unavailable";
+            synchronizedSnapshot = workflowSnapshot();
             workflowRouteDirty = false;
             await Promise.all([
                 loadConfirmationPolicy(),
-                loadSnapshotCandidates()
+                loadSnapshotCandidates(),
+                loadChains()
             ]);
+            // The local save response and these three reads already include
+            // every event emitted by this draft synchronization.
+            liveRefreshQueued = false;
+            liveRefreshQueuedType = "";
             workflowStatus.textContent = "Route draft synchronized automatically.";
             workflowStatus.className = "status success";
         }
     } catch (error) {
-        workflowStatus.textContent = error.message;
-        workflowStatus.className = "status error";
-        window.setTimeout(() => {
-            if (session && workflowRouteDirty) scheduleWorkflowDraftSync();
-        }, 1500);
+        const message = error.message;
+        const canRestore = error.routeConflict === true &&
+            session && workflowBatchId === sentBatchId &&
+            workflowSnapshot() === sentSnapshot;
+        if (canRestore) {
+            const restored = await loadWorkflow(sentBatchId);
+            if (restored) {
+                routeConflictReloaded = true;
+                workflowStatus.textContent = message;
+                workflowStatus.className = "status error";
+            }
+        }
+        if (!routeConflictReloaded) {
+            workflowStatus.textContent = message;
+            workflowStatus.className = "status error";
+            window.setTimeout(() => {
+                if (session && workflowRouteDirty) scheduleWorkflowDraftSync();
+            }, 1500);
+        }
     } finally {
         workflowAutoSaveInFlight = false;
         if (workflowBatchId === sentBatchId &&
-            (workflowAutoSaveQueued || workflowSnapshot() !== sentSnapshot)) {
+            !routeConflictReloaded &&
+            (workflowAutoSaveQueued || workflowSnapshot() !== synchronizedSnapshot)) {
             workflowAutoSaveQueued = false;
             scheduleWorkflowDraftSync();
         }
@@ -1861,60 +2035,17 @@ async function loadWorkflowScopes() {
     }
 }
 
-async function saveWorkflow() {
-    if (!session || !workflowData) return;
-    const validation = workflowValidation(workflowData);
-    if (!validation.valid) {
-        workflowStatus.textContent = `Route error: ${validation.error}`;
-        workflowStatus.className = "status error";
-        workflowSave.disabled = true;
-        return;
-    }
-    recalculateWorkflowLayout(false);
-    normalizeWorkflowPositions(workflowData);
-    workflowSave.disabled = true;
-    workflowStatus.textContent = "Saving route...";
-    workflowStatus.className = "status pending";
-    const body = workflowRequestBody();
-    try {
-        const response = await fetch("/api/workflow", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                Authorization: "Bearer " + session.token
-            },
-            body: body.toString()
-        });
-        const result = await readJsonResponse(response);
-        if (response.status === 401 || response.status === 403) {
-            clearSession();
-            throw new Error("Control-panel session expired or insufficient permissions.");
-        }
-        if (!response.ok) throw new Error(result.error || "Unable to save route.");
-        await loadWorkflowScopes();
-        await loadWorkflow(workflowBatchId);
-        workflowRouteDirty = false;
-        await loadSnapshotCandidates();
-        workflowStatus.textContent = "Route saved for " +
-            (workflowBatchId || "the default route") + ".";
-        workflowStatus.className = "status success";
-    } catch (error) {
-        workflowStatus.textContent = error.message;
-        workflowStatus.className = "status error";
-    } finally {
-        workflowSave.disabled = !workflowValidation(workflowData).valid;
-    }
-}
-
 async function loadWorkflow(batchId = workflowBatchSelect.value) {
     if (!session) return;
-    workflowBatchId = batchId || "";
+    const loadId = ++workflowLoadId;
+    const requestedBatchId = batchId || "";
+    workflowBatchId = requestedBatchId;
     workflowStatus.textContent = "Loading preset route...";
     workflowStatus.className = "status pending";
 
     try {
-        const query = workflowBatchId
-            ? "?batchId=" + encodeURIComponent(workflowBatchId)
+        const query = requestedBatchId
+            ? "?batchId=" + encodeURIComponent(requestedBatchId)
             : "";
         const response = await fetch("/api/workflow" + query, {
             headers: { Authorization: `Bearer ${session.token}` }
@@ -1930,18 +2061,24 @@ async function loadWorkflow(batchId = workflowBatchSelect.value) {
         if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
             throw new Error("The workflow response is malformed.");
         }
+        if (loadId !== workflowLoadId || workflowBatchId !== requestedBatchId) {
+            return false;
+        }
         workflowRouteDirty = false;
         renderWorkflow(workflow);
         await loadConfirmationPolicy();
+        return true;
     } catch (error) {
-        workflowStatus.textContent = error.message;
-        workflowStatus.className = "status error";
+        if (loadId === workflowLoadId && workflowBatchId === requestedBatchId) {
+            workflowStatus.textContent = error.message;
+            workflowStatus.className = "status error";
+        }
+        return false;
     }
 }
 
 async function loadChains() {
     if (!session) return;
-    refreshButton.disabled = true;
     statusLine.textContent = "Loading supply-chain workflow...";
     statusLine.className = "status pending";
 
@@ -1964,16 +2101,27 @@ async function loadChains() {
         chainGraph = graph;
         chainGraphLoaded = true;
         refreshChainPreview();
-        statusLine.textContent = graph.nodes.length === 0
+        const activeBatchId = activeWorkflowPreviewBatchId(graph);
+        const activeRecordCount = activeBatchId
+            ? graph.nodes.filter((node) => node.batchId === activeBatchId).length
+            : 0;
+        const routePreviewCount = activeBatchId && workflowData
+            ? workflowPreviewRouteOrder(workflowData).length
+            : 0;
+        const activePreviewCount = routePreviewCount > 0
+            ? routePreviewCount
+            : activeRecordCount;
+        const visibleNodeCount = graph.nodes.length - activeRecordCount + activePreviewCount;
+        const visibleBatchIds = new Set(graph.nodes.map((node) => node.batchId));
+        if (activeBatchId && activePreviewCount > 0) visibleBatchIds.add(activeBatchId);
+        statusLine.textContent = visibleNodeCount === 0
             ? "No supply-chain workflow yet."
-            : `Loaded ${graph.nodes.length} node(s) across ${new Set(graph.nodes.map((node) => node.batchId)).size} batch(es).`;
+            : `Loaded ${visibleNodeCount} node(s) across ${visibleBatchIds.size} batch(es).`;
         statusLine.className = "status success";
     } catch (error) {
         list.replaceChildren();
         statusLine.textContent = error.message;
         statusLine.className = "status error";
-    } finally {
-        refreshButton.disabled = false;
     }
 }
 
@@ -1986,12 +2134,27 @@ function selectedSnapshotBatch() {
     return snapshotBatches.find((batch) => batch.batchId === snapshotBatchSelect.value);
 }
 
-function renderSnapshotEvidence() {
-    snapshotEvidenceList.replaceChildren();
+function clearSnapshotPreview() {
     snapshotPreview.hidden = true;
     publicationCandidate = null;
+    snapshotPreviewBatchId = "";
+    snapshotPreviewRouteFingerprint = "";
+    snapshotPreviewPrivateHash = "";
     publishSnapshotButton.disabled = true;
     snapshotPublishStatus.textContent = "";
+}
+
+function renderSnapshotEvidence({ clearPreview = true } = {}) {
+    const hadExistingOptions = Boolean(
+        snapshotEvidenceList.querySelector('input[name="selectedEvidence"]')
+    );
+    const selectedEvidence = new Set(
+        [...snapshotEvidenceList.querySelectorAll(
+            'input[name="selectedEvidence"]:checked'
+        )].map((input) => input.value)
+    );
+    snapshotEvidenceList.replaceChildren();
+    if (clearPreview) clearSnapshotPreview();
     const batch = selectedSnapshotBatch();
     const evidence = batch?.evidence || [];
     if (evidence.length === 0) {
@@ -2009,7 +2172,9 @@ function renderSnapshotEvidence() {
         input.type = "checkbox";
         input.name = "selectedEvidence";
         input.value = `${item.stage}|${item.category}|${item.cid}`;
-        input.checked = Boolean(item.selectedByDefault);
+        input.checked = !clearPreview && hadExistingOptions
+            ? selectedEvidence.has(input.value)
+            : Boolean(item.selectedByDefault);
         const content = document.createElement("span");
         const title = document.createElement("strong");
         title.textContent = `${item.label} · ${item.stage}`;
@@ -2022,6 +2187,15 @@ function renderSnapshotEvidence() {
 }
 
 function renderSnapshotBatches(batches) {
+    const previousSelection = snapshotBatchSelect.value;
+    const previousPreviewBatchId = snapshotPreviewBatchId;
+    const previewStillEligible = !snapshotPreview.hidden &&
+        batches.some((batch) =>
+            batch.batchId === previousPreviewBatchId &&
+            batch.routeFingerprint === snapshotPreviewRouteFingerprint &&
+            batch.finalPrivateBlockHash === snapshotPreviewPrivateHash
+        );
+    if (!previewStillEligible) clearSnapshotPreview();
     snapshotBatches = batches;
     snapshotBatchSelect.replaceChildren();
     for (const batch of batches) {
@@ -2038,7 +2212,13 @@ function renderSnapshotBatches(batches) {
         ? `${batches.length} eligible batch${batches.length === 1 ? "" : "es"}`
         : "No eligible batches";
     snapshotBatchCount.className = hasBatches ? "badge verified" : "badge pending";
-    renderSnapshotEvidence();
+    const selection = previewStillEligible
+        ? previousPreviewBatchId
+        : previousSelection;
+    if ([...snapshotBatchSelect.options].some((option) => option.value === selection)) {
+        snapshotBatchSelect.value = selection;
+    }
+    renderSnapshotEvidence({ clearPreview: false });
     setSnapshotStatus(hasBatches
         ? "Select a completed batch and review its public evidence."
         : "Complete and verify every assigned route stage before generating a snapshot.",
@@ -2100,6 +2280,9 @@ function renderSnapshotPreview(result) {
         snapshotExcludedFields.append(item);
     }
     publicationCandidate = result.publicationCandidate;
+    snapshotPreviewBatchId = snapshotBatchSelect.value;
+    snapshotPreviewRouteFingerprint = result.routeFingerprint || "";
+    snapshotPreviewPrivateHash = result.finalPrivateBlockHash || "";
     publishSnapshotButton.disabled = !publicationCandidate;
     snapshotPublishStatus.textContent = publicationCandidate
         ? "Preview ready for administrator publication."
@@ -2147,10 +2330,7 @@ async function generateSnapshotPreview(event) {
     )].map((input) => input.value);
 
     generateSnapshotButton.disabled = true;
-    snapshotPreview.hidden = true;
-    publicationCandidate = null;
-    publishSnapshotButton.disabled = true;
-    snapshotPublishStatus.textContent = "";
+    clearSnapshotPreview();
     setSnapshotStatus("Generating a private, non-published preview...", "pending");
     try {
         const response = await fetch("/api/snapshot/preview", {
@@ -2186,13 +2366,6 @@ async function loadDashboard() {
         loadChains(),
         loadSnapshotCandidates()
     ]);
-    if (!snapshotRefreshTimer) {
-        snapshotRefreshTimer = window.setInterval(() => {
-            if (!session || workflowRouteDirty) return;
-            loadChains();
-            loadSnapshotCandidates();
-        }, 5000);
-    }
 }
 
 function startWorkflowNodeDrag(event, nodeId) {
@@ -2350,7 +2523,6 @@ if (window.ResizeObserver) {
     new ResizeObserver(scheduleWorkflowResize).observe(workflowCanvas);
 }
 
-refreshButton.addEventListener("click", loadDashboard);
 loginForm.addEventListener("submit", login);
 logoutButton.addEventListener("click", logout);
 workflowBatchSelect.addEventListener("change", () => {
@@ -2504,11 +2676,8 @@ workflowAddNode.addEventListener("click", () => {
         setWorkflowRouteError(`No active ${workflowRoleLabel(role)} account is available.`);
         return;
     }
-    let count = workflowData.nodes.filter((node) => node.nodeType === type).length + 1;
-    let nodeId = prefix + "-" + count;
-    while (workflowData.nodes.some((node) => node.id === nodeId)) {
-        nodeId = prefix + "-" + (++count);
-    }
+    const count = nextWorkflowNodeSequence(type);
+    const nodeId = createWorkflowNodeId(prefix);
     const node = {
         id: nodeId,
         nodeType: type,
@@ -2541,6 +2710,7 @@ workflowResetRoute.addEventListener("click", () => {
 });
 workflowUndo.addEventListener("click", undoWorkflowEdit);
 workflowRedo.addEventListener("click", redoWorkflowEdit);
+confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
 document.addEventListener("keydown", (event) => {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
     const modifier = event.ctrlKey || event.metaKey;
@@ -2564,8 +2734,6 @@ document.addEventListener("keydown", (event) => {
         deleteSelectedWorkflowNode();
     }
 });
-workflowSave.addEventListener("click", saveWorkflow);
-confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
 snapshotBatchSelect.addEventListener("change", renderSnapshotEvidence);
 snapshotPreviewForm.addEventListener("submit", generateSnapshotPreview);
 publishSnapshotButton.addEventListener("click", publishSnapshot);
