@@ -68,7 +68,7 @@ Blockchain Structure/
 ├── server_concurrency_test.py       # Allocator benchmark
 ├── start_user_server.sh             # User submission service :8080
 ├── start_control_server.sh          # Administrator control service :8081
-├── start_customer_server.sh         # Customer trace service :8082
+├── start_customer_server.sh         # Customer trace :8082 and QR display :8084
 └── README.md
 ```
 
@@ -149,6 +149,9 @@ verifiable tree for each event.
 - independently revalidated publication candidates and public Manifests;
 - customer published-batch selection with public route and chain verification
   details;
+- one Snapshot-specific QR Code displayed after successful publication, with a
+  verification-result and compact route-overview customer view plus
+  stale-Snapshot rejection;
 - live route, block, Snapshot, and customer-page synchronization through
   server-sent events;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
@@ -159,8 +162,8 @@ Every connected node must keep at least one method enabled, with Typed Name
 selected by default. Typed-name confirmation is implemented in this demo;
 handwritten and face confirmation remain available as configuration choices,
 while their capture and verification flows are deferred.
-Inspection Agency, production key custody, durable relayer jobs, public-testnet
-deployment, and QR-code entry are pending.
+Inspection Agency, production key custody, durable relayer jobs, and
+public-testnet deployment are pending.
 
 ## Requirements
 
@@ -267,16 +270,19 @@ The pages are:
 User submission page: http://127.0.0.1:8080/
 Control page:         http://127.0.0.1:8081/
 Customer trace page:  http://127.0.0.1:8082/
+QR display page:      http://127.0.0.1:8084/
 ```
 
 The user and control scripts check that the Homebrew Kubo service is available
 on IPFS API port 5002. The customer script starts a local Hardhat node on port
 8545 in the background when no process is listening, deploys SnapshotGateway
-after that fresh start, and then starts the customer service. If Hardhat is
-already running, the customer script reuses its current deployment.
+after that fresh start, starts the QR display page on port 8084, and then
+starts the customer service on port 8082. Existing Hardhat and QR display
+processes are reused.
 
-The scripts remain independent. There is no combined start command. Hardhat
-is local in-memory state, so a newly started node requires a new deployment;
+The three project scripts remain independent. The customer script owns both
+customer-facing ports 8082 and 8084. Hardhat is local in-memory state, so a
+newly started node requires a new deployment;
 the private SQLite database is unaffected. IPFS runs as a Homebrew background
 service and does not require an additional terminal. If a start script reports
 `launchctl bootstrap ... exit 5`, check whether an IPFS daemon already owns port
@@ -298,7 +304,11 @@ page then loads the published product-batch selection list. Open it separately
 at `http://127.0.0.1:8082/` when customer-facing verification is needed. Clicking
 a batch loads its active contract record, matching public Manifest, and verifies
 the identifiers, Manifest hash, Public Merkle Root, and source block anchor.
-The customer does not type a Batch ID. QR-code behavior is deferred.
+The customer does not type a Batch ID. The QR display page at
+`http://127.0.0.1:8084/` shows the QR Code for the currently active published
+Snapshot. Scanning it opens the Verification Result section on port 8082; the
+full customer trace remains available through the normal customer page. A route
+change or replacement Snapshot makes the old link inactive.
 
 ## Demonstration accounts
 
@@ -341,5 +351,4 @@ The production gateway contract now lives only at
 `Code/PublicChain/contracts/SnapshotGateway.sol`. The local administrator
 publication and customer query flow is implemented without using either
 historical sample. The next architectural milestones are durable publication
-job storage, production key custody, public-testnet deployment, and QR-code
-entry into the existing customer page.
+job storage, production key custody, and public-testnet deployment.

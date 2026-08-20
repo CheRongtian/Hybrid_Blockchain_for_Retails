@@ -250,6 +250,5 @@ remain owned by this module.
 - durable relayer job and nonce persistence;
 - wallet and key custody;
 - transaction confirmation and retry handling;
-- QR-code entry into the customer page;
 - periodic and incremental snapshot policies; and
 - optional cross-chain messaging protocol adapters.

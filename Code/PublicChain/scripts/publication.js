@@ -242,31 +242,51 @@ export async function publishCandidate(candidate) {
   return publication;
 }
 
-export async function traceBatch(batchId) {
-  if (typeof batchId !== "string" || batchId.length === 0 || batchId.length > 256) {
-    throw new Error("A valid Batch ID is required.");
-  }
-  const { provider, chainId, deployment, artifact } = await openGateway();
-  const gateway = new Contract(deployment.contractAddress, artifact.abi, provider);
-  const currentSnapshotHash = await gateway.currentSnapshotByBatch(id(batchId));
-  if (currentSnapshotHash === ZeroHash) return null;
-
-  const filePath = publicManifestPath(currentSnapshotHash.toLowerCase());
+async function tracePublishedSnapshot(
+  runtime,
+  gateway,
+  snapshotHash,
+  {
+    expectedBatchId = "",
+    expectedSnapshotId = "",
+    missingManifestIsError = false,
+    requireActive = false,
+  } = {},
+) {
+  const normalizedSnapshotHash = snapshotHash.toLowerCase();
+  const filePath = publicManifestPath(normalizedSnapshotHash);
   if (!fs.existsSync(filePath)) {
-    throw new Error("The chain record exists, but its public manifest is unavailable.");
+    if (missingManifestIsError) {
+      throw new Error("The chain record exists, but its public manifest is unavailable.");
+    }
+    return null;
   }
+
   const publication = readJson(filePath);
-  const candidateChecks = validateCandidate(publication.candidate);
-  const routeState = await fetchCurrentRouteState(batchId);
-  if (!candidateMatchesRoute(publication.candidate, routeState)) return null;
-  const record = await gateway.getSnapshot(currentSnapshotHash);
+  const candidate = publication.candidate;
+  const candidateChecks = validateCandidate(candidate);
+  if (expectedBatchId && candidate.batchId !== expectedBatchId) return null;
+  if (expectedSnapshotId && candidate.snapshotId !== expectedSnapshotId) return null;
+
+  const currentSnapshotHash = await gateway.currentSnapshotByBatch(id(candidate.batchId));
+  if (currentSnapshotHash === ZeroHash ||
+      currentSnapshotHash.toLowerCase() !== normalizedSnapshotHash) {
+    return null;
+  }
+
+  const routeState = await fetchCurrentRouteState(candidate.batchId);
+  if (!candidateMatchesRoute(candidate, routeState)) return null;
+
+  const record = await gateway.getSnapshot(snapshotHash);
   const status = statusNames[Number(record.status)] ?? "Unknown";
+  if (requireActive && status !== "Active") return null;
+  const { chainId, deployment } = runtime;
   const chainChecks = {
-    snapshotId: record.snapshotId.toLowerCase() === publication.candidate.snapshotIdHash.toLowerCase(),
-    batchId: record.batchIdHash.toLowerCase() === publication.candidate.batchIdHash.toLowerCase(),
-    publicRoot: record.publicRoot.toLowerCase() === publication.candidate.publicRoot.toLowerCase(),
-    manifestHash: record.manifestHash.toLowerCase() === publication.candidate.manifestHash.toLowerCase(),
-    sourceBlockHash: record.sourceBlockHash.toLowerCase() === publication.candidate.sourceBlockHash.toLowerCase(),
+    snapshotId: record.snapshotId.toLowerCase() === candidate.snapshotIdHash.toLowerCase(),
+    batchId: record.batchIdHash.toLowerCase() === candidate.batchIdHash.toLowerCase(),
+    publicRoot: record.publicRoot.toLowerCase() === candidate.publicRoot.toLowerCase(),
+    manifestHash: record.manifestHash.toLowerCase() === candidate.manifestHash.toLowerCase(),
+    sourceBlockHash: record.sourceBlockHash.toLowerCase() === candidate.sourceBlockHash.toLowerCase(),
     sourceNetwork: record.sourceNetworkId.toLowerCase() === deployment.sourceNetworkId.toLowerCase(),
     destinationChain: record.destinationChainId === BigInt(chainId),
   };
@@ -276,13 +296,13 @@ export async function traceBatch(batchId) {
   ].every(Boolean);
 
   return {
-    batchId,
-    snapshotId: publication.candidate.snapshotId,
+    batchId: candidate.batchId,
+    snapshotId: candidate.snapshotId,
     status,
     integrityVerified,
     verified: integrityVerified && status === "Active",
-    manifest: publication.candidate.manifest,
-    evidence: publication.candidate.manifest.public_evidence ?? [],
+    manifest: candidate.manifest,
+    evidence: candidate.manifest.public_evidence ?? [],
     checks: { candidate: candidateChecks, chain: chainChecks },
     technical: {
       publicRoot: record.publicRoot,
@@ -299,6 +319,41 @@ export async function traceBatch(batchId) {
       blockNumber: publication.chain.blockNumber,
     },
   };
+}
+
+export async function traceBatch(batchId) {
+  if (typeof batchId !== "string" || batchId.length === 0 || batchId.length > 256) {
+    throw new Error("A valid Batch ID is required.");
+  }
+  const runtime = await openGateway();
+  const gateway = new Contract(
+    runtime.deployment.contractAddress,
+    runtime.artifact.abi,
+    runtime.provider,
+  );
+  const currentSnapshotHash = await gateway.currentSnapshotByBatch(id(batchId));
+  if (currentSnapshotHash === ZeroHash) return null;
+  return tracePublishedSnapshot(runtime, gateway, currentSnapshotHash, {
+    expectedBatchId: batchId,
+    missingManifestIsError: true,
+  });
+}
+
+export async function traceSnapshot(snapshotId) {
+  if (typeof snapshotId !== "string" ||
+      snapshotId.length === 0 || snapshotId.length > 256) {
+    throw new Error("A valid Snapshot ID is required.");
+  }
+  const runtime = await openGateway();
+  const gateway = new Contract(
+    runtime.deployment.contractAddress,
+    runtime.artifact.abi,
+    runtime.provider,
+  );
+  return tracePublishedSnapshot(runtime, gateway, id(snapshotId), {
+    expectedSnapshotId: snapshotId,
+    requireActive: true,
+  });
 }
 
 export async function listPublishedBatches() {
@@ -343,6 +398,7 @@ export async function listPublishedBatches() {
       status: statusNames[Number(record.status)] ?? "Unknown",
       verified: Number(record.status) === 1,
       snapshotId: candidate.snapshotId,
+      snapshotIdHash: candidateSnapshotHash,
     });
   }
 

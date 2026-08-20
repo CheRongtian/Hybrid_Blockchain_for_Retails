@@ -1,0 +1,23 @@
+:root { color-scheme: light; }
+
+* { box-sizing: border-box; }
+
+body {
+    min-height: 100vh;
+    margin: 0;
+    background: #fff;
+}
+
+.qr-only-page {
+    display: grid;
+    min-height: 100vh;
+    place-items: center;
+    padding: 1rem;
+}
+
+#qr-image {
+    display: block;
+    width: min(90vw, 560px);
+    aspect-ratio: 1;
+    background: #fff;
+}

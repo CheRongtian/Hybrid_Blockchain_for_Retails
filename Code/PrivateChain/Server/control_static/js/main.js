@@ -2313,7 +2313,8 @@ async function publishSnapshot() {
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-        snapshotPublishStatus.textContent = `Published in block ${result.blockNumber}.`;
+        snapshotPublishStatus.textContent =
+            `Published in block ${result.blockNumber}. Open the QR display page on port 8084.`;
         snapshotPublishStatus.className = "status success";
     } catch (error) {
         snapshotPublishStatus.textContent = error.message;

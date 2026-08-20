@@ -29,10 +29,16 @@ PublicChain service :8082/api/publish
         +-- compare the candidate route fingerprint with the current private route
         +-- submit SnapshotGateway transaction
         +-- save public Manifest beside chain metadata
+        +-- generate a QR Code for the exact published Snapshot
+        v
+QR display :8084/
+        |
+        +-- show one QR Code for the current active Snapshot
+        +-- refresh the QR Code automatically
         v
 Customer :8082/
         |
-        +-- choose a published product batch
+        +-- scan a Snapshot QR Code for the verification result or choose a published product batch
         +-- read active snapshot from SnapshotGateway
         +-- load matching public Manifest
         +-- compare the publication route fingerprint with the current private route
@@ -54,8 +60,13 @@ PublicChain/
 │   ├── css/style.css
 │   ├── js/main.js
 │   └── index.html
+├── qr-display/                     # QR display page served on :8084
+│   ├── css/style.css
+│   ├── js/main.js
+│   └── index.html
 ├── deployments/                    # Generated local deployment records
 ├── public-manifests/               # Generated customer-safe publications
+├── public-qrcodes/                 # Generated Snapshot QR Code PNG files
 ├── scripts/
 │   ├── deploy.js
 │   ├── publication.js
@@ -66,13 +77,14 @@ PublicChain/
 │   ├── Publication.test.js
 │   └── SnapshotGateway.test.js
 ├── consumer_server.js
+├── qr_display_server.js
 ├── hardhat.config.js
 ├── package.json
 └── README.md
 ```
 
-Generated deployment records and public Manifest files are ignored by Git.
-They remain local runtime state.
+Generated deployment records, public Manifest files, and QR Code PNG files are
+ignored by Git. They remain local runtime state.
 
 ## Apple Silicon environment
 
@@ -115,10 +127,11 @@ project root:
 ./start_customer_server.sh
 ```
 
-The script checks port 8545, starts a Hardhat node in the background when
-needed, deploys SnapshotGateway after a fresh node start, and then starts the
-independent customer/publication service. If a Hardhat node is already
-running, it is reused without another deployment.
+The script builds the independent `Code/SnapshotQRCode` C generator, checks
+port 8545, starts a Hardhat node in the background when needed, deploys
+SnapshotGateway after a fresh node start, starts the QR display service on
+port 8084, and then starts the independent customer/publication service on
+port 8082. Existing Hardhat and QR display processes are reused.
 
 The customer page is available at:
 
@@ -126,18 +139,42 @@ The customer page is available at:
 http://127.0.0.1:8082/
 ```
 
+The QR display page is available at:
+
+```text
+http://127.0.0.1:8084/
+```
+
 Keep the C++ control server on port 8081 using `./start_control_server.sh`. Log in as the administrator,
 generate a snapshot preview for a completed batch, and select **Publish to
-Local Public Chain**. A successful response includes the EVM block number. The
-customer page remains an independent service at `http://127.0.0.1:8082/` and is
-opened separately when needed.
+Local Public Chain**. A successful response includes the EVM block number.
+Open `http://127.0.0.1:8084/` to display one QR Code for the active published
+Snapshot. Scanning it opens the verification result section on the customer
+service at `http://127.0.0.1:8082/`; the normal customer page remains available
+at the same address for full route and evidence details.
 
-The customer page loads its published-batch selection list from the PublicChain
-service. The customer clicks a product batch, and the page loads that batch's
-public trace. Batch IDs are not typed into the customer page. The page listens
-to the private control server's server-sent event stream: route edits remove a
-stale trace from the current view, while a newly published matching Snapshot
-is loaded automatically. QR-code behavior is outside the current scope.
+The QR display page loads the current active Snapshot QR Code from the PublicChain
+service and refreshes it automatically. The QR link remains locked to its
+Snapshot ID, so a route edit or a newer published Snapshot shows the old link as
+inactive. A scanned QR link uses the verification-only customer view; it shows
+the Verification Result, a compact selectable route overview, and the selected
+stage details. Public evidence and technical verification details stay hidden
+from the QR view.
+The customer page listens to the private control server's server-sent event
+stream and updates this state without a full page refresh.
+
+For a phone on the same local network, run the same customer start command.
+The service listens on the LAN by default and automatically detects a private
+IPv4 address for the QR URL:
+
+```bash
+./start_customer_server.sh
+```
+
+Open `http://<Mac-LAN-IP>:8084/` to display the QR Code. The encoded customer
+URL uses port 8082 and opens the verification result view. If the computer has
+multiple network interfaces, override
+the detected address with `CONSUMER_PUBLIC_URL=http://<Mac-LAN-IP>:8082`.
 
 The low-level `publish:local` and `query:local` commands remain contract smoke
 tools. The integrated customer flow should use the administrator Publish button
@@ -154,6 +191,12 @@ Copy `.env.example` to `.env` only when overriding defaults.
 | `SOURCE_NETWORK_NAME` | Approved private source-network name |
 | `RELAYER_PRIVATE_KEY` | Optional signer; first local account by default |
 | `CONSUMER_PORT` | `8082` customer and publication service |
+| `CONSUMER_HOST` | `0.0.0.0` bind address |
+| `CONSUMER_PUBLIC_URL` | Optional public base URL encoded into generated QR Codes; auto-detected when omitted |
+| `QR_GENERATOR_BINARY` | Optional path to the compiled C QR generator |
+| `QR_DISPLAY_PORT` | `8084` QR display page port |
+| `QR_DISPLAY_HOST` | `0.0.0.0` QR display bind address |
+| `CONSUMER_INTERNAL_URL` | `http://127.0.0.1:8082` internal QR display-to-customer URL |
 | `PRIVATE_CONTROL_SERVER_URL` | `http://127.0.0.1:8081` current private-route state used to validate public snapshots |
 | `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
 | `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
@@ -210,5 +253,4 @@ Merkle leaves, or raw files.
 - wallet and production key custody;
 - retry and transaction-receipt persistence;
 - public testnet deployment;
-- QR-code entry into the existing customer page; and
 - optional cross-chain messaging protocol adapters.

@@ -1,21 +1,52 @@
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
 import {
   listPublishedBatches,
   publishCandidate,
   traceBatch,
+  traceSnapshot,
 } from "./scripts/publication.js";
 
 const projectDirectory = path.dirname(fileURLToPath(import.meta.url));
 const staticRoot = path.join(projectDirectory, "consumer");
+const qrRoot = path.join(projectDirectory, "public-qrcodes");
 const port = Number(process.env.CONSUMER_PORT ?? "8082");
-const host = "127.0.0.1";
+const host = process.env.CONSUMER_HOST || "0.0.0.0";
+
+function detectLanHost() {
+  const preferred = [];
+  const fallback = [];
+  for (const [interfaceName, addresses] of Object.entries(os.networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (address.family !== "IPv4" || address.internal) continue;
+      const target = interfaceName === "en0" || interfaceName === "en1"
+        ? preferred
+        : fallback;
+      target.push(address.address);
+    }
+  }
+  const privateAddress = [...preferred, ...fallback].find((address) =>
+    /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address));
+  return privateAddress ?? preferred[0] ?? fallback[0] ?? "127.0.0.1";
+}
+
+const defaultPublicHost = detectLanHost();
+const consumerPublicUrl = (
+  process.env.CONSUMER_PUBLIC_URL || `http://${defaultPublicHost}:${port}`
+).replace(/\/+$/, "");
+const qrGeneratorBinary = path.resolve(
+  process.env.QR_GENERATOR_BINARY ??
+    path.join(projectDirectory, "..", "SnapshotQRCode", "build", "snapshot_qr"),
+);
 const maximumBodySize = 2 * 1024 * 1024;
 const publicationToken = process.env.PUBLIC_CHAIN_PUBLICATION_TOKEN ??
   "local-publication-demo-token";
+const qrGenerationCache = new Map();
 
 const contentTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -68,6 +99,87 @@ function serveStatic(response, pathname) {
   send(response, 200, fs.readFileSync(resolved), contentType);
 }
 
+function qrFileName(snapshotIdHash) {
+  if (typeof snapshotIdHash !== "string" ||
+      !/^0x[0-9a-fA-F]{64}$/.test(snapshotIdHash)) {
+    throw new Error("A valid Snapshot ID hash is required for QR Code generation.");
+  }
+  return `${snapshotIdHash.slice(2).toLowerCase()}.png`;
+}
+
+function snapshotTraceUrl(snapshotId) {
+  const url = new URL(consumerPublicUrl);
+  url.pathname = "/";
+  url.search = "";
+  url.searchParams.set("snapshot", snapshotId);
+  url.searchParams.set("view", "verification");
+  return url.toString();
+}
+
+function ensureSnapshotQr({ snapshotId, snapshotIdHash }) {
+  const fileName = qrFileName(snapshotIdHash);
+  const outputPath = path.join(qrRoot, fileName);
+  const traceUrl = snapshotTraceUrl(snapshotId);
+  fs.mkdirSync(qrRoot, { recursive: true });
+
+  if (qrGenerationCache.get(fileName) !== traceUrl || !fs.existsSync(outputPath)) {
+    const generated = spawnSync(
+      qrGeneratorBinary,
+      [traceUrl, outputPath],
+      { encoding: "utf8", maxBuffer: 1024 * 1024 },
+    );
+    if (generated.error) {
+      throw new Error(`QR Code generator could not start: ${generated.error.message}`);
+    }
+    if (generated.status !== 0 || !fs.existsSync(outputPath)) {
+      const details = generated.stderr?.trim() || generated.stdout?.trim() ||
+        `exit status ${generated.status}`;
+      throw new Error(`QR Code generation failed: ${details}`);
+    }
+    qrGenerationCache.set(fileName, traceUrl);
+  }
+
+  return {
+    traceUrl,
+    qrImageUrl: `${consumerPublicUrl}/qrcodes/${fileName}`,
+  };
+}
+
+function generateSnapshotQr(publication) {
+  return ensureSnapshotQr(publication.candidate);
+}
+
+async function listCurrentQrCodes() {
+  const batches = await listPublishedBatches();
+  return batches.filter((batch) => batch.verified).map((batch) => {
+    try {
+      return {
+        ...batch,
+        ...ensureSnapshotQr(batch),
+      };
+    } catch (error) {
+      return {
+        ...batch,
+        qrError: error instanceof Error ? error.message : "QR Code generation failed",
+      };
+    }
+  });
+}
+
+function serveQrCode(response, pathname) {
+  const fileName = decodeURIComponent(pathname.slice("/qrcodes/".length));
+  if (!/^[0-9a-f]{64}\.png$/.test(fileName)) {
+    json(response, 404, { error: "QR Code not found" });
+    return;
+  }
+  const filePath = path.join(qrRoot, fileName);
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    json(response, 404, { error: "QR Code not found" });
+    return;
+  }
+  send(response, 200, fs.readFileSync(filePath), "image/png");
+}
+
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host ?? `${host}:${port}`}`);
   if (request.method === "OPTIONS") {
@@ -84,19 +196,46 @@ const server = http.createServer(async (request, response) => {
       json(response, 200, { batches: await listPublishedBatches() });
       return;
     }
+    if (request.method === "GET" && url.pathname === "/api/qr-codes") {
+      json(response, 200, { qrCodes: await listCurrentQrCodes() });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/publish") {
       if (request.headers["x-publication-token"] !== publicationToken) {
         json(response, 403, { error: "Publication authorization failed." });
         return;
       }
       const publication = await publishCandidate(await readJsonBody(request));
+      let qrCode = {};
+      try {
+        generateSnapshotQr(publication);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "QR Code generation failed";
+        console.error(message);
+        qrCode = { qrError: message };
+      }
       json(response, 201, {
         batchId: publication.candidate.batchId,
         snapshotId: publication.candidate.snapshotId,
         status: publication.chain.status,
         transactionHash: publication.chain.transactionHash,
         blockNumber: publication.chain.blockNumber,
+        ...qrCode,
       });
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/api/trace/snapshot/")) {
+      const snapshotId = decodeURIComponent(
+        url.pathname.slice("/api/trace/snapshot/".length),
+      );
+      const trace = await traceSnapshot(snapshotId);
+      if (!trace) {
+        json(response, 404, {
+          error: "This Snapshot is inactive or no longer matches the current route.",
+        });
+      } else {
+        json(response, 200, trace);
+      }
       return;
     }
     if (request.method === "GET" && url.pathname.startsWith("/api/trace/")) {
@@ -104,6 +243,10 @@ const server = http.createServer(async (request, response) => {
       const trace = await traceBatch(batchId);
       if (!trace) json(response, 404, { error: "No public trace was found for this Batch ID." });
       else json(response, 200, trace);
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/qrcodes/")) {
+      serveQrCode(response, url.pathname);
       return;
     }
     if (request.method === "GET") {
@@ -121,6 +264,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Consumer trace: http://${host}:${port}`);
+  console.log(`Consumer trace: ${consumerPublicUrl}`);
   console.log(`Public manifests: ${path.join(projectDirectory, "public-manifests")}`);
+  console.log(`Public QR Codes: ${qrRoot}`);
 });

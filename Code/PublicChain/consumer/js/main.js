@@ -1,12 +1,29 @@
 const batchSelect = document.querySelector("#batch-select");
 const statusLine = document.querySelector("#search-status");
 const resultSection = document.querySelector("#trace-result");
+const routeDetail = document.querySelector("#route-detail");
+const routeDetailTitle = document.querySelector("#route-detail-title");
+const routeDetailIndex = document.querySelector("#route-detail-index");
+const routeDetailPrimary = document.querySelector("#route-detail-primary");
+const routeDetailSecondary = document.querySelector("#route-detail-secondary");
+const verificationOnly = new URLSearchParams(window.location.search).get("view") ===
+  "verification";
 let currentBatchId = "";
 let currentSnapshotId = "";
+let requestedSnapshotId = "";
 let batchRefreshInFlight = false;
 let liveEventSource = null;
 let liveRefreshInFlight = false;
 let liveRefreshQueued = false;
+
+if (verificationOnly) {
+  document.body.classList.add("verification-only");
+  document.title = "Verification Result";
+}
+
+function setVerificationReady(ready) {
+  if (verificationOnly) document.body.classList.toggle("verification-ready", ready);
+}
 
 const text = (selector, value, fallback = "Not disclosed") => {
   document.querySelector(selector).textContent = value || fallback;
@@ -106,6 +123,28 @@ function routeStageDetails(stage, manifest) {
   };
 }
 
+function routeStageLabel(stages, index, manifest) {
+  const details = routeStageDetails(stages[index], manifest);
+  const occurrence = stages
+    .slice(0, index + 1)
+    .filter((stage) => stage.stage === stages[index].stage)
+    .length;
+  return occurrence > 1 ? `${details.title} ${occurrence}` : details.title;
+}
+
+function selectRouteStage(stages, manifest, index, selectedButton) {
+  const details = routeStageDetails(stages[index], manifest);
+  document.querySelectorAll(".route-overview-node").forEach((button) => {
+    button.removeAttribute("aria-current");
+  });
+  selectedButton.setAttribute("aria-current", "step");
+  routeDetailTitle.textContent = routeStageLabel(stages, index, manifest);
+  routeDetailIndex.textContent = `Stage ${index + 1} of ${stages.length}`;
+  routeDetailPrimary.textContent = details.primary || "Not disclosed";
+  routeDetailSecondary.textContent = details.secondary || "Not disclosed";
+  routeDetail.hidden = false;
+}
+
 function renderRoute(manifest) {
   const route = document.querySelector("#trace-route");
   route.replaceChildren();
@@ -121,6 +160,37 @@ function renderRoute(manifest) {
         { stage: "warehouse", ...(manifest.storage || {}) },
         { stage: "supermarket", ...(manifest.retail || {}) },
       ];
+
+  if (verificationOnly) {
+    const sequence = document.createElement("p");
+    sequence.className = "route-overview-sequence";
+    sequence.textContent = stages
+      .map((stage, index) => routeStageLabel(stages, index, manifest))
+      .join(" → ");
+    route.append(sequence);
+
+    const overview = document.createElement("div");
+    overview.className = "route-overview-grid";
+    stages.forEach((stage, index) => {
+      const label = routeStageLabel(stages, index, manifest);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "route-overview-node";
+      button.setAttribute("aria-label", `View ${label}, stage ${index + 1}`);
+      const sequenceNumber = document.createElement("span");
+      sequenceNumber.className = "route-index";
+      sequenceNumber.textContent = String(index + 1);
+      const title = document.createElement("strong");
+      title.textContent = label;
+      button.append(sequenceNumber, title);
+      button.addEventListener("click", () =>
+        selectRouteStage(stages, manifest, index, button));
+      overview.append(button);
+    });
+    route.append(overview);
+    selectRouteStage(stages, manifest, 0, overview.firstElementChild);
+    return;
+  }
 
   stages.forEach((stage, index) => {
     if (index > 0) {
@@ -163,26 +233,37 @@ function renderTrace(trace) {
   text("#chain-status", trace.status);
   renderRoute(manifest);
   text("#route-state", manifest.verification.route_completed ? "Route completed" : "Route incomplete");
-  renderEvidence(trace.evidence);
-  renderTechnical(trace.technical);
-  renderChecks(trace.checks);
+  if (!verificationOnly) {
+    renderEvidence(trace.evidence);
+    renderTechnical(trace.technical);
+    renderChecks(trace.checks);
+  }
   resultSection.hidden = false;
+  setVerificationReady(true);
 }
 
-async function search(batchId, { background = false } = {}) {
+async function readTrace(
+  endpoint,
+  { background = false, batchId = "", snapshotId = "" } = {},
+) {
   if (!background) {
     statusLine.className = "status";
     statusLine.textContent = "Reading public-chain trace...";
     resultSection.hidden = true;
+    setVerificationReady(false);
     batchSelect.disabled = true;
   }
   try {
-    const response = await fetch(`/api/trace/${encodeURIComponent(batchId)}`);
+    const response = await fetch(endpoint);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
     renderTrace(payload);
-    currentBatchId = batchId;
+    currentBatchId = payload.batchId || batchId;
     currentSnapshotId = payload.snapshotId || "";
+    if (snapshotId) requestedSnapshotId = snapshotId;
+    if ([...batchSelect.options].some((option) => option.value === currentBatchId)) {
+      batchSelect.value = currentBatchId;
+    }
     statusLine.textContent = payload.verified
       ? "Public Manifest and Merkle Root match the active chain record."
       : "The trace requires attention. Review its status and verification details.";
@@ -190,11 +271,28 @@ async function search(batchId, { background = false } = {}) {
   } catch (error) {
     currentSnapshotId = "";
     resultSection.hidden = true;
+    setVerificationReady(false);
     statusLine.textContent = error.message;
     statusLine.className = "status error";
   } finally {
     if (!background) batchSelect.disabled = batchSelect.options.length <= 1;
   }
+}
+
+function searchBatch(batchId, options = {}) {
+  requestedSnapshotId = "";
+  return readTrace(`/api/trace/${encodeURIComponent(batchId)}`, {
+    ...options,
+    batchId,
+  });
+}
+
+function searchSnapshot(snapshotId, options = {}) {
+  requestedSnapshotId = snapshotId;
+  return readTrace(`/api/trace/snapshot/${encodeURIComponent(snapshotId)}`, {
+    ...options,
+    snapshotId,
+  });
 }
 
 async function loadPublishedBatches({ background = false } = {}) {
@@ -255,7 +353,12 @@ async function loadPublishedBatches({ background = false } = {}) {
 }
 
 batchSelect.addEventListener("change", () => {
-  if (batchSelect.value) search(batchSelect.value);
+  if (!batchSelect.value) return;
+  requestedSnapshotId = "";
+  const pageUrl = new URL(window.location.href);
+  pageUrl.searchParams.delete("snapshot");
+  window.history.replaceState(null, "", pageUrl);
+  searchBatch(batchSelect.value);
 });
 
 async function refreshFromLiveEvent() {
@@ -268,9 +371,22 @@ async function refreshFromLiveEvent() {
   try {
     const batches = await loadPublishedBatches({ background: true });
     const activeBatch = batches?.find((batch) => batch.batchId === selectedBatchId);
+    if (requestedSnapshotId) {
+      if (!activeBatch || activeBatch.snapshotId !== requestedSnapshotId) {
+        currentSnapshotId = "";
+        resultSection.hidden = true;
+        setVerificationReady(false);
+        statusLine.textContent =
+          "This Snapshot is inactive or no longer matches the current route.";
+        statusLine.className = "status error";
+      } else if (resultSection.hidden || currentSnapshotId !== requestedSnapshotId) {
+        await searchSnapshot(requestedSnapshotId, { background: true });
+      }
+      return;
+    }
     if (activeBatch &&
         (resultSection.hidden || activeBatch.snapshotId !== currentSnapshotId)) {
-      await search(selectedBatchId, { background: true });
+      await searchBatch(selectedBatchId, { background: true });
     }
   } finally {
     liveRefreshInFlight = false;
@@ -282,8 +398,23 @@ async function refreshFromLiveEvent() {
 }
 
 async function initializeConsumerPage() {
-  await loadPublishedBatches();
-  liveEventSource = new EventSource("http://127.0.0.1:8081/api/events");
+  requestedSnapshotId = new URLSearchParams(window.location.search)
+    .get("snapshot")?.trim() || "";
+  if (verificationOnly) {
+    if (requestedSnapshotId) {
+      await searchSnapshot(requestedSnapshotId);
+    } else {
+      statusLine.textContent = "This verification link does not contain a Snapshot ID.";
+      statusLine.className = "status error";
+    }
+  } else {
+    await loadPublishedBatches();
+    if (requestedSnapshotId) await searchSnapshot(requestedSnapshotId);
+  }
+
+  const eventUrl = new URL("/api/events", window.location.href);
+  eventUrl.port = "8081";
+  liveEventSource = new EventSource(eventUrl);
   liveEventSource.onmessage = (event) => {
     if (!event.data) return;
     try {

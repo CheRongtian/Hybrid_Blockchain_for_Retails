@@ -173,6 +173,6 @@ This module is the private-side prototype. The sibling `Snapshot` module
 generates a consumer-safe Manifest and Public Root preview from a completed
 current route. The control server forwards an administrator-approved
 publication candidate to the independent PublicChain service, which submits
-the local EVM transaction and serves the customer trace page. Wallet custody,
-production chains, cross-chain relaying, and consumer QR entry remain outside
-the current prototype.
+the local EVM transaction, generates a Snapshot-specific customer QR Code, and
+serves the customer verification result page. Wallet custody, production chains, and
+cross-chain relaying remain outside the current prototype.
