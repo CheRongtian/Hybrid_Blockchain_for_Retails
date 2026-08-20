@@ -124,3 +124,11 @@ At this point, the QR code can be written as a PNG image, but the image is still
 This step scales the QR code image by a factor of 10.
 
 Each QR module is now rendered as a 10 × 10 pixel block, so a 21 × 21 QR code becomes a 210 × 210 PNG image.
+
+## Step 04 — Read QR Content from Standard Input
+
+This step replaces the fixed `"Hello, world!"` text with input read from `stdin`.
+
+The program can now generate a QR code from arbitrary text, including piped input such as a URL.
+
+Longer input automatically produces a larger QR code when needed.
