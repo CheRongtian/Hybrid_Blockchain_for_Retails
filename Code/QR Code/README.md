@@ -118,3 +118,9 @@ out.png
 ```
 
 At this point, the QR code can be written as a PNG image, but the image is still only `21 × 21` pixels.
+
+## Step 03 — Scale Up the PNG
+
+This step scales the QR code image by a factor of 10.
+
+Each QR module is now rendered as a 10 × 10 pixel block, so a 21 × 21 QR code becomes a 210 × 210 PNG image.

@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include "TinyPngOut.h"
 
+#define SCALE 10
+
 int main()
 {
     // Text data
@@ -36,7 +38,7 @@ int main()
     printf("Size is: %d\n", size);
 
     struct TinyPngOut writer;
-    enum TinyPngOut_Status init_status = TinyPngOut_init(&writer, size, size, file);
+    enum TinyPngOut_Status init_status = TinyPngOut_init(&writer, size * SCALE, size * SCALE, file);
 
     if(init_status != TINYPNGOUT_OK)
     {
@@ -47,11 +49,11 @@ int main()
     uint8_t rgb_black[] = {0, 0, 0};
     uint8_t rgb_white[] = {255, 255, 255};
 
-    for (int y = 0; y < size; y++) 
+    for (int y = 0; y < size * SCALE; y++) 
     {
-        for (int x = 0; x < size; x++) 
+        for (int x = 0; x < size * SCALE; x++) 
         {
-            bool color = qrcodegen_getModule(qr, x, y);
+            bool color = qrcodegen_getModule(qr, x / SCALE, y / SCALE);
 
             TinyPngOut_write(&writer, color ? rgb_white: rgb_black, 1);
         }
