@@ -3,8 +3,10 @@
 #include "qrcodegen.h"
 #include <stdlib.h>
 #include "TinyPngOut.h"
+#include <string.h>
 
 #define SCALE 10
+#define QR_MAX_INPUT_LENGTH 2953
 
 int main()
 {
@@ -12,8 +14,12 @@ int main()
     uint8_t qr[qrcodegen_BUFFER_LEN_MAX];
     uint8_t tempBuffer[qrcodegen_BUFFER_LEN_MAX];
 
+    char inputText[QR_MAX_INPUT_LENGTH];
+    memset(inputText, 0, QR_MAX_INPUT_LENGTH);
+    fgets(inputText, QR_MAX_INPUT_LENGTH, stdin);
+
     bool ok = qrcodegen_encodeText(
-        "Hello, world!",
+        inputText,
         tempBuffer,
         qr,
         qrcodegen_Ecc_MEDIUM,
@@ -35,7 +41,7 @@ int main()
 
     // qr codes are square -> one int is enough to tell the size
     int size = qrcodegen_getSize(qr);
-    printf("Size is: %d\n", size);
+    // printf("Size is: %d\n", size);
 
     struct TinyPngOut writer;
     enum TinyPngOut_Status init_status = TinyPngOut_init(&writer, size * SCALE, size * SCALE, file);
@@ -59,5 +65,6 @@ int main()
         }
     }
 
+    printf("A QR code has been generated: out.png\n");
     return 0;
 }
