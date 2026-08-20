@@ -44,7 +44,13 @@ revision, and invalidates the current public Snapshot. An unconnected node is
 excluded from the current chain preview. A connected node appears as pending
 until its assigned participant submits a verified event. The matching route
 fingerprint is required when a Snapshot is previewed, published, or displayed
-on the customer page.
+on the customer page. Route changes update the open administrator and customer
+pages through server-sent events; a manual page refresh is not required.
+
+The route preview contains only connected nodes. A connected node without a
+Block has no preview arrow. The arrow appears after the assigned participant
+submits the event and passes Typed Name verification. Confirmation policies are
+therefore configured only for connected nodes.
 
 Each batch is represented as an outer linked block chain:
 
@@ -154,8 +160,9 @@ can select only a method enabled for the current route node.
 
 Typed-name confirmation is currently implemented end to end. The browser signs
 the canonical confirmation payload with ECDSA P-256, and the C++ control server
-verifies it through OpenSSL before saving the block. Handwritten and face
-confirmation remain configuration placeholders.
+verifies it through OpenSSL before saving the block. Typed Name is the current
+confirmation method exposed by the user flow; handwritten and face confirmation
+are not part of the current UI.
 
 ## Concurrency and allocation
 
@@ -174,5 +181,7 @@ generates a consumer-safe Manifest and Public Root preview from a completed
 current route. The control server forwards an administrator-approved
 publication candidate to the independent PublicChain service, which submits
 the local EVM transaction, generates a Snapshot-specific customer QR Code, and
-serves the customer verification result page. Wallet custody, production chains, and
-cross-chain relaying remain outside the current prototype.
+serves the full customer page on `:8082` and the QR-only display page on `:8084`.
+Scanning the QR Code opens the compact Verification Result and Trace Route view.
+Wallet custody, production chains, and cross-chain relaying remain outside the
+current prototype.

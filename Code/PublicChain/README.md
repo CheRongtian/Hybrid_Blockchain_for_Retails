@@ -33,17 +33,20 @@ PublicChain service :8082/api/publish
         v
 QR display :8084/
         |
-        +-- show one QR Code for the current active Snapshot
-        +-- refresh the QR Code automatically
+        +-- show only one QR image for the current active Snapshot
+        +-- expose no batch selector, link, metadata, or extra controls
+        +-- refresh the QR image automatically
         v
 Customer :8082/
         |
-        +-- scan a Snapshot QR Code for the verification result or choose a published product batch
+        +-- normal page: choose a published product batch and view the full trace
+        +-- QR URL: ?snapshot=<id>&view=verification
+        +-- QR view: Verification Result and compact selectable Trace Route
         +-- read active snapshot from SnapshotGateway
         +-- load matching public Manifest
         +-- compare the publication route fingerprint with the current private route
         +-- repeat all candidate and chain checks
-        +-- display public product route and evidence CIDs
+        +-- display the normal public route and evidence CIDs
 ```
 
 The customer page cannot access the private database, participant credentials,
@@ -85,6 +88,10 @@ PublicChain/
 
 Generated deployment records, public Manifest files, and QR Code PNG files are
 ignored by Git. They remain local runtime state.
+
+`SnapshotQRCode` contains the independent generator source and build target.
+Generated PNG files are written to `PublicChain/public-qrcodes/`; they are not
+expected inside `SnapshotQRCode`.
 
 ## Apple Silicon environment
 
@@ -151,15 +158,17 @@ Local Public Chain**. A successful response includes the EVM block number.
 Open `http://127.0.0.1:8084/` to display one QR Code for the active published
 Snapshot. Scanning it opens the verification result section on the customer
 service at `http://127.0.0.1:8082/`; the normal customer page remains available
-at the same address for full route and evidence details.
+at the same address for full route and evidence details. The QR display page
+itself contains only the QR image.
 
 The QR display page loads the current active Snapshot QR Code from the PublicChain
 service and refreshes it automatically. The QR link remains locked to its
 Snapshot ID, so a route edit or a newer published Snapshot shows the old link as
 inactive. A scanned QR link uses the verification-only customer view; it shows
-the Verification Result, a compact selectable route overview, and the selected
-stage details. Public evidence and technical verification details stay hidden
-from the QR view.
+the Verification Result, a compact selectable route overview with numbered
+stages, and the selected stage details. Public evidence and technical
+verification details stay hidden from the QR view. The normal customer page
+continues to show the full route and public evidence.
 The customer page listens to the private control server's server-sent event
 stream and updates this state without a full page refresh.
 

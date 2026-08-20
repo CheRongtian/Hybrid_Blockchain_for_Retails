@@ -1,7 +1,7 @@
 # Hybrid-Chain Supply Chain Traceability Prototype
 
 This repository is a C++17 supply-chain traceability prototype organized into
-three architectural modules:
+three runtime modules and several standalone supporting tools:
 
 ```text
 Private Chain -> Public Snapshot -> Public Chain -> Customer Verification
@@ -39,7 +39,9 @@ PublicChain
   +-- SnapshotGateway contract
   +-- administrator publication service
   +-- public Manifest storage and verification
-  +-- customer trace page with published-batch selection
+  +-- full customer trace page :8082
+  +-- one active Snapshot QR display :8084
+  +-- compact verification-only scan view
 ```
 
 Private operational records and public consumer data have separate Merkle
@@ -61,6 +63,8 @@ Blockchain Structure/
 │   │   └── Database/                 # Local SQLite data
 │   ├── Snapshot/                    # Public snapshot preview module
 │   ├── PublicChain/                 # EVM gateway, publisher, and customer page
+│   ├── MerkleTreeNTree/              # Standalone N-ary Merkle Tree visualizer
+│   ├── SnapshotQRCode/               # Independent QR generator integration copy
 │   ├── CMakeLists.txt               # Central C++ build entry
 │   ├── PrCsample.sol                # Historical Solidity sample
 │   ├── SNsample.sol                 # Early snapshot contract sample
@@ -84,6 +88,8 @@ Git.
 - [Database notes](Code/PrivateChain/Database/README.md)
 - [Public snapshot design](Code/Snapshot/README.md)
 - [Public-chain design](Code/PublicChain/README.md)
+- [N-ary Merkle Tree and live visualizer](Code/MerkleTreeNTree/README.md)
+- [Snapshot QR Code integration](Code/SnapshotQRCode/README.md)
 
 The module READMEs own implementation details, APIs, schemas, privacy rules,
 and planned responsibilities. This README remains the project entry point.
@@ -111,7 +117,14 @@ Canvas-only. Once the node is connected into a complete path, it appears in the
 administrator preview as pending; its Block and preview arrows appear after
 the assigned participant submits and passes verification. A restored route
 with the exact previous route fingerprint can use its matching publication
-again; a new route requires a new completed Snapshot before publication.
+again; a new route requires a new completed Snapshot before publication. Route
+state changes are pushed to the open pages through server-sent events, so a
+manual page refresh is unnecessary.
+
+Identifiers follow the stage occurrence within the active route: Logistics 1
+uses `SHIP-0001` and `VEHICLE-0001`, Logistics 2 uses `SHIP-0002` and
+`VEHICLE-0002`; Warehouse 1 uses `STORAGE-0001` and `ZONE-0001`, Warehouse 2
+uses `STORAGE-0002` and `ZONE-0002`.
 
 Each supply-chain event creates one block with its own Merkle Tree:
 
@@ -149,19 +162,21 @@ verifiable tree for each event.
 - independently revalidated publication candidates and public Manifests;
 - customer published-batch selection with public route and chain verification
   details;
-- one Snapshot-specific QR Code displayed after successful publication, with a
-  verification-result and compact route-overview customer view plus
-  stale-Snapshot rejection;
+- one Snapshot-specific QR Code displayed after successful publication; the QR
+  page contains only that image, while scanning opens a verification-result
+  view with a compact, selectable route overview and stale-Snapshot rejection;
+- an independent N-ary Merkle Tree CLI with runtime arity, proofs, NDJSON
+  events, and a live SSE visualizer; it is separate from the production
+  per-block binary Merkle Tree;
 - live route, block, Snapshot, and customer-page synchronization through
   server-sent events;
 - bounded server worker pool using selected `MemoryPool` and `ConMemPool`
   components.
 
-The control panel stores confirmation choices for each connected route node.
-Every connected node must keep at least one method enabled, with Typed Name
-selected by default. Typed-name confirmation is implemented in this demo;
-handwritten and face confirmation remain available as configuration choices,
-while their capture and verification flows are deferred.
+The control panel requires Typed Name confirmation for every connected route
+node, with Typed Name selected by default. This is the confirmation method
+implemented and exposed by the current demo. Handwritten and face confirmation
+are not part of the current user flow.
 Inspection Agency, production key custody, durable relayer jobs, and
 public-testnet deployment are pending.
 
@@ -172,6 +187,7 @@ public-testnet deployment are pending.
 - OpenSSL;
 - SQLite3;
 - local Kubo/IPFS when file upload is used.
+- Python 3 for the standalone N-ary Merkle Tree visualizer.
 
 The independent PublicChain prototype additionally requires Node.js 22 LTS
 and npm. An Apple M3 Mac with 18 GB memory is sufficient for the local Hardhat
@@ -192,6 +208,7 @@ http://127.0.0.1:5002
 | Participant submission page | `http://127.0.0.1:8080/` | `start_user_server.sh` |
 | Administrator control page | `http://127.0.0.1:8081/` | `start_control_server.sh` |
 | Customer trace page and publication API | `http://127.0.0.1:8082/` | `start_customer_server.sh` |
+| Active Snapshot QR display | `http://127.0.0.1:8084/` | `start_customer_server.sh` |
 | Hardhat JSON-RPC node | `http://127.0.0.1:8545` | `start_customer_server.sh` |
 | Kubo IPFS API | `http://127.0.0.1:5002` | Homebrew service |
 
@@ -210,8 +227,11 @@ node creates an unconnected, free-positioned stage without changing the current
 route, pan, or zoom. The administrator assigns an unused active account with the
 matching role, positions the node, and connects it manually. Semantic route
 edits are autosaved as revisions and invalidate the current Snapshot
-immediately. The editor continues using the existing workflow API and SQLite
-data; no new frontend framework or graph database is required.
+immediately. Only connected nodes appear in the route preview. A connected node
+without a submitted Block has no preview arrow; the arrow appears after the
+assigned participant submits and passes verification. The editor continues using
+the existing workflow API and SQLite data; no new frontend framework or graph
+database is required.
 
 ### One-time Kubo setup on macOS
 
@@ -304,11 +324,16 @@ page then loads the published product-batch selection list. Open it separately
 at `http://127.0.0.1:8082/` when customer-facing verification is needed. Clicking
 a batch loads its active contract record, matching public Manifest, and verifies
 the identifiers, Manifest hash, Public Merkle Root, and source block anchor.
-The customer does not type a Batch ID. The QR display page at
-`http://127.0.0.1:8084/` shows the QR Code for the currently active published
-Snapshot. Scanning it opens the Verification Result section on port 8082; the
-full customer trace remains available through the normal customer page. A route
-change or replacement Snapshot makes the old link inactive.
+The customer does not type a Batch ID. The normal customer page remains the
+full route and evidence view.
+
+The QR display page at `http://127.0.0.1:8084/` contains only one QR image for
+the current active Snapshot. Its URL includes
+`snapshot=<id>&view=verification`. Scanning it opens a compact Verification
+Result and Trace Route view on port 8082. The route is shown as numbered
+selectable stages with a selected-stage detail panel; public evidence and
+technical verification details are hidden in this QR view. A route change or
+replacement Snapshot makes the old link inactive.
 
 ## Demonstration accounts
 
@@ -338,6 +363,20 @@ cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PrivateChain/M
 
 `inp.txt` is used only by this CLI demonstration. Server records are supplied
 through the HTTP/API flow and stored in SQLite.
+
+## Standalone N-ary Merkle Tree visualizer
+
+The independent `Code/MerkleTreeNTree` tool accepts an arity `N >= 2`, builds
+SHA-256 trees, verifies proofs, emits NDJSON events, and serves a live browser
+visualizer over SSE. It is a learning and inspection tool; the supply-chain
+servers continue to use the existing binary Merkle Tree implementation.
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/MerkleTreeNTree"
+./run_visualizer.sh
+```
+
+The visualizer is available at `http://127.0.0.1:8765/`.
 
 ## Solidity samples and next stages
 
