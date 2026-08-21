@@ -388,9 +388,11 @@ current Snapshot and publish a live `route_changed` event.
 
 GET /api/events keeps a server-sent event stream open. It reports route changes,
 new verified batch records, and successful Snapshot publication through
-`route_changed`, `batch_changed`, and `snapshot_published` messages. The
-control and customer pages use this stream for automatic updates without a full
-page refresh.
+`route_changed`, `batch_changed`, `snapshot_checked`, and `snapshot_published`
+messages. The
+control page uses this stream directly. The PublicChain customer service proxies
+it through port 8082 so phone clients receive automatic updates without direct
+access to port 8081 or a full page refresh.
 
 GET /api/chains returns saved records and block edges for the administrator
 control page.
@@ -401,10 +403,15 @@ GET /api/snapshot/eligible-batches returns completed batches whose configured
 route, parent links, Merkle results, and signatures pass the Snapshot
 eligibility policy.
 
+GET /api/snapshot/status?batchId=... is an internal token-protected endpoint.
+It returns the current active Snapshot metadata and the latest local verification
+time/status used by the public customer service.
+
 POST /api/snapshot/preview accepts a batch ID and optional allowlisted CID
 selection. It returns a consumer-safe Manifest, independent Public Merkle Root,
 final private block hash, private-data exclusion summary, and a self-contained
-publication candidate. The preview is not persisted or published.
+publication candidate. The preview is stored as a local lifecycle revision and
+is not published until the publish endpoint succeeds.
 
 POST /api/snapshot/publish is restricted to the administrator. It forwards an
 exact publication candidate to the independent PublicChain service. The
@@ -421,7 +428,15 @@ Optional environment variables are:
 ```text
 PUBLIC_CHAIN_SERVICE_URL=http://127.0.0.1:8082
 PUBLIC_CHAIN_PUBLICATION_TOKEN=local-publication-demo-token
+SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS=120
 ```
+
+The independent C++ SnapshotScheduler runs one check immediately after control
+server startup and then at the configured interval. It checks batches with prior
+publication history. Unchanged source hashes update only the hot verification
+status. Changed completed source data creates and publishes a new immutable
+revision. An invalidated route publishes its replacement after every connected
+stage has a verified Block.
 
 Use the same non-default token in both the control-server and PublicChain
 service environments when overriding the local demonstration value.

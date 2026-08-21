@@ -80,6 +80,9 @@ control_server :8081
         +-- forwards selected files to the local IPFS API
         +-- previews and publishes consumer-safe public snapshots for completed
             batches through PublicChain
+        +-- records Snapshot revisions and publication state through
+            SnapshotStorage
+        +-- checks published batches on a configurable SnapshotScheduler
         +-- serves the administrator control page
 ```
 
@@ -131,6 +134,14 @@ Code/PrivateChain/Database/supply_chain.db
 The database stores structured records, hashes, Merkle proofs, block links,
 identity metadata, and CID metadata. Large file bodies stay in IPFS.
 
+The control server uses the sibling `Code/SnapshotStorage` C++ module for
+Snapshot lifecycle records. SQLite stores the hot index and state transitions,
+the in-memory cache serves the current active record, and the local
+`Database/snapshot-archive/` directory keeps historical preview and publication
+revisions. `Code/SnapshotScheduler` runs the automatic check every 120 seconds
+by default. Unchanged source data updates the latest verification status; changed
+completed source data publishes a new immutable revision.
+
 The local Kubo API is expected at:
 
 ```text
@@ -180,8 +191,9 @@ This module is the private-side prototype. The sibling `Snapshot` module
 generates a consumer-safe Manifest and Public Root preview from a completed
 current route. The control server forwards an administrator-approved
 publication candidate to the independent PublicChain service, which submits
-the local EVM transaction, generates a Snapshot-specific customer QR Code, and
+the local EVM transaction, generates a stable batch customer QR Code, and
 serves the full customer page on `:8082` and the QR-only display page on `:8084`.
-Scanning the QR Code opens the compact Verification Result and Trace Route view.
+Scanning the QR Code resolves the current active Snapshot for that batch and
+opens the Verification Result and Trace Route view.
 Wallet custody, production chains, and cross-chain relaying remain outside the
 current prototype.

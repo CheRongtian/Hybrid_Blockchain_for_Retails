@@ -33,6 +33,8 @@
 #include "gateway_payload.hpp"
 #include "snapshot_adapter.hpp"
 #include "snapshot_policy.hpp"
+#include "snapshot_scheduler.hpp"
+#include "snapshot_storage.hpp"
 #include "thread_pool.hpp"
 
 namespace fs = std::filesystem;
@@ -983,6 +985,42 @@ std::optional<std::string> json_string_value(const std::string& body,
         value += body[cursor];
     }
     return std::nullopt;
+}
+
+std::optional<int> json_integer_value(const std::string& body,
+                                      const std::string& key)
+{
+    const std::string needle = "\"" + key + "\"";
+    const std::size_t key_position = body.find(needle);
+    if(key_position == std::string::npos) return std::nullopt;
+    const std::size_t colon = body.find(':', key_position + needle.size());
+    if(colon == std::string::npos) return std::nullopt;
+
+    std::size_t cursor = colon + 1;
+    while(cursor < body.size() &&
+          std::isspace(static_cast<unsigned char>(body[cursor])))
+        ++cursor;
+    const std::size_t number_start = cursor;
+    if(cursor < body.size() && body[cursor] == '-') ++cursor;
+    const std::size_t digits_start = cursor;
+    while(cursor < body.size() &&
+          std::isdigit(static_cast<unsigned char>(body[cursor])))
+        ++cursor;
+    if(cursor == digits_start) return std::nullopt;
+
+    try
+    {
+        std::size_t parsed = 0;
+        const int value = std::stoi(body.substr(number_start,
+                                                 cursor - number_start),
+                                    &parsed);
+        return parsed == cursor - number_start ?
+            std::optional<int>(value) : std::nullopt;
+    }
+    catch(const std::exception&)
+    {
+        return std::nullopt;
+    }
 }
 
 struct IpfsAddResult
@@ -2014,16 +2052,44 @@ std::string snapshot_preview_json(const supermarket::snapshot::Preview& preview)
     return json.str();
 }
 
-std::string public_route_state_json(const std::string& database_path,
-                                    const std::string& batch_id)
+std::optional<supermarket::snapshot_storage::SnapshotPreview>
+snapshot_storage_preview_from_candidate(const std::string& candidate_json)
 {
-    std::string route_id;
-    std::vector<SupplyRouteNode> route_nodes;
-    std::vector<SupplyRouteEdge> route_edges;
-    if(!load_workflow_route(database_path, batch_id, route_id,
-                            route_nodes, route_edges))
-        return "";
+    const auto protocol = json_string_value(candidate_json, "protocol");
+    const auto snapshot_id = json_string_value(candidate_json, "snapshotId");
+    const auto schema_version = json_integer_value(candidate_json, "snapshotVersion");
+    const auto generated_at = json_string_value(candidate_json, "generatedAt");
+    const auto batch_id = json_string_value(candidate_json, "batchId");
+    const auto route_fingerprint =
+        json_string_value(candidate_json, "routeFingerprint");
+    const auto manifest_json =
+        json_string_value(candidate_json, "manifestCanonical");
+    const auto public_root = json_string_value(candidate_json, "publicRoot");
+    const auto source_block_hash =
+        json_string_value(candidate_json, "sourceBlockHash");
+    if(!protocol || !snapshot_id || !schema_version || !generated_at ||
+       !batch_id || !route_fingerprint || !manifest_json || !public_root ||
+       !source_block_hash)
+        return std::nullopt;
 
+    supermarket::snapshot_storage::SnapshotPreview preview;
+    preview.protocol = *protocol;
+    preview.snapshot_id = *snapshot_id;
+    preview.schema_version = *schema_version;
+    preview.generated_at = *generated_at;
+    preview.batch_id = *batch_id;
+    preview.manifest_json = *manifest_json;
+    preview.public_root = *public_root;
+    preview.source_block_hash = *source_block_hash;
+    preview.route_fingerprint = *route_fingerprint;
+    preview.candidate_json = candidate_json;
+    return preview;
+}
+
+std::string workflow_route_fingerprint(
+    const std::vector<SupplyRouteNode>& route_nodes,
+    const std::vector<SupplyRouteEdge>& route_edges)
+{
     std::vector<supermarket::snapshot::RouteNodeInput> fingerprint_nodes;
     fingerprint_nodes.reserve(route_nodes.size());
     for(const SupplyRouteNode& node : route_nodes)
@@ -2042,6 +2108,19 @@ std::string public_route_state_json(const std::string& database_path,
             edge.from_node_id, edge.to_node_id
         });
     }
+    return supermarket::snapshot::route_fingerprint(
+        fingerprint_nodes, fingerprint_edges);
+}
+
+std::string public_route_state_json(const std::string& database_path,
+                                    const std::string& batch_id)
+{
+    std::string route_id;
+    std::vector<SupplyRouteNode> route_nodes;
+    std::vector<SupplyRouteEdge> route_edges;
+    if(!load_workflow_route(database_path, batch_id, route_id,
+                            route_nodes, route_edges))
+        return "";
 
     std::sort(route_nodes.begin(), route_nodes.end(),
               [](const SupplyRouteNode& left, const SupplyRouteNode& right) {
@@ -2060,8 +2139,7 @@ std::string public_route_state_json(const std::string& database_path,
     json << "{\"batchId\":\"" << json_escape(batch_id)
          << "\",\"routeId\":\"" << json_escape(route_id)
          << "\",\"routeFingerprint\":\""
-         << json_escape(supermarket::snapshot::route_fingerprint(
-                fingerprint_nodes, fingerprint_edges))
+         << json_escape(workflow_route_fingerprint(route_nodes, route_edges))
          << "\",\"routeShape\":\"" << json_escape(route_shape.str())
          << "\"}";
     return json.str();
@@ -2094,6 +2172,334 @@ bool parse_snapshot_evidence_selection(
         });
     }
     return true;
+}
+
+bool snapshot_evidence_selection_from_manifest(
+    const std::string& manifest_json,
+    std::vector<supermarket::snapshot::EvidenceInput>& selections,
+    std::string& error)
+{
+    selections.clear();
+    error.clear();
+    const std::string key = "\"public_evidence\"";
+    const std::size_t key_position = manifest_json.find(key);
+    if(key_position == std::string::npos) return true;
+    const std::size_t array_start = manifest_json.find('[', key_position + key.size());
+    if(array_start == std::string::npos)
+    {
+        error = "Published Snapshot evidence list is malformed";
+        return false;
+    }
+
+    std::size_t cursor = array_start + 1;
+    while(cursor < manifest_json.size())
+    {
+        while(cursor < manifest_json.size() &&
+              std::isspace(static_cast<unsigned char>(manifest_json[cursor])))
+            ++cursor;
+        if(cursor >= manifest_json.size()) break;
+        if(manifest_json[cursor] == ']') return true;
+        if(manifest_json[cursor] != '{')
+        {
+            error = "Published Snapshot evidence list is malformed";
+            return false;
+        }
+
+        const std::size_t object_start = cursor;
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        bool closed = false;
+        for(; cursor < manifest_json.size(); ++cursor)
+        {
+            const char character = manifest_json[cursor];
+            if(in_string)
+            {
+                if(escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+                if(character == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+                if(character == '"') in_string = false;
+                continue;
+            }
+            if(character == '"')
+            {
+                in_string = true;
+                continue;
+            }
+            if(character == '{') ++depth;
+            if(character == '}' && --depth == 0)
+            {
+                ++cursor;
+                closed = true;
+                break;
+            }
+        }
+        if(!closed)
+        {
+            error = "Published Snapshot evidence object is malformed";
+            return false;
+        }
+
+        const std::string object = manifest_json.substr(
+            object_start, cursor - object_start);
+        const auto stage = json_string_value(object, "stage");
+        const auto type = json_string_value(object, "type");
+        const auto cid = json_string_value(object, "cid");
+        if(!stage || !type || !cid || stage->empty() || type->empty() ||
+           cid->empty())
+        {
+            error = "Published Snapshot evidence object is incomplete";
+            return false;
+        }
+
+        const auto policy = std::find_if(
+            supermarket::snapshot::public_evidence_policy().begin(),
+            supermarket::snapshot::public_evidence_policy().end(),
+            [&](const supermarket::snapshot::EvidencePolicy& item) {
+                return item.public_type == *type;
+            });
+        if(policy == supermarket::snapshot::public_evidence_policy().end())
+        {
+            error = "Published Snapshot evidence type is unsupported";
+            return false;
+        }
+        selections.push_back(supermarket::snapshot::EvidenceInput{
+            *stage, policy->category, *cid
+        });
+
+        while(cursor < manifest_json.size() &&
+              std::isspace(static_cast<unsigned char>(manifest_json[cursor])))
+            ++cursor;
+        if(cursor >= manifest_json.size()) break;
+        if(manifest_json[cursor] == ',')
+        {
+            ++cursor;
+            continue;
+        }
+        if(manifest_json[cursor] == ']') return true;
+        error = "Published Snapshot evidence list is malformed";
+        return false;
+    }
+    error = "Published Snapshot evidence list is malformed";
+    return false;
+}
+
+std::string snapshot_check_error_message(
+    const supermarket::snapshot::Eligibility& eligibility)
+{
+    if(eligibility.errors.empty())
+        return "The current route is not ready for publication";
+    std::ostringstream message;
+    for(std::size_t index = 0; index < eligibility.errors.size(); ++index)
+    {
+        if(index > 0) message << "; ";
+        message << eligibility.errors[index];
+    }
+    return message.str();
+}
+
+std::vector<supermarket::snapshot::EvidenceInput>
+snapshot_available_evidence_selection(
+    const supermarket::snapshot::BatchInput& input,
+    const std::vector<supermarket::snapshot::EvidenceInput>& previous)
+{
+    std::vector<supermarket::snapshot::EvidenceInput> available;
+    for(const auto& selection : previous)
+    {
+        const bool still_available = std::any_of(
+            input.stages.begin(), input.stages.end(),
+            [&](const supermarket::snapshot::StageInput& stage) {
+                if(stage.stage != selection.stage) return false;
+                return std::any_of(
+                    stage.evidence.begin(), stage.evidence.end(),
+                    [&](const supermarket::snapshot::EvidenceInput& evidence) {
+                        return evidence.category == selection.category &&
+                            evidence.cid == selection.cid;
+                    });
+            });
+        if(still_available) available.push_back(selection);
+    }
+    return available;
+}
+
+std::string snapshot_status_json(
+    const supermarket::snapshot_storage::SnapshotStore& snapshot_store,
+    const std::string& batch_id)
+{
+    const auto active = snapshot_store.active_snapshot(batch_id);
+    if(!active) return "";
+    const auto verification = snapshot_store.verification_status(batch_id);
+    std::ostringstream json;
+    json << "{\"batchId\":\"" << json_escape(batch_id)
+         << "\",\"snapshotId\":\"" << json_escape(active->snapshot_id)
+         << "\",\"revision\":" << active->revision
+         << ",\"routeFingerprint\":\""
+         << json_escape(active->route_fingerprint)
+         << "\",\"publishedAt\":\""
+         << json_escape(active->published_at)
+         << "\",\"latestVerificationAt\":\""
+         << json_escape(verification ? verification->checked_at : "")
+         << "\",\"verificationStatus\":\""
+         << json_escape(verification ? verification->status : "")
+         << "\",\"verificationMessage\":\""
+         << json_escape(verification ? verification->message : "")
+         << "\"}";
+    return json.str();
+}
+
+void record_snapshot_check(
+    supermarket::snapshot_storage::SnapshotStore& snapshot_store,
+    const std::string& batch_id,
+    const std::string& snapshot_id,
+    const std::string& status,
+    const std::string& message)
+{
+    std::string error;
+    if(!snapshot_store.touch_verification(
+           batch_id, snapshot_id, "", status, message, error))
+    {
+        std::cerr << "Snapshot verification status update failed: "
+                  << error << '\n';
+    }
+    live_event_hub.publish("snapshot_checked", batch_id);
+}
+
+void automatic_snapshot_refresh(
+    const std::string& database_path,
+    supermarket::snapshot_storage::SnapshotStore& snapshot_store,
+    std::mutex& chain_mutex)
+{
+    std::lock_guard<std::mutex> chain_lock(chain_mutex);
+    std::vector<SupplyChainBatch> batches;
+    std::vector<SupplyChainRecord> records;
+    if(!load_supply_chain_batches(database_path, batches) ||
+       !load_supply_chain_records(database_path, records))
+    {
+        std::cerr << "Automatic Snapshot refresh could not read source data\n";
+        return;
+    }
+
+    for(const SupplyChainBatch& batch : batches)
+    {
+        const auto active = snapshot_store.active_snapshot(batch.batch_id);
+        const auto latest = snapshot_store.latest_publication(batch.batch_id);
+        if(!active && !latest) continue;
+        const std::string last_snapshot_id = active
+            ? active->snapshot_id
+            : latest->snapshot_id;
+
+        const auto workflow = load_runtime_workflow(database_path, batch.batch_id);
+        if(!workflow)
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", "The published Snapshot route is unavailable");
+            continue;
+        }
+
+        const auto input = make_snapshot_batch_input(
+            batch, records, workflow->nodes, workflow->edges);
+        const auto eligibility = supermarket::snapshot::evaluate_eligibility(input);
+        if(!eligibility.eligible || input.stages.empty())
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "waiting", snapshot_check_error_message(eligibility));
+            continue;
+        }
+
+        const std::string source_block_hash = latest_snapshot_block_hash(input);
+        const std::string route_fingerprint = supermarket::snapshot::route_fingerprint(
+            input.route_nodes, input.route_edges);
+        if(active && active->source_block_hash == source_block_hash &&
+           active->route_fingerprint == route_fingerprint)
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, active->snapshot_id,
+                "unchanged", "Published Snapshot is still current");
+            continue;
+        }
+
+        std::vector<supermarket::snapshot::EvidenceInput> selected_evidence;
+        std::string evidence_error;
+        const auto previous = active ? active : latest;
+        if(!snapshot_evidence_selection_from_manifest(
+               previous->manifest_json, selected_evidence, evidence_error))
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", evidence_error);
+            continue;
+        }
+        selected_evidence = snapshot_available_evidence_selection(
+            input, selected_evidence);
+
+        std::string preview_error;
+        const auto preview = supermarket::snapshot::build_preview(
+            input, selected_evidence, preview_error);
+        if(!preview)
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", preview_error);
+            continue;
+        }
+        const std::string candidate_json =
+            supermarket::snapshot::publication_candidate_json(*preview);
+        const auto storage_preview =
+            snapshot_storage_preview_from_candidate(candidate_json);
+        if(!storage_preview)
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", "Automatic Snapshot candidate metadata is incomplete");
+            continue;
+        }
+
+        const auto published = post_publication_candidate(candidate_json);
+        if(!published)
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", "The local public-chain service is unavailable");
+            continue;
+        }
+        if(published->status_code < 200 || published->status_code >= 300)
+        {
+            const std::string message = published->body.empty()
+                ? "The public-chain service rejected the automatic Snapshot"
+                : published->body.substr(0, 512);
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, last_snapshot_id,
+                "error", message);
+            continue;
+        }
+
+        const auto transaction_hash = json_string_value(
+            published->body, "transactionHash");
+        std::string storage_error;
+        if(!snapshot_store.mark_published(
+               *storage_preview, published->body,
+               transaction_hash.value_or(""), storage_error))
+        {
+            record_snapshot_check(
+                snapshot_store, batch.batch_id, storage_preview->snapshot_id,
+                "error", "Snapshot was published but local indexing failed: " +
+                    storage_error);
+            continue;
+        }
+        record_snapshot_check(
+            snapshot_store, batch.batch_id, storage_preview->snapshot_id,
+            "published", "A new Snapshot was published from changed source data");
+        live_event_hub.publish("snapshot_published", batch.batch_id);
+    }
 }
 
 std::string ipfs_refs_json(const std::vector<IpfsReference>& references)
@@ -2819,6 +3225,18 @@ int main(int argc, char* argv[])
     if(!init_database(database_path.string()))
         return 1;
 
+    const fs::path snapshot_archive_root =
+        database_path.parent_path() / "snapshot-archive";
+    supermarket::snapshot_storage::SnapshotStore snapshot_store(
+        database_path.string(), snapshot_archive_root.string());
+    std::string snapshot_storage_error;
+    if(!snapshot_store.initialize(snapshot_storage_error))
+    {
+        std::cerr << "Snapshot storage initialization failed: "
+                  << snapshot_storage_error << '\n';
+        return 1;
+    }
+
     if(!delete_expired_auth_sessions(database_path.string(), unix_time_now()))
         return 1;
 
@@ -2904,11 +3322,22 @@ int main(int argc, char* argv[])
     // Reserve enough workers so those long-lived connections cannot starve
     // normal route, record, and snapshot requests on low-core machines.
     ThreadPool thread_pool(8);
+    const auto snapshot_refresh_interval =
+        supermarket::snapshot_scheduler::interval_from_environment();
+    supermarket::snapshot_scheduler::SnapshotScheduler snapshot_scheduler(
+        snapshot_refresh_interval,
+        [&]() {
+            automatic_snapshot_refresh(
+                database_path.string(), snapshot_store, chain_mutex);
+        });
+    snapshot_scheduler.start();
     std::cout << "Control server: http://127.0.0.1:" << port << '\n'
-              << "Static root: " << static_root << '\n'
-              << "Database: " << database_path << '\n'
-              << "Restored blocks: " << stored_records.size() << '\n'
-              << "Worker threads: " << thread_pool.worker_count() << '\n';
+             << "Static root: " << static_root << '\n'
+             << "Database: " << database_path << '\n'
+             << "Restored blocks: " << stored_records.size() << '\n'
+             << "Worker threads: " << thread_pool.worker_count() << '\n';
+    std::cout << "Automatic Snapshot refresh interval: "
+              << snapshot_refresh_interval.count() << " seconds\n";
 
     while(true)
     {
@@ -2951,6 +3380,7 @@ int main(int argc, char* argv[])
             request_path(request.target) == "/api/events" ||
             request.target == "/api/chains" ||
             request_path(request.target) == "/api/public-route-state" ||
+            request_path(request.target) == "/api/snapshot/status" ||
             request.target == "/api/snapshot/eligible-batches" ||
             request.target == "/api/snapshot/preview" ||
             request.target == "/api/snapshot/publish";
@@ -3651,6 +4081,20 @@ int main(int argc, char* argv[])
                     // against one revision cannot write that older revision
                     // back after the administrator has switched the route.
                     std::lock_guard<std::mutex> chain_lock(chain_mutex);
+                    std::string previous_route_fingerprint;
+                    if(!batch_id.empty())
+                    {
+                        std::string previous_route_id;
+                        std::vector<SupplyRouteNode> previous_nodes;
+                        std::vector<SupplyRouteEdge> previous_edges;
+                        if(load_workflow_route(
+                               database_path.string(), batch_id,
+                               previous_route_id, previous_nodes, previous_edges))
+                        {
+                            previous_route_fingerprint = workflow_route_fingerprint(
+                                previous_nodes, previous_edges);
+                        }
+                    }
                     std::string route_id;
                     if(!save_workflow_route(database_path.string(), batch_id, nodes,
                                             edges, route_id, workflow_error,
@@ -3668,6 +4112,21 @@ int main(int argc, char* argv[])
                     }
                     else
                     {
+                        const std::string next_route_fingerprint =
+                            workflow_route_fingerprint(nodes, edges);
+                        if(!batch_id.empty() &&
+                           !previous_route_fingerprint.empty() &&
+                           previous_route_fingerprint != next_route_fingerprint)
+                        {
+                            std::string invalidation_error;
+                            if(!snapshot_store.invalidate_batch(
+                                   batch_id, invalidation_error))
+                            {
+                                std::cerr
+                                    << "Snapshot invalidation after route change failed: "
+                                    << invalidation_error << '\n';
+                            }
+                        }
                         status = "200 OK";
                         body = "{\"routeId\":\"" + json_escape(route_id) +
                                "\",\"batchId\":\"" + json_escape(batch_id) +
@@ -3728,6 +4187,39 @@ int main(int argc, char* argv[])
                 {
                     status = "404 Not Found";
                     body = json_error("The selected batch route is unavailable");
+                }
+                else
+                {
+                    status = "200 OK";
+                }
+            }
+            send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
+        }
+        else if(request.method == "GET" &&
+                request_path(request.target) == "/api/snapshot/status")
+        {
+            content_type = "application/json; charset=utf-8";
+            const auto token = request.headers.find("x-publication-token");
+            const std::string batch_id = query_parameter(
+                request.target, "batchId").value_or("");
+            if(token == request.headers.end() ||
+               token->second != public_chain_publication_token())
+            {
+                status = "403 Forbidden";
+                body = json_error("Publication authorization failed");
+            }
+            else if(batch_id.empty() || batch_id.size() > 256)
+            {
+                status = "422 Unprocessable Entity";
+                body = json_error("A valid batchId is required");
+            }
+            else
+            {
+                body = snapshot_status_json(snapshot_store, batch_id);
+                if(body.empty())
+                {
+                    status = "404 Not Found";
+                    body = json_error("The selected batch has no active Snapshot");
                 }
                 else
                 {
@@ -3899,8 +4391,38 @@ int main(int argc, char* argv[])
                             }
                             else
                             {
-                                status = "200 OK";
-                                body = snapshot_preview_json(*preview);
+                                const std::string candidate_json =
+                                    supermarket::snapshot::publication_candidate_json(
+                                        *preview);
+                                supermarket::snapshot_storage::SnapshotPreview
+                                    storage_preview;
+                                storage_preview.protocol = preview->protocol;
+                                storage_preview.snapshot_id = preview->snapshot_id;
+                                storage_preview.schema_version =
+                                    preview->snapshot_version;
+                                storage_preview.generated_at = preview->generated_at;
+                                storage_preview.batch_id = preview->batch_id;
+                                storage_preview.manifest_json = preview->manifest_json;
+                                storage_preview.public_root = preview->public_root;
+                                storage_preview.source_block_hash =
+                                    preview->final_private_block_hash;
+                                storage_preview.route_fingerprint =
+                                    preview->route_fingerprint;
+                                storage_preview.candidate_json = candidate_json;
+                                std::string storage_error;
+                                if(!snapshot_store.save_preview(
+                                       storage_preview, storage_error))
+                                {
+                                    status = "500 Internal Server Error";
+                                    body = json_error(
+                                        "Failed to store the Snapshot preview: " +
+                                        storage_error);
+                                }
+                                else
+                                {
+                                    status = "200 OK";
+                                    body = snapshot_preview_json(*preview);
+                                }
                             }
                             }
                         }
@@ -3949,11 +4471,49 @@ int main(int argc, char* argv[])
                        published->status_code < 300)
                     {
                         status = "201 Created";
-                        const auto published_batch_id =
-                            json_string_value(published->body, "batchId");
-                        live_event_hub.publish(
-                            "snapshot_published",
-                            published_batch_id.value_or("") );
+                        const auto storage_preview =
+                            snapshot_storage_preview_from_candidate(request.body);
+                        if(storage_preview)
+                        {
+                            const auto transaction_hash = json_string_value(
+                                published->body, "transactionHash");
+                            std::string storage_error;
+                            if(!snapshot_store.mark_published(
+                                  *storage_preview,
+                                  published->body,
+                                  transaction_hash.value_or(""),
+                                  storage_error))
+                           {
+                                std::cerr
+                                    << "Snapshot publication storage update failed: "
+                                    << storage_error << '\n';
+                            }
+                           else
+                           {
+                               std::string verification_error;
+                               if(!snapshot_store.touch_verification(
+                                      storage_preview->batch_id,
+                                      storage_preview->snapshot_id,
+                                      "", "published",
+                                      "Snapshot was published manually",
+                                      verification_error))
+                               {
+                                   std::cerr
+                                       << "Snapshot publication verification status update failed: "
+                                       << verification_error << '\n';
+                               }
+                           }
+                        }
+                        else
+                        {
+                            std::cerr
+                                << "Snapshot publication response could not be indexed locally\n";
+                        }
+                       const auto published_batch_id =
+                           json_string_value(published->body, "batchId");
+                       live_event_hub.publish(
+                           "snapshot_published",
+                            published_batch_id.value_or(""));
                     }
                     else if(published->status_code == 503)
                         status = "503 Service Unavailable";

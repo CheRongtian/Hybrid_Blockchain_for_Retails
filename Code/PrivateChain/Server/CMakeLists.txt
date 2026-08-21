@@ -24,6 +24,20 @@ if(NOT TARGET snapshot)
     )
 endif()
 
+if(NOT TARGET snapshot_storage)
+    add_subdirectory(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../SnapshotStorage
+        ${CMAKE_CURRENT_BINARY_DIR}/snapshot_storage
+    )
+endif()
+
+if(NOT TARGET snapshot_scheduler)
+    add_subdirectory(
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../SnapshotScheduler
+        ${CMAKE_CURRENT_BINARY_DIR}/snapshot_scheduler
+    )
+endif()
+
 # Include current directory for header files
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -46,6 +60,8 @@ target_link_libraries(
     control_server
     PRIVATE
     Snapshot::snapshot
+    SnapshotStorage::snapshot_storage
+    SnapshotScheduler::snapshot_scheduler
     ${SQLite3_LIBRARIES}
     OpenSSL::Crypto
     Threads::Threads

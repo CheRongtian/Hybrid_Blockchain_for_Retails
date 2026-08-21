@@ -26,27 +26,28 @@ PublicChain service :8082/api/publish
         +-- verify raw IDs and Keccak hashes
         +-- verify exact canonical Manifest hash
         +-- rebuild SHA-256 Public Merkle Root
-        +-- compare the candidate route fingerprint with the current private route
-        +-- submit SnapshotGateway transaction
-        +-- save public Manifest beside chain metadata
-        +-- generate a QR Code for the exact published Snapshot
-        v
+       +-- compare the candidate route fingerprint with the current private route
+       +-- submit SnapshotGateway transaction
+       +-- save public Manifest beside chain metadata
+        +-- generate one stable batch QR Code
+       v
 QR display :8084/
-        |
-        +-- show only one QR image for the current active Snapshot
-        +-- expose no batch selector, link, metadata, or extra controls
-        +-- refresh the QR image automatically
-        v
+       |
+        +-- show only one stable QR image for the most recently published batch
+       +-- expose no batch selector, link, metadata, or extra controls
+       +-- refresh the QR image automatically
+       v
 Customer :8082/
-        |
-        +-- normal page: choose a published product batch and view the full trace
-        +-- QR URL: ?snapshot=<id>&view=verification
-        +-- QR view: Verification Result and compact selectable Trace Route
-        +-- read active snapshot from SnapshotGateway
-        +-- load matching public Manifest
-        +-- compare the publication route fingerprint with the current private route
-        +-- repeat all candidate and chain checks
-        +-- display the normal public route and evidence CIDs
+       |
+       +-- proxy private live events through the same customer origin
+       +-- normal page: choose a published product batch and view the full trace
+        +-- QR URL: ?batch=<batch-id>&view=verification
+        +-- QR view: Verification Result and Trace Route
+        +-- resolve the batch's current active Snapshot at scan time
+       +-- load matching public Manifest
+       +-- compare the publication route fingerprint with the current private route
+       +-- repeat all candidate and chain checks
+       +-- display the normal public route and evidence CIDs
 ```
 
 The customer page cannot access the private database, participant credentials,
@@ -69,7 +70,7 @@ PublicChain/
 │   └── index.html
 ├── deployments/                    # Generated local deployment records
 ├── public-manifests/               # Generated customer-safe publications
-├── public-qrcodes/                 # Generated Snapshot QR Code PNG files
+├── public-qrcodes/                 # Generated stable batch QR Code PNG files
 ├── scripts/
 │   ├── deploy.js
 │   ├── publication.js
@@ -156,21 +157,42 @@ Keep the C++ control server on port 8081 using `./start_control_server.sh`. Log 
 generate a snapshot preview for a completed batch, and select **Publish to
 Local Public Chain**. A successful response includes the EVM block number.
 Open `http://127.0.0.1:8084/` to display one QR Code for the active published
-Snapshot. Scanning it opens the verification result section on the customer
-service at `http://127.0.0.1:8082/`; the normal customer page remains available
-at the same address for full route and evidence details. The QR display page
-itself contains only the QR image.
+batch. The encoded URL contains the batch ID, so the same QR image continues
+to work when a newer active Snapshot revision is published. Scanning it opens
+the verification result section on the customer service at
+`http://127.0.0.1:8082/`; the normal customer page remains available at the
+same address for full route and evidence details. The QR display page itself
+contains only the QR image.
 
-The QR display page loads the current active Snapshot QR Code from the PublicChain
-service and refreshes it automatically. The QR link remains locked to its
-Snapshot ID, so a route edit or a newer published Snapshot shows the old link as
-inactive. A scanned QR link uses the verification-only customer view; it shows
-the Verification Result, a compact selectable route overview with numbered
-stages, and the selected stage details. Public evidence and technical
-verification details stay hidden from the QR view. The normal customer page
-continues to show the full route and public evidence.
-The customer page listens to the private control server's server-sent event
-stream and updates this state without a full page refresh.
+The QR display page loads the most recently published batch QR Code from local
+publication history. The QR link remains locked to its batch ID, so the QR itself
+does not change when the active Snapshot revision changes. A route edit removes
+that batch from the normal published list while the QR remains visible; scanning
+it reports that no Active Snapshot is available. After the replacement Snapshot
+is published, the same QR resolves to the new active revision. A scanned QR link
+uses the verification-only customer view and shows
+the Verification Result plus the complete Trace Route without a horizontal
+route scroller. Public evidence and technical verification details stay hidden
+from the QR view. The normal customer page continues to show the full route and
+public evidence. The customer page receives the private server-sent event stream
+through the same-origin PublicChain proxy and updates this state without a full
+page refresh.
+
+## Automatic Snapshot refresh
+
+The C++ control server checks previously published batches every 120 seconds by
+default. An unchanged source block hash and route fingerprint only update the
+local latest-verification timestamp. A changed completed source creates a new
+immutable Snapshot revision and submits a new Gateway transaction. A route
+change hides the old publication immediately; once the revised route is complete,
+the scheduler publishes its replacement revision. Historical manifests and chain
+records remain unchanged.
+
+The customer view receives `snapshot_checked` and `snapshot_published` events
+through the same-origin `/api/events` proxy on port 8082. A phone does not need
+direct access to the loopback-only control service on port 8081.
+It refreshes the active result and latest verification time without requiring a
+manual page reload.
 
 For a phone on the same local network, run the same customer start command.
 The service listens on the LAN by default and automatically detects a private
@@ -207,6 +229,7 @@ Copy `.env.example` to `.env` only when overriding defaults.
 | `QR_DISPLAY_HOST` | `0.0.0.0` QR display bind address |
 | `CONSUMER_INTERNAL_URL` | `http://127.0.0.1:8082` internal QR display-to-customer URL |
 | `PRIVATE_CONTROL_SERVER_URL` | `http://127.0.0.1:8081` current private-route state used to validate public snapshots |
+| `SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS` | `120` control-server refresh interval; configure when launching the control server |
 | `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
 | `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
 | `SNAPSHOT_PAYLOAD_PATH` | Low-level Gateway Payload smoke-test input |

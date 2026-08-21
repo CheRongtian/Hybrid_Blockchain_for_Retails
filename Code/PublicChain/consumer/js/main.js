@@ -11,6 +11,7 @@ const verificationOnly = new URLSearchParams(window.location.search).get("view")
 let currentBatchId = "";
 let currentSnapshotId = "";
 let requestedSnapshotId = "";
+let requestedBatchId = "";
 let batchRefreshInFlight = false;
 let liveEventSource = null;
 let liveRefreshInFlight = false;
@@ -231,6 +232,9 @@ function renderTrace(trace) {
   text("#harvest-date", manifest.origin.harvest_date);
   text("#category", manifest.batch.category);
   text("#chain-status", trace.status);
+  text("#snapshot-published-at", trace.snapshotPublishedAt ||
+    trace.technical?.publishedAt);
+  text("#latest-verification-at", trace.latestVerificationAt, "Pending first verification");
   renderRoute(manifest);
   text("#route-state", manifest.verification.route_completed ? "Route completed" : "Route incomplete");
   if (!verificationOnly) {
@@ -357,11 +361,12 @@ batchSelect.addEventListener("change", () => {
   requestedSnapshotId = "";
   const pageUrl = new URL(window.location.href);
   pageUrl.searchParams.delete("snapshot");
+  pageUrl.searchParams.delete("batch");
   window.history.replaceState(null, "", pageUrl);
   searchBatch(batchSelect.value);
 });
 
-async function refreshFromLiveEvent() {
+async function refreshFromLiveEvent(eventType = "") {
   if (batchRefreshInFlight || liveRefreshInFlight) {
     liveRefreshQueued = true;
     return;
@@ -385,26 +390,30 @@ async function refreshFromLiveEvent() {
       return;
     }
     if (activeBatch &&
-        (resultSection.hidden || activeBatch.snapshotId !== currentSnapshotId)) {
+        (resultSection.hidden || activeBatch.snapshotId !== currentSnapshotId ||
+          eventType === "snapshot_checked")) {
       await searchBatch(selectedBatchId, { background: true });
     }
   } finally {
     liveRefreshInFlight = false;
     if (liveRefreshQueued) {
       liveRefreshQueued = false;
-      refreshFromLiveEvent();
+      refreshFromLiveEvent(eventType);
     }
   }
 }
 
 async function initializeConsumerPage() {
-  requestedSnapshotId = new URLSearchParams(window.location.search)
-    .get("snapshot")?.trim() || "";
+  const query = new URLSearchParams(window.location.search);
+  requestedSnapshotId = query.get("snapshot")?.trim() || "";
+  requestedBatchId = query.get("batch")?.trim() || "";
   if (verificationOnly) {
     if (requestedSnapshotId) {
       await searchSnapshot(requestedSnapshotId);
+    } else if (requestedBatchId) {
+      await searchBatch(requestedBatchId);
     } else {
-      statusLine.textContent = "This verification link does not contain a Snapshot ID.";
+      statusLine.textContent = "This verification link does not contain a Batch ID.";
       statusLine.className = "status error";
     }
   } else {
@@ -412,15 +421,14 @@ async function initializeConsumerPage() {
     if (requestedSnapshotId) await searchSnapshot(requestedSnapshotId);
   }
 
-  const eventUrl = new URL("/api/events", window.location.href);
-  eventUrl.port = "8081";
-  liveEventSource = new EventSource(eventUrl);
+  liveEventSource = new EventSource("/api/events");
   liveEventSource.onmessage = (event) => {
     if (!event.data) return;
     try {
       const payload = JSON.parse(event.data);
-      if (["state_sync", "route_changed", "batch_changed", "snapshot_published"].includes(payload.type)) {
-        refreshFromLiveEvent();
+      if (["state_sync", "route_changed", "batch_changed", "snapshot_published",
+        "snapshot_checked"].includes(payload.type)) {
+        refreshFromLiveEvent(payload.type);
       }
     } catch {
       // Ignore malformed broadcast data; the next event or manual selection remains usable.

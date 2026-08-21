@@ -15,6 +15,7 @@ import {
 const projectDirectory = path.dirname(fileURLToPath(import.meta.url));
 const staticRoot = path.join(projectDirectory, "consumer");
 const qrRoot = path.join(projectDirectory, "public-qrcodes");
+const publicManifestRoot = path.join(projectDirectory, "public-manifests");
 const port = Number(process.env.CONSUMER_PORT ?? "8082");
 const host = process.env.CONSUMER_HOST || "0.0.0.0";
 
@@ -46,6 +47,9 @@ const qrGeneratorBinary = path.resolve(
 const maximumBodySize = 2 * 1024 * 1024;
 const publicationToken = process.env.PUBLIC_CHAIN_PUBLICATION_TOKEN ??
   "local-publication-demo-token";
+const privateControlUrl = (
+  process.env.PRIVATE_CONTROL_SERVER_URL || "http://127.0.0.1:8081"
+).replace(/\/+$/, "");
 const qrGenerationCache = new Map();
 
 const contentTypes = new Map([
@@ -99,27 +103,27 @@ function serveStatic(response, pathname) {
   send(response, 200, fs.readFileSync(resolved), contentType);
 }
 
-function qrFileName(snapshotIdHash) {
-  if (typeof snapshotIdHash !== "string" ||
-      !/^0x[0-9a-fA-F]{64}$/.test(snapshotIdHash)) {
-    throw new Error("A valid Snapshot ID hash is required for QR Code generation.");
+function qrFileName(batchId) {
+  if (typeof batchId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(batchId)) {
+    throw new Error("A valid Batch ID is required for QR Code generation.");
   }
-  return `${snapshotIdHash.slice(2).toLowerCase()}.png`;
+  return `${batchId}.png`;
 }
 
-function snapshotTraceUrl(snapshotId) {
+function snapshotTraceUrl(batchId) {
   const url = new URL(consumerPublicUrl);
   url.pathname = "/";
   url.search = "";
-  url.searchParams.set("snapshot", snapshotId);
+  url.searchParams.set("batch", batchId);
   url.searchParams.set("view", "verification");
   return url.toString();
 }
 
-function ensureSnapshotQr({ snapshotId, snapshotIdHash }) {
-  const fileName = qrFileName(snapshotIdHash);
+function ensureSnapshotQr({ batchId }) {
+  const fileName = qrFileName(batchId);
   const outputPath = path.join(qrRoot, fileName);
-  const traceUrl = snapshotTraceUrl(snapshotId);
+  const traceUrl = snapshotTraceUrl(batchId);
   fs.mkdirSync(qrRoot, { recursive: true });
 
   if (qrGenerationCache.get(fileName) !== traceUrl || !fs.existsSync(outputPath)) {
@@ -150,25 +154,49 @@ function generateSnapshotQr(publication) {
 }
 
 async function listCurrentQrCodes() {
-  const batches = await listPublishedBatches();
-  return batches.filter((batch) => batch.verified).map((batch) => {
+  if (!fs.existsSync(publicManifestRoot)) return [];
+  const batches = new Map();
+  for (const fileName of fs.readdirSync(publicManifestRoot)) {
+    if (!fileName.endsWith(".json")) continue;
     try {
-      return {
-        ...batch,
-        ...ensureSnapshotQr(batch),
-      };
-    } catch (error) {
-      return {
-        ...batch,
-        qrError: error instanceof Error ? error.message : "QR Code generation failed",
-      };
+      const filePath = path.join(publicManifestRoot, fileName);
+      const publication = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const candidate = publication?.candidate;
+      if (!candidate || typeof candidate.batchId !== "string") continue;
+      const publishedOrder = Number(publication?.chain?.blockNumber ?? 0);
+      const previous = batches.get(candidate.batchId);
+      if (!previous || publishedOrder >= previous.publishedOrder) {
+        batches.set(candidate.batchId, {
+          batchId: candidate.batchId,
+          product: candidate.manifest?.batch?.product_name ?? candidate.batchId,
+          publishedOrder,
+        });
+      }
+    } catch {
+      // Ignore incomplete local publication files.
     }
-  });
+  }
+
+  return [...batches.values()]
+    .sort((left, right) => right.publishedOrder - left.publishedOrder)
+    .map((batch) => {
+      try {
+        return {
+          ...batch,
+          ...ensureSnapshotQr(batch),
+        };
+      } catch (error) {
+        return {
+          ...batch,
+          qrError: error instanceof Error ? error.message : "QR Code generation failed",
+        };
+      }
+    });
 }
 
 function serveQrCode(response, pathname) {
   const fileName = decodeURIComponent(pathname.slice("/qrcodes/".length));
-  if (!/^[0-9a-f]{64}\.png$/.test(fileName)) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.png$/.test(fileName)) {
     json(response, 404, { error: "QR Code not found" });
     return;
   }
@@ -178,6 +206,36 @@ function serveQrCode(response, pathname) {
     return;
   }
   send(response, 200, fs.readFileSync(filePath), "image/png");
+}
+
+function proxyLiveEvents(response) {
+  const upstreamUrl = new URL("/api/events", privateControlUrl);
+  const upstreamRequest = http.request(upstreamUrl, {
+    method: "GET",
+    headers: { Accept: "text/event-stream" },
+  }, (upstreamResponse) => {
+    if (upstreamResponse.statusCode !== 200) {
+      upstreamResponse.resume();
+      json(response, 502, { error: "The private live-event stream is unavailable." });
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-store",
+      Connection: "keep-alive",
+    });
+    upstreamResponse.pipe(response);
+    upstreamResponse.on("error", () => response.end());
+  });
+  upstreamRequest.on("error", () => {
+    if (!response.headersSent) {
+      json(response, 503, { error: "The private live-event stream is unavailable." });
+    } else {
+      response.end();
+    }
+  });
+  response.on("close", () => upstreamRequest.destroy());
+  upstreamRequest.end();
 }
 
 const server = http.createServer(async (request, response) => {
@@ -190,6 +248,10 @@ const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && url.pathname === "/api/status") {
       json(response, 200, { service: "consumer", status: "ready" });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/events") {
+      proxyLiveEvents(response);
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/batches") {

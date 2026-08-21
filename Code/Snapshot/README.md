@@ -240,15 +240,30 @@ POST /api/snapshot/preview
 POST /api/snapshot/publish
 ```
 
-The preview endpoint generates an in-memory Manifest and publication candidate.
-The publish endpoint is administrator-only and forwards that candidate to the
-independent PublicChain service. Snapshot field selection and Manifest creation
-remain owned by this module.
+The preview endpoint generates the Manifest and publication candidate through
+this module. The control server then records the preview revision through the
+sibling `Code/SnapshotStorage` module. Preview generation does not publish to
+the public chain.
+
+The publish endpoint is administrator-only and forwards the candidate to the
+independent PublicChain service. After a successful publication, the control
+server records the active revision, transaction hash, and publication response
+through SnapshotStorage. Snapshot field selection and Manifest creation remain
+owned by this module.
+
+SnapshotStorage keeps `preview`, `active`, `superseded`, and `invalidated`
+states. SQLite is the hot lifecycle index, the current active record has an
+in-memory cache, and each revision is archived locally for historical lookup.
+The control server's independent `Code/SnapshotScheduler` checks active and
+previously invalidated batches every 120 seconds by default. Unchanged source
+data updates local verification status only; changed source data produces a new
+candidate for publication. The Snapshot library itself remains a pure builder
+and does not own timers, HTTP requests, or EVM transactions.
 
 ## Deferred work
 
 - durable relayer job and nonce persistence;
 - wallet and key custody;
 - transaction confirmation and retry handling;
-- periodic and incremental snapshot policies; and
+- finer-grained publication schedules per product or batch; and
 - optional cross-chain messaging protocol adapters.

@@ -9,4 +9,6 @@ option(MERKLE_TREE_BUILD_CLI "Build the standalone MerkleTree CLI" ON)
 
 add_subdirectory(PrivateChain/MerkleTree MerkleTree)
 add_subdirectory(Snapshot Snapshot)
+add_subdirectory(SnapshotStorage SnapshotStorage)
+add_subdirectory(SnapshotScheduler SnapshotScheduler)
 add_subdirectory(PrivateChain/Server Server)

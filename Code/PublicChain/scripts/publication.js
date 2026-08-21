@@ -58,6 +58,25 @@ async function fetchCurrentRouteState(batchId) {
   };
 }
 
+async function fetchSnapshotStatus(batchId) {
+  const url = privateControlServerUrl +
+    "/api/snapshot/status?batchId=" + encodeURIComponent(batchId);
+  const response = await fetch(url, {
+    headers: { "X-Publication-Token": publicationToken },
+  });
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("The private Snapshot status response is not valid JSON.");
+  }
+  if (!response.ok) {
+    throw new Error(payload.error ||
+      `Private Snapshot status request failed: ${response.status}`);
+  }
+  return payload;
+}
+
 function candidateRouteShape(candidate) {
   const route = Array.isArray(candidate.manifest?.route)
     ? candidate.manifest.route
@@ -274,10 +293,17 @@ async function tracePublishedSnapshot(
     return null;
   }
 
-  const routeState = await fetchCurrentRouteState(candidate.batchId);
-  if (!candidateMatchesRoute(candidate, routeState)) return null;
+ const routeState = await fetchCurrentRouteState(candidate.batchId);
+ if (!candidateMatchesRoute(candidate, routeState)) return null;
+  let localStatus = null;
+  try {
+    localStatus = await fetchSnapshotStatus(candidate.batchId);
+  } catch {
+    // The public-chain verification remains usable if the local hot status is unavailable.
+  }
+  if (localStatus?.snapshotId !== candidate.snapshotId) localStatus = null;
 
-  const record = await gateway.getSnapshot(snapshotHash);
+ const record = await gateway.getSnapshot(snapshotHash);
   const status = statusNames[Number(record.status)] ?? "Unknown";
   if (requireActive && status !== "Active") return null;
   const { chainId, deployment } = runtime;
@@ -302,9 +328,14 @@ async function tracePublishedSnapshot(
     integrityVerified,
     verified: integrityVerified && status === "Active",
     manifest: candidate.manifest,
-    evidence: candidate.manifest.public_evidence ?? [],
-    checks: { candidate: candidateChecks, chain: chainChecks },
-    technical: {
+   evidence: candidate.manifest.public_evidence ?? [],
+   checks: { candidate: candidateChecks, chain: chainChecks },
+    snapshotPublishedAt: localStatus?.publishedAt ??
+      new Date(Number(record.publishedAt) * 1000).toISOString(),
+    latestVerificationAt: localStatus?.latestVerificationAt ?? "",
+    verificationStatus: localStatus?.verificationStatus ?? "",
+    verificationMessage: localStatus?.verificationMessage ?? "",
+   technical: {
       publicRoot: record.publicRoot,
       manifestHash: record.manifestHash,
       sourceBlockHash: record.sourceBlockHash,

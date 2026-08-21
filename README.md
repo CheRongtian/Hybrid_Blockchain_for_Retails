@@ -1,7 +1,8 @@
 # Hybrid-Chain Supply Chain Traceability Prototype
 
 This repository is a C++17 supply-chain traceability prototype organized into
-three runtime modules and several standalone supporting tools:
+three application modules, two independent infrastructure modules, and several
+standalone supporting tools:
 
 ```text
 Private Chain -> Public Snapshot -> Public Chain -> Customer Verification
@@ -33,6 +34,16 @@ Snapshot
   +-- independent public root
   +-- selected existing evidence CIDs
           |
+SnapshotStorage
+  +-- SQLite hot lifecycle index
+  +-- in-memory cache for the active Snapshot
+  +-- latest local verification status
+  +-- local cold archive for historical revisions
+          |
+SnapshotScheduler
+  +-- configurable automatic refresh interval
+  +-- unchanged-source verification or changed-source publication
+          |
           v
 PublicChain
   +-- Hardhat EVM node
@@ -40,7 +51,7 @@ PublicChain
   +-- administrator publication service
   +-- public Manifest storage and verification
   +-- full customer trace page :8082
-  +-- one active Snapshot QR display :8084
+  +-- one stable batch QR display :8084
   +-- compact verification-only scan view
 ```
 
@@ -62,6 +73,8 @@ Blockchain Structure/
 │   │   ├── ConMemPool/               # Concurrent allocator
 │   │   └── Database/                 # Local SQLite data
 │   ├── Snapshot/                    # Public snapshot preview module
+│   ├── SnapshotStorage/              # Snapshot lifecycle, hot index, and archive
+│   ├── SnapshotScheduler/            # Independent C++ automatic refresh timer
 │   ├── PublicChain/                 # EVM gateway, publisher, and customer page
 │   ├── MerkleTreeNTree/              # Standalone N-ary Merkle Tree visualizer
 │   ├── SnapshotQRCode/               # Independent QR generator integration copy
@@ -80,6 +93,11 @@ Generated build output remains under `Code/build`. The private SQLite database
 is stored at `Code/PrivateChain/Database/supply_chain.db` and is ignored by
 Git.
 
+Snapshot lifecycle records use a separate `snapshot_storage` SQLite table in
+that database. The current active record is also held in a small in-memory
+cache, while each preview and publication revision is written to the local
+`Code/PrivateChain/Database/snapshot-archive/` cold archive.
+
 ## Module documentation
 
 - [Private-chain overview](Code/PrivateChain/README.md)
@@ -87,6 +105,8 @@ Git.
 - [Merkle Tree library and CLI](Code/PrivateChain/MerkleTree/README.md)
 - [Database notes](Code/PrivateChain/Database/README.md)
 - [Public snapshot design](Code/Snapshot/README.md)
+- [Snapshot lifecycle storage](Code/SnapshotStorage/README.md)
+- [Snapshot automatic scheduler](Code/SnapshotScheduler/README.md)
 - [Public-chain design](Code/PublicChain/README.md)
 - [N-ary Merkle Tree and live visualizer](Code/MerkleTreeNTree/README.md)
 - [Snapshot QR Code integration](Code/SnapshotQRCode/README.md)
@@ -159,12 +179,19 @@ verifiable tree for each event.
 - administrator chain and Merkle Tree visualization;
 - completed-batch public Manifest, Public Root, and Gateway Payload;
 - administrator-triggered publication to the local Hardhat EVM gateway;
+- Snapshot preview, active, superseded, and invalidated lifecycle states with
+  per-batch revisions;
+- SQLite hot Snapshot index, active-record memory cache, and local historical
+  Snapshot archive;
+- a configurable C++ scheduler that checks published batches every 120 seconds,
+  records unchanged verification times locally, and publishes a new immutable
+  revision when completed source data changes;
 - independently revalidated publication candidates and public Manifests;
 - customer published-batch selection with public route and chain verification
   details;
-- one Snapshot-specific QR Code displayed after successful publication; the QR
-  page contains only that image, while scanning opens a verification-result
-  view with a compact, selectable route overview and stale-Snapshot rejection;
+- one stable batch QR Code displayed after successful publication; the QR page
+  contains only that image, while scanning resolves the current active Snapshot
+  and opens its Verification Result and Trace Route view;
 - an independent N-ary Merkle Tree CLI with runtime arity, proofs, NDJSON
   events, and a live SSE visualizer; it is separate from the production
   per-block binary Merkle Tree;
@@ -208,7 +235,7 @@ http://127.0.0.1:5002
 | Participant submission page | `http://127.0.0.1:8080/` | `start_user_server.sh` |
 | Administrator control page | `http://127.0.0.1:8081/` | `start_control_server.sh` |
 | Customer trace page and publication API | `http://127.0.0.1:8082/` | `start_customer_server.sh` |
-| Active Snapshot QR display | `http://127.0.0.1:8084/` | `start_customer_server.sh` |
+| Stable batch QR display | `http://127.0.0.1:8084/` | `start_customer_server.sh` |
 | Hardhat JSON-RPC node | `http://127.0.0.1:8545` | `start_customer_server.sh` |
 | Kubo IPFS API | `http://127.0.0.1:5002` | Homebrew service |
 
@@ -328,12 +355,19 @@ The customer does not type a Batch ID. The normal customer page remains the
 full route and evidence view.
 
 The QR display page at `http://127.0.0.1:8084/` contains only one QR image for
-the current active Snapshot. Its URL includes
-`snapshot=<id>&view=verification`. Scanning it opens a compact Verification
-Result and Trace Route view on port 8082. The route is shown as numbered
-selectable stages with a selected-stage detail panel; public evidence and
-technical verification details are hidden in this QR view. A route change or
-replacement Snapshot makes the old link inactive.
+the most recently published batch. Its URL includes
+`batch=<batch-id>&view=verification`. Scanning it resolves the batch's current
+active Snapshot and opens its Verification Result and Trace Route on port 8082.
+Public evidence and technical verification details are hidden in this QR view.
+A route change temporarily makes the scan result unavailable while the QR image
+stays unchanged; after a replacement Snapshot is published, the same QR Code
+opens the new active revision.
+
+The control server checks batches with publication history every 120 seconds by
+default. When the source block hash and route fingerprint are unchanged, only
+the local latest-verification time is updated. A changed completed source creates
+and publishes a new immutable Snapshot revision. Configure the test interval with
+`SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS` when starting the control server.
 
 ## Demonstration accounts
 
