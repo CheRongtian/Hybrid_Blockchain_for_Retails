@@ -218,6 +218,15 @@ function renderRoute(manifest) {
   });
 }
 
+function formatTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function renderTrace(trace) {
   const manifest = trace.manifest;
   const badge = document.querySelector("#verification-badge");
@@ -232,9 +241,13 @@ function renderTrace(trace) {
   text("#harvest-date", manifest.origin.harvest_date);
   text("#category", manifest.batch.category);
   text("#chain-status", trace.status);
-  text("#snapshot-published-at", trace.snapshotPublishedAt ||
-    trace.technical?.publishedAt);
-  text("#latest-verification-at", trace.latestVerificationAt, "Pending first verification");
+  const snapshotPublishedAt = trace.snapshotPublishedAt || trace.technical?.publishedAt;
+  const latestVerificationAt = trace.latestVerificationAt;
+  text("#snapshot-published-at", snapshotPublishedAt);
+  text("#latest-verification-at", latestVerificationAt, "Pending first verification");
+  text("#verification-last-updated", formatTimestamp(latestVerificationAt),
+    "Pending first verification");
+  text("#verification-snapshot-published", formatTimestamp(snapshotPublishedAt), "Unavailable");
   renderRoute(manifest);
   text("#route-state", manifest.verification.route_completed ? "Route completed" : "Route incomplete");
   if (!verificationOnly) {
