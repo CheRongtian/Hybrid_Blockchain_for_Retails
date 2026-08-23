@@ -1,11 +1,13 @@
 #ifndef SUPERMARKET_SNAPSHOT_STORAGE_HPP
 #define SUPERMARKET_SNAPSHOT_STORAGE_HPP
 
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace supermarket::snapshot_storage
 {
@@ -62,6 +64,15 @@ struct VerificationStatus
     std::string message;
 };
 
+struct RefreshPolicy
+{
+    std::string product;
+    int interval_seconds = 3600;
+    std::string updated_at;
+};
+
+int default_refresh_interval_seconds();
+
 class SnapshotStore
 {
 public:
@@ -93,6 +104,16 @@ public:
 
     std::optional<VerificationStatus> verification_status(
         const std::string& batch_id) const;
+
+    std::vector<RefreshPolicy> refresh_policies() const;
+
+    bool save_refresh_policy(const std::string& product,
+                             int interval_seconds,
+                             std::string& error);
+
+    bool refresh_due(const std::string& batch_id) const;
+
+    std::optional<std::chrono::milliseconds> next_refresh_delay() const;
 
 private:
     std::string database_path_;

@@ -149,6 +149,30 @@
                             Completed Batch
                             <select id="snapshot-batch-select" name="batchId"></select>
                         </label>
+                        <div class="snapshot-refresh-setting">
+                            <div class="snapshot-refresh-heading">
+                                <strong>Automatic refresh interval</strong>
+                                <span id="snapshot-refresh-product">
+                                    Select a completed batch
+                                </span>
+                            </div>
+                            <label>
+                                Every
+                                <input id="snapshot-refresh-value" type="number"
+                                       min="1" step="1" value="1" disabled>
+                            </label>
+                            <label>
+                                Unit
+                                <select id="snapshot-refresh-unit" disabled>
+                                    <option value="minutes">minutes</option>
+                                    <option value="hours" selected>hours</option>
+                                    <option value="days">days</option>
+                                </select>
+                            </label>
+                        </div>
+                        <p id="snapshot-refresh-policy-status"
+                           class="status snapshot-refresh-policy-status"
+                           role="status" aria-live="polite"></p>
                         <fieldset class="snapshot-evidence-fieldset">
                             <legend>Public Evidence</legend>
                             <p>

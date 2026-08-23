@@ -32,6 +32,10 @@ const policyRoleCount = document.querySelector("#policy-role-count");
 const confirmationPolicyForm = document.querySelector("#confirmation-policy-form");
 const savePolicyButton = document.querySelector("#save-policy-button");
 const policyStatus = document.querySelector("#policy-status");
+const snapshotRefreshProduct = document.querySelector("#snapshot-refresh-product");
+const snapshotRefreshValue = document.querySelector("#snapshot-refresh-value");
+const snapshotRefreshUnit = document.querySelector("#snapshot-refresh-unit");
+const snapshotRefreshPolicyStatus = document.querySelector("#snapshot-refresh-policy-status");
 const snapshotPreviewForm = document.querySelector("#snapshot-preview-form");
 const snapshotBatchSelect = document.querySelector("#snapshot-batch-select");
 const snapshotBatchCount = document.querySelector("#snapshot-batch-count");
@@ -71,6 +75,10 @@ let workflowAutoSaveInFlight = false;
 let workflowAutoSaveQueued = false;
 let snapshotRefreshInFlight = false;
 let snapshotRefreshQueued = false;
+let snapshotRefreshPolicies = [];
+let snapshotRefreshDefaultSeconds = 3600;
+let snapshotRefreshPoliciesAvailable = false;
+let snapshotRefreshEditorProduct = "";
 let confirmationPolicies = [];
 let confirmationPolicyLoadId = 0;
 let workflowLoadId = 0;
@@ -80,6 +88,9 @@ let liveEventSource = null;
 let liveRefreshInFlight = false;
 let liveRefreshQueued = false;
 let liveRefreshQueuedType = "";
+let dashboardReady = false;
+let ignoreInitialLiveStateSync = false;
+let snapshotOperation = "";
 
 function showSession(result) {
     session = result;
@@ -87,7 +98,6 @@ function showSession(result) {
     dashboard.hidden = false;
     identityStatus.textContent =
         `Logged in: ${result.user.username} · ${result.user.role} · ${result.user.organizationId}`;
-    startLiveUpdates();
 }
 
 function saveSession(result, remember) {
@@ -108,14 +118,24 @@ async function readJsonResponse(response) {
     try {
         return text ? JSON.parse(text) : {};
     } catch {
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.toLowerCase().includes("application/json")) {
+            throw new Error(
+                "The running control server does not support this request. " +
+                "Rebuild and restart the control server."
+            );
+        }
         throw new Error(
-            "The control server returned malformed JSON. Rebuild the server and refresh the page."
+            "The control server returned invalid JSON. Rebuild and restart the control server."
         );
     }
 }
 
 function clearSession() {
     stopLiveUpdates();
+    dashboardReady = false;
+    ignoreInitialLiveStateSync = false;
+    snapshotOperation = "";
     workflowLoadId += 1;
     confirmationPolicyLoadId += 1;
     if (workflowAutoSaveTimer) {
@@ -156,6 +176,17 @@ function clearSession() {
     workflowAutoSaveQueued = false;
     snapshotRefreshInFlight = false;
     snapshotRefreshQueued = false;
+    snapshotRefreshPolicies = [];
+    snapshotRefreshDefaultSeconds = 3600;
+    snapshotRefreshPoliciesAvailable = false;
+    snapshotRefreshEditorProduct = "";
+    snapshotRefreshProduct.textContent = "Select a completed batch";
+    snapshotRefreshValue.value = "1";
+    snapshotRefreshValue.disabled = true;
+    snapshotRefreshUnit.value = "hours";
+    snapshotRefreshUnit.disabled = true;
+    snapshotRefreshPolicyStatus.textContent = "";
+    snapshotRefreshPolicyStatus.className = "status";
 }
 
 function stopLiveUpdates() {
@@ -170,16 +201,27 @@ function stopLiveUpdates() {
 
 function queueLiveRefreshType(eventType) {
     liveRefreshQueued = true;
-    if (eventType === "state_sync" || eventType === "route_changed") {
-        liveRefreshQueuedType = eventType;
-    } else if (!liveRefreshQueuedType) {
+    const priorities = {
+        snapshot_refresh_policy_changed: 1,
+        snapshot_published: 2,
+        batch_changed: 3,
+        route_changed: 4,
+        state_sync: 5
+    };
+    if ((priorities[eventType] || 0) >=
+        (priorities[liveRefreshQueuedType] || 0)) {
         liveRefreshQueuedType = eventType;
     }
 }
 
+function liveRefreshBlocked() {
+    return !dashboardReady || workflowRouteDirty || workflowAutoSaveInFlight ||
+        Boolean(snapshotOperation);
+}
+
 function queueLiveRefresh(eventType = "") {
     if (!session) return;
-    if (workflowRouteDirty || workflowAutoSaveInFlight) {
+    if (liveRefreshBlocked()) {
         queueLiveRefreshType(eventType);
         return;
     }
@@ -190,17 +232,30 @@ function queueLiveRefresh(eventType = "") {
     liveRefreshInFlight = true;
     (async () => {
         try {
-            if (eventType === "route_changed" || eventType === "state_sync") {
+            const routeChanged = eventType === "route_changed" ||
+                eventType === "state_sync";
+            const chainChanged = routeChanged || eventType === "batch_changed";
+            if (routeChanged) {
                 const selectedBatchId = workflowBatchId;
                 await loadWorkflowScopes();
-                if (!workflowRouteDirty) await loadWorkflow(selectedBatchId);
+                if (!workflowRouteDirty) await loadWorkflowView(selectedBatchId);
+            } else if (chainChanged) {
+                await loadWorkflowView(workflowBatchId);
             }
-            await Promise.all([loadChains(), loadSnapshotCandidates()]);
+            const refreshes = [];
+            if (eventType !== "snapshot_refresh_policy_changed") {
+                refreshes.push(loadSnapshotCandidates());
+            }
+            if (eventType === "state_sync" ||
+                eventType === "snapshot_refresh_policy_changed") {
+                refreshes.push(loadSnapshotRefreshPolicies());
+            }
+            await Promise.all(refreshes);
         } catch {
             // The page's individual loaders expose their own actionable errors.
         } finally {
             liveRefreshInFlight = false;
-            if (liveRefreshQueued && !workflowRouteDirty) {
+            if (liveRefreshQueued && !liveRefreshBlocked()) {
                 const queuedType = liveRefreshQueuedType;
                 liveRefreshQueued = false;
                 liveRefreshQueuedType = "";
@@ -212,18 +267,33 @@ function queueLiveRefresh(eventType = "") {
 
 function startLiveUpdates() {
     stopLiveUpdates();
+    ignoreInitialLiveStateSync = true;
     liveEventSource = new EventSource("/api/events");
     liveEventSource.onmessage = (event) => {
         if (!event.data) return;
         try {
             const payload = JSON.parse(event.data);
-            if (["state_sync", "route_changed", "batch_changed", "snapshot_published"].includes(payload.type)) {
+            if (["state_sync", "route_changed", "batch_changed", "snapshot_published",
+                "snapshot_refresh_policy_changed"].includes(payload.type)) {
+                if (payload.type === "state_sync" && ignoreInitialLiveStateSync) {
+                    ignoreInitialLiveStateSync = false;
+                    return;
+                }
                 queueLiveRefresh(payload.type);
             }
         } catch {
             // Ignore malformed broadcast data; normal API loads remain available.
         }
     };
+}
+
+async function initializeDashboard(result) {
+    showSession(result);
+    dashboardReady = false;
+    await loadDashboard();
+    if (!session || session.token !== result.token) return;
+    dashboardReady = true;
+    startLiveUpdates();
 }
 
 async function logout() {
@@ -264,8 +334,7 @@ async function login(event) {
 
         saveSession(result, rememberLogin.checked);
         loginForm.reset();
-        showSession(result);
-        loadDashboard();
+        await initializeDashboard(result);
     } catch (error) {
         loginStatus.textContent = error.message;
         loginStatus.className = "status error";
@@ -283,8 +352,7 @@ async function restoreSession() {
         });
         const user = await readJsonResponse(response);
         if (!response.ok || user.role !== "admin") throw new Error("Session expired");
-        showSession({ token: stored.token, user });
-        loadDashboard();
+        await initializeDashboard({ token: stored.token, user });
     } catch {
         clearSession();
     }
@@ -1960,9 +2028,8 @@ async function syncWorkflowDraft() {
             synchronizedSnapshot = workflowSnapshot();
             workflowRouteDirty = false;
             await Promise.all([
-                loadConfirmationPolicy(),
-                loadSnapshotCandidates(),
-                loadChains()
+                loadWorkflowView(sentBatchId),
+                loadSnapshotCandidates()
             ]);
             // The local save response and these three reads already include
             // every event emitted by this draft synchronization.
@@ -1977,7 +2044,8 @@ async function syncWorkflowDraft() {
             session && workflowBatchId === sentBatchId &&
             workflowSnapshot() === sentSnapshot;
         if (canRestore) {
-            const restored = await loadWorkflow(sentBatchId);
+            const restored = await loadWorkflowView(
+                sentBatchId, { discardLocalDraft: true });
             if (restored) {
                 routeConflictReloaded = true;
                 workflowStatus.textContent = message;
@@ -2035,72 +2103,56 @@ async function loadWorkflowScopes() {
     }
 }
 
-async function loadWorkflow(batchId = workflowBatchSelect.value) {
+async function loadWorkflowView(
+    batchId = workflowBatchSelect.value,
+    { discardLocalDraft = false } = {}
+) {
     if (!session) return;
     const loadId = ++workflowLoadId;
     const requestedBatchId = batchId || "";
+    const localWorkflowAtStart = workflowSnapshot();
     workflowBatchId = requestedBatchId;
     workflowStatus.textContent = "Loading preset route...";
     workflowStatus.className = "status pending";
+    statusLine.textContent = "Loading supply-chain workflow...";
+    statusLine.className = "status pending";
 
     try {
         const query = requestedBatchId
             ? "?batchId=" + encodeURIComponent(requestedBatchId)
             : "";
-        const response = await fetch("/api/workflow" + query, {
+        const response = await fetch("/api/workflow-view" + query, {
             headers: { Authorization: `Bearer ${session.token}` }
         });
-        const workflow = await readJsonResponse(response);
+        const view = await readJsonResponse(response);
         if (response.status === 401 || response.status === 403) {
             clearSession();
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) {
-            throw new Error(workflow.error || `Request failed: ${response.status}`);
+            throw new Error(view.error ||
+                `Workflow view request failed: ${response.status}`);
         }
-        if (!Array.isArray(workflow.nodes) || !Array.isArray(workflow.edges)) {
+        const workflow = view.workflow;
+        const graph = view.chain;
+        if (!workflow || !Array.isArray(workflow.nodes) ||
+            !Array.isArray(workflow.edges)) {
             throw new Error("The workflow response is malformed.");
         }
-        if (loadId !== workflowLoadId || workflowBatchId !== requestedBatchId) {
-            return false;
-        }
-        workflowRouteDirty = false;
-        renderWorkflow(workflow);
-        await loadConfirmationPolicy();
-        return true;
-    } catch (error) {
-        if (loadId === workflowLoadId && workflowBatchId === requestedBatchId) {
-            workflowStatus.textContent = error.message;
-            workflowStatus.className = "status error";
-        }
-        return false;
-    }
-}
-
-async function loadChains() {
-    if (!session) return;
-    statusLine.textContent = "Loading supply-chain workflow...";
-    statusLine.className = "status pending";
-
-    try {
-        const response = await fetch("/api/chains", {
-            headers: { Authorization: `Bearer ${session.token}` }
-        });
-        const graph = await readJsonResponse(response);
-        if (response.status === 401 || response.status === 403) {
-            clearSession();
-            throw new Error("Control-panel session expired or insufficient permissions.");
-        }
-        if (!response.ok) {
-            throw new Error(graph.error || `Request failed: ${response.status}`);
-        }
-        if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+        if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
             throw new Error("The chain response is malformed.");
+        }
+        if (loadId !== workflowLoadId || workflowBatchId !== requestedBatchId ||
+            (!discardLocalDraft && (workflowRouteDirty ||
+                workflowSnapshot() !== localWorkflowAtStart))) {
+            return false;
         }
 
         chainGraph = graph;
         chainGraphLoaded = true;
-        refreshChainPreview();
+        workflowRouteDirty = false;
+        renderWorkflow(workflow);
+        await loadConfirmationPolicy();
         const activeBatchId = activeWorkflowPreviewBatchId(graph);
         const activeRecordCount = activeBatchId
             ? graph.nodes.filter((node) => node.batchId === activeBatchId).length
@@ -2118,16 +2170,220 @@ async function loadChains() {
             ? "No supply-chain workflow yet."
             : `Loaded ${visibleNodeCount} node(s) across ${visibleBatchIds.size} batch(es).`;
         statusLine.className = "status success";
+        return true;
     } catch (error) {
-        list.replaceChildren();
-        statusLine.textContent = error.message;
-        statusLine.className = "status error";
+        if (loadId === workflowLoadId && workflowBatchId === requestedBatchId) {
+            workflowStatus.textContent = error.message;
+            workflowStatus.className = "status error";
+            statusLine.textContent = error.message;
+            statusLine.className = "status error";
+        }
+        return false;
     }
 }
 
 function setSnapshotStatus(message, state = "") {
     snapshotStatus.textContent = message;
     snapshotStatus.className = state ? `status ${state}` : "status";
+}
+
+function setSnapshotRefreshPolicyStatus(message, state = "") {
+    snapshotRefreshPolicyStatus.textContent = message;
+    snapshotRefreshPolicyStatus.className = state ? `status ${state}` : "status";
+}
+
+function updateSnapshotControls() {
+    const busy = Boolean(snapshotOperation) || snapshotRefreshInFlight;
+    const hasBatches = snapshotBatches.length > 0;
+    const hasProduct = Boolean(selectedSnapshotBatch()?.product);
+    snapshotBatchSelect.disabled = busy || !hasBatches;
+    generateSnapshotButton.disabled = busy || !hasBatches;
+    publishSnapshotButton.disabled = busy || !publicationCandidate;
+    snapshotRefreshValue.disabled = busy || !hasProduct ||
+        !snapshotRefreshPoliciesAvailable;
+    snapshotRefreshUnit.disabled = busy || !hasProduct ||
+        !snapshotRefreshPoliciesAvailable;
+}
+
+function beginSnapshotOperation(operation) {
+    if (snapshotOperation) return false;
+    snapshotOperation = operation;
+    updateSnapshotControls();
+    return true;
+}
+
+function finishSnapshotOperation() {
+    snapshotOperation = "";
+    updateSnapshotControls();
+
+    if (liveRefreshQueued && !liveRefreshInFlight && !liveRefreshBlocked()) {
+        const queuedType = liveRefreshQueuedType;
+        liveRefreshQueued = false;
+        liveRefreshQueuedType = "";
+        window.queueMicrotask(() => queueLiveRefresh(queuedType));
+        return;
+    }
+    if (snapshotRefreshQueued && !snapshotRefreshInFlight) {
+        snapshotRefreshQueued = false;
+        window.queueMicrotask(() => loadSnapshotCandidates());
+    }
+}
+
+function formatRefreshInterval(seconds) {
+    const value = Number(seconds);
+    if (!Number.isInteger(value) || value <= 0) return "Unknown interval";
+    const units = [
+        { seconds: 86400, label: "day" },
+        { seconds: 3600, label: "hour" },
+        { seconds: 60, label: "minute" }
+    ];
+    const unit = units.find((item) => value % item.seconds === 0) || units[2];
+    const amount = unit.seconds === 60
+        ? Math.max(1, Math.ceil(value / 60))
+        : value / unit.seconds;
+    return `${amount} ${unit.label}${amount === 1 ? "" : "s"}`;
+}
+
+function refreshIntervalEditor(seconds) {
+    const value = Number(seconds);
+    const units = [
+        { seconds: 86400, value: "days" },
+        { seconds: 3600, value: "hours" },
+        { seconds: 60, value: "minutes" }
+    ];
+    const unit = units.find((item) => Number.isInteger(value) && value % item.seconds === 0)
+        || units[units.length - 1];
+    return {
+        value: Math.max(1, Number.isInteger(value)
+            ? Math.ceil(value / unit.seconds)
+            : 1),
+        unit: unit.value
+    };
+}
+
+function snapshotRefreshIntervalSeconds() {
+    const multipliers = { minutes: 60, hours: 3600, days: 86400 };
+    const amount = Number(snapshotRefreshValue.value);
+    const multiplier = multipliers[snapshotRefreshUnit.value];
+    const seconds = amount * multiplier;
+    if (!Number.isInteger(amount) || amount <= 0 || !Number.isInteger(seconds) ||
+        seconds < 60 || seconds > 365 * 24 * 60 * 60) {
+        throw new Error("Enter a whole-number interval from 1 minute to 365 days.");
+    }
+    return seconds;
+}
+
+function selectedSnapshotRefreshPolicy() {
+    const product = String(selectedSnapshotBatch()?.product || "");
+    return snapshotRefreshPolicies.find((policy) => policy.product === product);
+}
+
+function syncSnapshotRefreshEditor({ force = false } = {}) {
+    const batch = selectedSnapshotBatch();
+    const product = String(batch?.product || "");
+    if (!product) {
+        snapshotRefreshEditorProduct = "";
+        snapshotRefreshProduct.textContent = "Select a completed batch";
+        snapshotRefreshValue.value = "1";
+        snapshotRefreshUnit.value = "hours";
+        updateSnapshotControls();
+        return;
+    }
+
+    const policy = selectedSnapshotRefreshPolicy();
+    const intervalSeconds = Number(policy?.intervalSeconds) > 0
+        ? Number(policy.intervalSeconds)
+        : snapshotRefreshDefaultSeconds;
+    snapshotRefreshProduct.textContent = policy?.configured
+        ? `${product} · currently ${formatRefreshInterval(intervalSeconds)}`
+        : `${product} · default ${formatRefreshInterval(snapshotRefreshDefaultSeconds)}`;
+    if (!force && snapshotRefreshEditorProduct === product) {
+        updateSnapshotControls();
+        return;
+    }
+
+    const editor = refreshIntervalEditor(intervalSeconds);
+    snapshotRefreshValue.value = String(editor.value);
+    snapshotRefreshUnit.value = editor.unit;
+    snapshotRefreshEditorProduct = product;
+    updateSnapshotControls();
+}
+
+function applySnapshotRefreshPolicies(result) {
+    snapshotRefreshPolicies = Array.isArray(result.products) ? result.products : [];
+    const defaultSeconds = Number(result.defaultIntervalSeconds);
+    snapshotRefreshDefaultSeconds = Number.isInteger(defaultSeconds) && defaultSeconds >= 60
+        ? defaultSeconds
+        : 3600;
+    snapshotRefreshPoliciesAvailable = true;
+    syncSnapshotRefreshEditor({ force: true });
+}
+
+async function loadSnapshotRefreshPolicies() {
+    if (!session) return;
+    try {
+        const response = await fetch("/api/snapshot/refresh-policies", {
+            headers: { Authorization: `Bearer ${session.token}` }
+        });
+        const result = await readJsonResponse(response);
+        if (response.status === 401 || response.status === 403) {
+            clearSession();
+            throw new Error("Control-panel session expired or insufficient permissions.");
+        }
+        if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+        if (!Array.isArray(result.products)) {
+            throw new Error("The Snapshot refresh policy response is malformed.");
+        }
+        applySnapshotRefreshPolicies(result);
+        setSnapshotRefreshPolicyStatus("");
+    } catch (error) {
+        snapshotRefreshPoliciesAvailable = false;
+        syncSnapshotRefreshEditor({ force: true });
+        setSnapshotRefreshPolicyStatus(error.message, "error");
+    }
+}
+
+async function saveSnapshotRefreshPolicyIfChanged() {
+    if (!snapshotRefreshPoliciesAvailable) return false;
+    const batch = selectedSnapshotBatch();
+    const product = String(batch?.product || "");
+    if (!product) throw new Error("Select a completed batch first.");
+
+    const intervalSeconds = snapshotRefreshIntervalSeconds();
+    const policy = selectedSnapshotRefreshPolicy();
+    const currentSeconds = Number(policy?.intervalSeconds) > 0
+        ? Number(policy.intervalSeconds)
+        : snapshotRefreshDefaultSeconds;
+    if (intervalSeconds === currentSeconds) return false;
+
+    setSnapshotRefreshPolicyStatus(`Saving ${product}: ${formatRefreshInterval(intervalSeconds)}...`,
+        "pending");
+    const response = await fetch("/api/snapshot/refresh-policies", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            Authorization: `Bearer ${session.token}`
+        },
+        body: new URLSearchParams({
+            product,
+            intervalSeconds: String(intervalSeconds)
+        }).toString()
+    });
+    const result = await readJsonResponse(response);
+    if (response.status === 401 || response.status === 403) {
+        clearSession();
+        throw new Error("Control-panel session expired or insufficient permissions.");
+    }
+    if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
+    if (!Array.isArray(result.products)) {
+        throw new Error("The updated Snapshot refresh policy response is malformed.");
+    }
+    applySnapshotRefreshPolicies(result);
+    setSnapshotRefreshPolicyStatus(
+        `Automatic refresh set to ${formatRefreshInterval(intervalSeconds)} for ${product}.`,
+        "success"
+    );
+    return true;
 }
 
 function selectedSnapshotBatch() {
@@ -2140,8 +2396,8 @@ function clearSnapshotPreview() {
     snapshotPreviewBatchId = "";
     snapshotPreviewRouteFingerprint = "";
     snapshotPreviewPrivateHash = "";
-    publishSnapshotButton.disabled = true;
     snapshotPublishStatus.textContent = "";
+    updateSnapshotControls();
 }
 
 function renderSnapshotEvidence({ clearPreview = true } = {}) {
@@ -2206,8 +2462,6 @@ function renderSnapshotBatches(batches) {
     }
 
     const hasBatches = batches.length > 0;
-    snapshotBatchSelect.disabled = !hasBatches;
-    generateSnapshotButton.disabled = !hasBatches;
     snapshotBatchCount.textContent = hasBatches
         ? `${batches.length} eligible batch${batches.length === 1 ? "" : "es"}`
         : "No eligible batches";
@@ -2218,7 +2472,9 @@ function renderSnapshotBatches(batches) {
     if ([...snapshotBatchSelect.options].some((option) => option.value === selection)) {
         snapshotBatchSelect.value = selection;
     }
+    syncSnapshotRefreshEditor();
     renderSnapshotEvidence({ clearPreview: false });
+    updateSnapshotControls();
     setSnapshotStatus(hasBatches
         ? "Select a completed batch and review its public evidence."
         : "Complete and verify every assigned route stage before generating a snapshot.",
@@ -2227,6 +2483,10 @@ function renderSnapshotBatches(batches) {
 
 async function loadSnapshotCandidates() {
     if (!session) return;
+    if (snapshotOperation) {
+        snapshotRefreshQueued = true;
+        return;
+    }
     if (snapshotRefreshInFlight) {
         snapshotRefreshQueued = true;
         return;
@@ -2236,7 +2496,7 @@ async function loadSnapshotCandidates() {
     const routeSnapshotAtStart = workflowSnapshot();
     snapshotBatchCount.textContent = "Loading batches";
     snapshotBatchCount.className = "badge pending";
-    generateSnapshotButton.disabled = true;
+    updateSnapshotControls();
     try {
         const response = await fetch("/api/snapshot/eligible-batches", {
             headers: { Authorization: `Bearer ${session.token}` }
@@ -2259,7 +2519,8 @@ async function loadSnapshotCandidates() {
         }
     } finally {
         snapshotRefreshInFlight = false;
-        if (snapshotRefreshQueued) {
+        updateSnapshotControls();
+        if (snapshotRefreshQueued && !snapshotOperation) {
             snapshotRefreshQueued = false;
             window.queueMicrotask(() => loadSnapshotCandidates());
         }
@@ -2283,7 +2544,6 @@ function renderSnapshotPreview(result) {
     snapshotPreviewBatchId = snapshotBatchSelect.value;
     snapshotPreviewRouteFingerprint = result.routeFingerprint || "";
     snapshotPreviewPrivateHash = result.finalPrivateBlockHash || "";
-    publishSnapshotButton.disabled = !publicationCandidate;
     snapshotPublishStatus.textContent = publicationCandidate
         ? "Preview ready for administrator publication."
         : "Publication data is unavailable.";
@@ -2291,11 +2551,12 @@ function renderSnapshotPreview(result) {
         ? "status pending"
         : "status error";
     snapshotPreview.hidden = false;
+    updateSnapshotControls();
 }
 
 async function publishSnapshot() {
     if (!session || !publicationCandidate) return;
-    publishSnapshotButton.disabled = true;
+    if (!beginSnapshotOperation("publish")) return;
     snapshotPublishStatus.textContent = "Submitting snapshot to the local public chain...";
     snapshotPublishStatus.className = "status pending";
     try {
@@ -2316,24 +2577,31 @@ async function publishSnapshot() {
         snapshotPublishStatus.textContent =
             `Published in block ${result.blockNumber}. Open the QR display page on port 8084.`;
         snapshotPublishStatus.className = "status success";
+        publicationCandidate = null;
     } catch (error) {
         snapshotPublishStatus.textContent = error.message;
         snapshotPublishStatus.className = "status error";
-        publishSnapshotButton.disabled = false;
+    } finally {
+        finishSnapshotOperation();
     }
 }
 
 async function generateSnapshotPreview(event) {
     event.preventDefault();
     if (!session || !snapshotBatchSelect.value) return;
+    if (!beginSnapshotOperation("preview")) return;
+    const batchId = snapshotBatchSelect.value;
     const selectedEvidence = [...snapshotEvidenceList.querySelectorAll(
         'input[name="selectedEvidence"]:checked'
     )].map((input) => input.value);
 
-    generateSnapshotButton.disabled = true;
     clearSnapshotPreview();
-    setSnapshotStatus("Generating a private, non-published preview...", "pending");
     try {
+        if (snapshotRefreshPoliciesAvailable) {
+            setSnapshotStatus("Checking the automatic refresh interval...", "pending");
+            await saveSnapshotRefreshPolicyIfChanged();
+        }
+        setSnapshotStatus("Generating a private, non-published preview...", "pending");
         const response = await fetch("/api/snapshot/preview", {
             method: "POST",
             headers: {
@@ -2341,7 +2609,7 @@ async function generateSnapshotPreview(event) {
                 Authorization: `Bearer ${session.token}`
             },
             body: new URLSearchParams({
-                batchId: snapshotBatchSelect.value,
+                batchId,
                 selectedEvidence: selectedEvidence.join(",")
             }).toString()
         });
@@ -2356,16 +2624,16 @@ async function generateSnapshotPreview(event) {
     } catch (error) {
         setSnapshotStatus(error.message, "error");
     } finally {
-        generateSnapshotButton.disabled = snapshotBatches.length === 0;
+        finishSnapshotOperation();
     }
 }
 
 async function loadDashboard() {
     await loadWorkflowScopes();
-    await loadWorkflow(workflowBatchSelect.value);
+    await loadWorkflowView(workflowBatchSelect.value);
     await Promise.all([
-        loadChains(),
-        loadSnapshotCandidates()
+        loadSnapshotCandidates(),
+        loadSnapshotRefreshPolicies()
     ]);
 }
 
@@ -2531,7 +2799,7 @@ workflowBatchSelect.addEventListener("change", () => {
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;
     workflowViewportReady = false;
-    loadWorkflow(workflowBatchSelect.value);
+    loadWorkflowView(workflowBatchSelect.value);
 });
 
 workflowCanvas.addEventListener("pointerdown", (event) => {
@@ -2707,7 +2975,12 @@ workflowResetRoute.addEventListener("click", () => {
     workflowSelectedEdgeIndex = -1;
     workflowPointerState = null;
     workflowViewportReady = false;
-    loadWorkflow(workflowBatchSelect.value);
+    workflowRouteDirty = false;
+    if (workflowAutoSaveTimer) {
+        window.clearTimeout(workflowAutoSaveTimer);
+        workflowAutoSaveTimer = 0;
+    }
+    loadWorkflowView(workflowBatchSelect.value, { discardLocalDraft: true });
 });
 workflowUndo.addEventListener("click", undoWorkflowEdit);
 workflowRedo.addEventListener("click", redoWorkflowEdit);
@@ -2735,7 +3008,11 @@ document.addEventListener("keydown", (event) => {
         deleteSelectedWorkflowNode();
     }
 });
-snapshotBatchSelect.addEventListener("change", renderSnapshotEvidence);
+snapshotBatchSelect.addEventListener("change", () => {
+    snapshotRefreshEditorProduct = "";
+    syncSnapshotRefreshEditor({ force: true });
+    renderSnapshotEvidence();
+});
 snapshotPreviewForm.addEventListener("submit", generateSnapshotPreview);
 publishSnapshotButton.addEventListener("click", publishSnapshot);
 restoreSession();

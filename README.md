@@ -183,9 +183,9 @@ verifiable tree for each event.
   per-batch revisions;
 - SQLite hot Snapshot index, active-record memory cache, and local historical
   Snapshot archive;
-- a configurable C++ scheduler that checks published batches every 120 seconds,
-  records unchanged verification times locally, and publishes a new immutable
-  revision when completed source data changes;
+- a C++ scheduler that waits for each batch's stored product due time, records
+  unchanged verification times locally, and publishes a new immutable revision
+  when completed source data changes;
 - independently revalidated publication candidates and public Manifests;
 - customer published-batch selection with public route and chain verification
   details;
@@ -363,11 +363,13 @@ A route change temporarily makes the scan result unavailable while the QR image
 stays unchanged; after a replacement Snapshot is published, the same QR Code
 opens the new active revision.
 
-The control server checks batches with publication history every 120 seconds by
-default. When the source block hash and route fingerprint are unchanged, only
-the local latest-verification time is updated. A changed completed source creates
-and publishes a new immutable Snapshot revision. Configure the test interval with
-`SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS` when starting the control server.
+The control server stores a separate refresh period for each product. A product
+without a saved policy uses the default period of 3600 seconds (1 hour). The
+scheduler waits for each batch's next due time and wakes immediately when a
+route, block, publication, or product policy changes. When the source block hash
+and route fingerprint are unchanged, only the local latest-verification time is
+updated. A changed completed source creates and publishes a new immutable
+Snapshot revision.
 
 ## Demonstration accounts
 

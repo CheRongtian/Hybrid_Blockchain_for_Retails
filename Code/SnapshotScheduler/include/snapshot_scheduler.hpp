@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace supermarket::snapshot_scheduler
@@ -13,8 +14,10 @@ class SnapshotScheduler
 {
 public:
     using Cycle = std::function<void()>;
+    using NextWake =
+        std::function<std::optional<std::chrono::milliseconds>()>;
 
-    SnapshotScheduler(std::chrono::seconds interval, Cycle cycle);
+    SnapshotScheduler(NextWake next_wake, Cycle cycle);
     ~SnapshotScheduler();
 
     SnapshotScheduler(const SnapshotScheduler&) = delete;
@@ -22,20 +25,20 @@ public:
 
     void start();
     void stop();
+    void wake();
 
 private:
     void run();
 
-    std::chrono::seconds interval_;
+    NextWake next_wake_;
     Cycle cycle_;
     std::mutex mutex_;
     std::condition_variable condition_;
     std::thread worker_;
     bool running_ = false;
     bool stop_requested_ = false;
+    bool wake_requested_ = false;
 };
-
-std::chrono::seconds interval_from_environment();
 }
 
 #endif

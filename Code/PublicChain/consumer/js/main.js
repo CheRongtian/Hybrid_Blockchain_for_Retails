@@ -16,6 +16,7 @@ let batchRefreshInFlight = false;
 let liveEventSource = null;
 let liveRefreshInFlight = false;
 let liveRefreshQueued = false;
+let liveRefreshQueuedType = "";
 
 if (verificationOnly) {
   document.body.classList.add("verification-only");
@@ -313,9 +314,11 @@ function searchSnapshot(snapshotId, options = {}) {
 }
 
 async function loadPublishedBatches({ background = false } = {}) {
-  if (batchRefreshInFlight) return null;
-  batchRefreshInFlight = true;
-  const selectedBatchId = currentBatchId || batchSelect.value;
+    if (batchRefreshInFlight) return null;
+    batchRefreshInFlight = true;
+    const selectedBatchId = verificationOnly && requestedBatchId
+      ? requestedBatchId
+      : currentBatchId || batchSelect.value;
   if (!background) {
     statusLine.className = "status";
     statusLine.textContent = "Loading published product batches...";
@@ -343,11 +346,13 @@ async function loadPublishedBatches({ background = false } = {}) {
     if (selectedBatch) batchSelect.value = selectedBatchId;
     const hasBatches = batches.length > 0;
     batchSelect.disabled = !hasBatches;
-    if (!selectedBatch && currentBatchId === selectedBatchId && currentBatchId) {
+    if (!selectedBatch && selectedBatchId &&
+        (currentBatchId === selectedBatchId || verificationOnly)) {
       currentSnapshotId = "";
       resultSection.hidden = true;
+      setVerificationReady(false);
       statusLine.textContent =
-        "This batch's previous public trace is inactive while its route is changing.";
+        "This batch does not have an active public Snapshot yet.";
       statusLine.className = hasBatches ? "status" : "status error";
     } else if (!background || !currentBatchId) {
       statusLine.textContent = hasBatches
@@ -372,6 +377,7 @@ async function loadPublishedBatches({ background = false } = {}) {
 batchSelect.addEventListener("change", () => {
   if (!batchSelect.value) return;
   requestedSnapshotId = "";
+  requestedBatchId = "";
   const pageUrl = new URL(window.location.href);
   pageUrl.searchParams.delete("snapshot");
   pageUrl.searchParams.delete("batch");
@@ -382,10 +388,13 @@ batchSelect.addEventListener("change", () => {
 async function refreshFromLiveEvent(eventType = "") {
   if (batchRefreshInFlight || liveRefreshInFlight) {
     liveRefreshQueued = true;
+    liveRefreshQueuedType = eventType || liveRefreshQueuedType;
     return;
   }
   liveRefreshInFlight = true;
-  const selectedBatchId = currentBatchId || batchSelect.value;
+  const selectedBatchId = verificationOnly && requestedBatchId
+    ? requestedBatchId
+    : currentBatchId || batchSelect.value;
   try {
     const batches = await loadPublishedBatches({ background: true });
     const activeBatch = batches?.find((batch) => batch.batchId === selectedBatchId);
@@ -402,16 +411,25 @@ async function refreshFromLiveEvent(eventType = "") {
       }
       return;
     }
+    if (!selectedBatchId) return;
     if (activeBatch &&
         (resultSection.hidden || activeBatch.snapshotId !== currentSnapshotId ||
           eventType === "snapshot_checked")) {
       await searchBatch(selectedBatchId, { background: true });
+    } else if (!activeBatch && verificationOnly && requestedBatchId) {
+      currentSnapshotId = "";
+      resultSection.hidden = true;
+      setVerificationReady(false);
+      statusLine.textContent = "Waiting for this batch's active public Snapshot.";
+      statusLine.className = "status";
     }
   } finally {
     liveRefreshInFlight = false;
     if (liveRefreshQueued) {
+      const queuedType = liveRefreshQueuedType;
       liveRefreshQueued = false;
-      refreshFromLiveEvent(eventType);
+      liveRefreshQueuedType = "";
+      refreshFromLiveEvent(queuedType);
     }
   }
 }

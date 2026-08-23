@@ -30,6 +30,32 @@ if [[ ! -x "$SERVER_BINARY" ]]; then
     exit 1
 fi
 
+STALE_SOURCE="$({
+    find \
+        "$SCRIPT_DIR/Code/PrivateChain/Server" \
+        "$SCRIPT_DIR/Code/Snapshot" \
+        "$SCRIPT_DIR/Code/SnapshotStorage" \
+        "$SCRIPT_DIR/Code/SnapshotScheduler" \
+        -type f \
+        \( -name '*.cpp' -o -name '*.hpp' -o -name 'CMakeLists.txt' \) \
+        -newer "$SERVER_BINARY" -print -quit
+} 2>/dev/null)"
+
+if [[ -n "$STALE_SOURCE" ]]; then
+    echo "Control server is older than its source: $STALE_SOURCE" >&2
+    echo "Rebuild it from Code with: cmake -S . -B build && cmake --build build" >&2
+    exit 1
+fi
+
+CONTROL_STATIC_SOURCE="$SCRIPT_DIR/Code/PrivateChain/Server/control_static"
+CONTROL_STATIC_BUILD="$SCRIPT_DIR/Code/build/Server/control_static"
+if [[ ! -d "$CONTROL_STATIC_BUILD" ]] ||
+   ! diff -qr "$CONTROL_STATIC_SOURCE" "$CONTROL_STATIC_BUILD" >/dev/null 2>&1; then
+    echo "Control-page static files have not been synchronized to Code/build." >&2
+    echo "Rebuild them from Code with: cmake -S . -B build && cmake --build build" >&2
+    exit 1
+fi
+
 ensure_ipfs_service
 export IPFS_API_URL="${IPFS_API_URL:-http://127.0.0.1:5002}"
 

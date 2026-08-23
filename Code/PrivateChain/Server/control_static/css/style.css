@@ -297,6 +297,65 @@ dt {
     font: inherit;
 }
 
+.snapshot-refresh-setting {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 7rem 9rem;
+    align-items: end;
+    gap: 0.7rem;
+    padding: 0.75rem 0.8rem;
+    border: 1px solid #30445f;
+    border-radius: 0.75rem;
+    background: #080f1c;
+}
+
+.snapshot-refresh-heading {
+    display: grid;
+    align-self: center;
+    gap: 0.18rem;
+    min-width: 0;
+}
+
+.snapshot-refresh-heading strong {
+    color: #dce7f5;
+}
+
+.snapshot-refresh-heading span {
+    color: #91a2b9;
+    font-size: 0.78rem;
+    overflow-wrap: anywhere;
+}
+
+.snapshot-refresh-setting label {
+    display: grid;
+    gap: 0.3rem;
+    color: #91a2b9;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.snapshot-refresh-setting input,
+.snapshot-refresh-setting select {
+    width: 100%;
+    min-width: 0;
+    padding: 0.58rem 0.65rem;
+    border: 1px solid #30445f;
+    border-radius: 0.55rem;
+    color: #e5edf8;
+    background: #0d182a;
+    font: inherit;
+}
+
+.snapshot-refresh-setting input:disabled,
+.snapshot-refresh-setting select:disabled {
+    opacity: 0.55;
+}
+
+.snapshot-refresh-policy-status {
+    min-height: 0;
+    margin: -0.55rem 0 0;
+    font-size: 0.8rem;
+}
+
 .snapshot-evidence-fieldset {
     min-width: 0;
     margin: 0;
@@ -1355,6 +1414,14 @@ dt {
 
     .snapshot-publish-actions {
         grid-template-columns: 1fr;
+    }
+
+    .snapshot-refresh-setting {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+
+    .snapshot-refresh-heading {
+        grid-column: 1 / -1;
     }
 
     .snapshot-actions button {

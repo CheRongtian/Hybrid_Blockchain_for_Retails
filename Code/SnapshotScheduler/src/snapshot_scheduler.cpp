@@ -1,24 +1,11 @@
 #include "snapshot_scheduler.hpp"
 
-#include <cerrno>
-#include <cstdlib>
-#include <limits>
 #include <utility>
 
 namespace supermarket::snapshot_scheduler
 {
-namespace
-{
-constexpr long long DEFAULT_INTERVAL_SECONDS = 120;
-
-std::chrono::seconds safe_interval(std::chrono::seconds interval)
-{
-    return interval.count() > 0 ? interval : std::chrono::seconds(1);
-}
-}
-
-SnapshotScheduler::SnapshotScheduler(std::chrono::seconds interval, Cycle cycle)
-    : interval_(safe_interval(interval)), cycle_(std::move(cycle))
+SnapshotScheduler::SnapshotScheduler(NextWake next_wake, Cycle cycle)
+    : next_wake_(std::move(next_wake)), cycle_(std::move(cycle))
 {
 }
 
@@ -52,6 +39,13 @@ void SnapshotScheduler::stop()
     running_ = false;
 }
 
+void SnapshotScheduler::wake()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    wake_requested_ = true;
+    condition_.notify_all();
+}
+
 void SnapshotScheduler::run()
 {
     while(true)
@@ -65,29 +59,34 @@ void SnapshotScheduler::run()
             // A failed refresh must not terminate the control server.
         }
 
+        std::optional<std::chrono::milliseconds> delay;
+        try
+        {
+            if(next_wake_) delay = next_wake_();
+        }
+        catch(...)
+        {
+            // A failed schedule lookup leaves the worker waiting for an
+            // explicit wake-up instead of terminating the control server.
+        }
+
         std::unique_lock<std::mutex> lock(mutex_);
-        if(condition_.wait_for(lock, interval_, [&] {
-               return stop_requested_;
-           }))
-            return;
+        if(stop_requested_) return;
+        if(wake_requested_)
+        {
+            wake_requested_ = false;
+            continue;
+        }
+
+        const auto awakened = delay
+            ? condition_.wait_for(lock, *delay, [&] {
+                  return stop_requested_ || wake_requested_;
+              })
+            : (condition_.wait(lock, [&] {
+                   return stop_requested_ || wake_requested_;
+               }), true);
+        if(stop_requested_) return;
+        if(awakened) wake_requested_ = false;
     }
-}
-
-std::chrono::seconds interval_from_environment()
-{
-    const char* raw = std::getenv("SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS");
-    if(!raw || *raw == '\0')
-        return std::chrono::seconds(DEFAULT_INTERVAL_SECONDS);
-
-    errno = 0;
-    char* end = nullptr;
-    const long long value = std::strtoll(raw, &end, 10);
-    if(errno == ERANGE || end == raw || !end || *end != '\0' || value <= 0)
-        return std::chrono::seconds(DEFAULT_INTERVAL_SECONDS);
-
-    using Rep = std::chrono::seconds::rep;
-    if(value > static_cast<long long>(std::numeric_limits<Rep>::max()))
-        return std::chrono::seconds(DEFAULT_INTERVAL_SECONDS);
-    return std::chrono::seconds(static_cast<Rep>(value));
 }
 }

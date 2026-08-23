@@ -428,15 +428,18 @@ Optional environment variables are:
 ```text
 PUBLIC_CHAIN_SERVICE_URL=http://127.0.0.1:8082
 PUBLIC_CHAIN_PUBLICATION_TOKEN=local-publication-demo-token
-SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS=120
 ```
 
-The independent C++ SnapshotScheduler runs one check immediately after control
-server startup and then at the configured interval. It checks batches with prior
-publication history. Unchanged source hashes update only the hot verification
-status. Changed completed source data creates and publishes a new immutable
-revision. An invalidated route publishes its replacement after every connected
-stage has a verified Block.
+The independent C++ SnapshotScheduler runs one check immediately after
+control-server startup and then waits for the nearest due time from
+SnapshotStorage. Each product uses a separate Snapshot refresh policy from the
+`Consumer Data Preview` form; the default product period is 3600 seconds
+(1 hour), and the editor accepts whole minutes, hours, or days. Route, block,
+publication, and policy changes wake the scheduler so it can recalculate the
+due time. Unchanged source hashes update only the hot verification status.
+Changed completed source data creates and publishes a new immutable revision.
+An invalidated route publishes its replacement after every connected stage has
+a verified Block.
 
 Use the same non-default token in both the control-server and PublicChain
 service environments when overriding the local demonstration value.

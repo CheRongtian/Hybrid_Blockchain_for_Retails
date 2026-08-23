@@ -180,13 +180,19 @@ page refresh.
 
 ## Automatic Snapshot refresh
 
-The C++ control server checks previously published batches every 120 seconds by
-default. An unchanged source block hash and route fingerprint only update the
-local latest-verification timestamp. A changed completed source creates a new
-immutable Snapshot revision and submits a new Gateway transaction. A route
-change hides the old publication immediately; once the revised route is complete,
-the scheduler publishes its replacement revision. Historical manifests and chain
-records remain unchanged.
+Each product has its own Snapshot refresh policy; a product with no saved policy
+uses the default interval of 3600 seconds (1 hour). Configure product intervals
+with the compact `Automatic refresh interval` fields inside the control-panel
+`Consumer Data Preview` form. The editor accepts whole minutes, hours, or days.
+SnapshotScheduler waits for the nearest due time stored in SnapshotStorage and
+wakes when a route, block, publication, or product policy changes.
+
+When a batch is due, an unchanged source block hash and route fingerprint only
+update the local latest-verification timestamp. A changed completed source
+creates a new immutable Snapshot revision and submits a new Gateway transaction.
+A route change hides the old publication immediately; once the revised route is
+complete, the scheduler publishes its replacement revision. Historical manifests
+and chain records remain unchanged.
 
 The customer view receives `snapshot_checked` and `snapshot_published` events
 through the same-origin `/api/events` proxy on port 8082. A phone does not need
@@ -229,7 +235,6 @@ Copy `.env.example` to `.env` only when overriding defaults.
 | `QR_DISPLAY_HOST` | `0.0.0.0` QR display bind address |
 | `CONSUMER_INTERNAL_URL` | `http://127.0.0.1:8082` internal QR display-to-customer URL |
 | `PRIVATE_CONTROL_SERVER_URL` | `http://127.0.0.1:8081` current private-route state used to validate public snapshots |
-| `SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS` | `120` control-server refresh interval; configure when launching the control server |
 | `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
 | `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
 | `SNAPSHOT_PAYLOAD_PATH` | Low-level Gateway Payload smoke-test input |

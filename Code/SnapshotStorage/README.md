@@ -24,11 +24,18 @@ The control server creates the archive beside the configured SQLite database in
 
 ## Automatic refresh
 
-The control server owns the timer through the independent
-`Code/SnapshotScheduler` module. The default interval is 120 seconds and can be
-changed with `SNAPSHOT_AUTO_REFRESH_INTERVAL_SECONDS`.
+The control server uses the independent `Code/SnapshotScheduler` module to wait
+for the nearest due time stored in `snapshot_refresh_schedule`. The actual
+refresh period is configured per product in the control panel and defaults to
+3600 seconds (1 hour) when no product policy has been saved. The compact editor
+inside `Consumer Data Preview` accepts whole minutes, hours, or days.
 
-Each cycle checks batches that already have a published or invalidated Snapshot:
+Each batch keeps its next due time in `snapshot_refresh_schedule`. Saving a
+product policy resets the next due time for that product so the new period takes
+effect without a page reload.
+
+Each scheduled cycle checks batches that already have a published or invalidated
+Snapshot:
 
 - unchanged source blocks and route fingerprints update only the hot verification
   status; no public-chain publication is created;

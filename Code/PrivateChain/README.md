@@ -138,9 +138,9 @@ The control server uses the sibling `Code/SnapshotStorage` C++ module for
 Snapshot lifecycle records. SQLite stores the hot index and state transitions,
 the in-memory cache serves the current active record, and the local
 `Database/snapshot-archive/` directory keeps historical preview and publication
-revisions. `Code/SnapshotScheduler` runs the automatic check every 120 seconds
-by default. Unchanged source data updates the latest verification status; changed
-completed source data publishes a new immutable revision.
+revisions. `Code/SnapshotScheduler` waits for the next due time stored by
+SnapshotStorage. Unchanged source data updates the latest verification status;
+changed completed source data publishes a new immutable revision.
 
 The local Kubo API is expected at:
 

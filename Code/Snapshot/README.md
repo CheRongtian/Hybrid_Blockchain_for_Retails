@@ -254,11 +254,12 @@ owned by this module.
 SnapshotStorage keeps `preview`, `active`, `superseded`, and `invalidated`
 states. SQLite is the hot lifecycle index, the current active record has an
 in-memory cache, and each revision is archived locally for historical lookup.
-The control server's independent `Code/SnapshotScheduler` checks active and
-previously invalidated batches every 120 seconds by default. Unchanged source
-data updates local verification status only; changed source data produces a new
-candidate for publication. The Snapshot library itself remains a pure builder
-and does not own timers, HTTP requests, or EVM transactions.
+The control server's independent `Code/SnapshotScheduler` waits for the nearest
+due time recorded by SnapshotStorage for active and previously invalidated
+batches. Unchanged source data updates local verification status only; changed
+source data produces a new candidate for publication. The Snapshot library
+itself remains a pure builder and does not own timers, HTTP requests, or EVM
+transactions.
 
 ## Deferred work
 
