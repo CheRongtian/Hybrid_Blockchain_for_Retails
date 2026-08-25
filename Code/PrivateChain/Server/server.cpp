@@ -48,8 +48,8 @@ namespace fs = std::filesystem;
 #define CONTROL_DEFAULT_STATIC_DIR "../control_static"
 #endif
 
-#ifndef CONTROL_DEFAULT_DATABASE_PATH
-#define CONTROL_DEFAULT_DATABASE_PATH "../PrivateChain/Database/supply_chain.db"
+#ifndef CONTROL_DEFAULT_STORAGE_ROOT
+#define CONTROL_DEFAULT_STORAGE_ROOT "../../Storage"
 #endif
 
 namespace
@@ -3371,15 +3371,33 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const char* configured_storage_root =
+        std::getenv("SUPPLY_CHAIN_STORAGE_ROOT");
+    const fs::path requested_storage_root =
+        configured_storage_root && *configured_storage_root
+            ? fs::path(configured_storage_root)
+            : fs::path(CONTROL_DEFAULT_STORAGE_ROOT);
+    const fs::path storage_root =
+        fs::absolute(requested_storage_root).lexically_normal();
     const fs::path requested_database = argc >= 4
         ? fs::path(argv[3])
-        : fs::path(CONTROL_DEFAULT_DATABASE_PATH);
+        : storage_root / "Database" / "supply_chain.db";
     const fs::path database_path = fs::absolute(requested_database).lexically_normal();
+
+    std::error_code storage_directory_error;
+    fs::create_directories(database_path.parent_path(), storage_directory_error);
+    if(storage_directory_error)
+    {
+        std::cerr << "Create storage directory failed: "
+                  << storage_directory_error.message() << '\n';
+        return 1;
+    }
     if(!init_database(database_path.string()))
         return 1;
 
-    const fs::path snapshot_archive_root =
-        database_path.parent_path() / "snapshot-archive";
+    const fs::path snapshot_archive_root = argc >= 4
+        ? database_path.parent_path() / "snapshot-archive"
+        : storage_root / "Snapshots";
     supermarket::snapshot_storage::SnapshotStore snapshot_store(
         database_path.string(), snapshot_archive_root.string());
     std::string snapshot_storage_error;

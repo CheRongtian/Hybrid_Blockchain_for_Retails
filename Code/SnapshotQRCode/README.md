@@ -6,7 +6,7 @@ original learning project under `Code/QR Code` remains unchanged.
 The public Snapshot service passes two arguments to this executable:
 
 1. the stable customer URL containing `?batch=<batch-id>&view=verification`;
-2. the destination PNG path under `Code/PublicChain/public-qrcodes/`.
+2. the destination PNG path under `Storage/QRCodes/`.
 
 The output includes a four-module quiet zone and standard black modules on a
 white background so phones can scan it reliably.
@@ -27,7 +27,7 @@ cmake --build build --target snapshot_qr
 ```
 
 The generator source and build files stay in this directory. Generated PNG
-files are stored by PublicChain under `Code/PublicChain/public-qrcodes/` and
+files are stored by PublicChain under `Storage/QRCodes/` and
 are displayed alone by the QR page on port 8084. Scanning the code opens the
 current active Snapshot for that batch in the Verification Result and Trace
 Route view. Publishing a newer Snapshot revision keeps the same QR URL. The

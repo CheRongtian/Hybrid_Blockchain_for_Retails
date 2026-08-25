@@ -78,7 +78,7 @@ target_compile_definitions(
     control_server
     PRIVATE
     CONTROL_DEFAULT_STATIC_DIR="${CMAKE_CURRENT_BINARY_DIR}/control_static"
-    CONTROL_DEFAULT_DATABASE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../Database/supply_chain.db"
+    CONTROL_DEFAULT_STORAGE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../../Storage"
 )
 
 add_executable(user_server user_server.cpp)

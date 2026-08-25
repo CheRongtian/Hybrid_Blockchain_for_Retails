@@ -4,6 +4,14 @@ import { fileURLToPath } from "node:url";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const projectDirectory = path.resolve(scriptDirectory, "..");
+export const repositoryDirectory = path.resolve(projectDirectory, "..", "..");
+
+const configuredStorageDirectory = process.env.SUPPLY_CHAIN_STORAGE_ROOT?.trim();
+export const storageDirectory = configuredStorageDirectory
+  ? path.resolve(configuredStorageDirectory)
+  : path.join(repositoryDirectory, "Storage");
+export const publicManifestDirectory = path.join(storageDirectory, "PublicManifests");
+export const publicQrDirectory = path.join(storageDirectory, "QRCodes");
 
 export function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));

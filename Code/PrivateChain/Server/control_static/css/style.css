@@ -32,7 +32,8 @@ button:disabled {
 }
 
 button.is-busy:disabled {
-    cursor: wait;
+    cursor: default;
+    opacity: 1;
 }
 
 .auth-card {
@@ -426,6 +427,12 @@ dt {
     display: flex;
     align-items: center;
     gap: 1rem;
+}
+
+#generate-snapshot-button {
+    width: min(100%, 19rem);
+    min-height: 3rem;
+    white-space: nowrap;
 }
 
 .snapshot-actions .status {

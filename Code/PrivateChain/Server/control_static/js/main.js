@@ -2229,7 +2229,7 @@ function updateSnapshotControls() {
     generateSnapshotButton.toggleAttribute("aria-busy", generating);
     publishSnapshotButton.toggleAttribute("aria-busy", publishing);
     generateSnapshotButton.textContent = generating
-        ? "Generating Snapshot Preview..."
+        ? "Generating preview..."
         : "Generate Snapshot Preview";
     publishSnapshotButton.textContent = publishing
         ? "Publishing..."
@@ -2490,6 +2490,17 @@ function clearSnapshotPreview() {
     updateSnapshotControls();
 }
 
+function prepareSnapshotPreviewReplacement() {
+    publicationCandidate = null;
+    snapshotPublicationComplete = false;
+    if (!snapshotPreview.hidden) {
+        snapshotPublishStatus.textContent =
+            "Generating a replacement preview. The displayed preview cannot be published.";
+        snapshotPublishStatus.className = "status pending";
+    }
+    updateSnapshotControls();
+}
+
 function invalidateSnapshotPreviewForEdit() {
     if (snapshotPreview.hidden && !publicationCandidate &&
         !snapshotPublicationComplete) {
@@ -2696,7 +2707,8 @@ async function generateSnapshotPreview(event) {
         'input[name="selectedEvidence"]:checked'
     )].map((input) => input.value);
 
-    clearSnapshotPreview();
+    const replacingVisiblePreview = !snapshotPreview.hidden;
+    prepareSnapshotPreviewReplacement();
     try {
         setSnapshotStatus("Saving the public availability schedule...", "pending");
         await saveSnapshotScheduleIfChanged();
@@ -2722,6 +2734,11 @@ async function generateSnapshotPreview(event) {
         setSnapshotStatus("Snapshot preview generated locally. Nothing was published.", "success");
     } catch (error) {
         setSnapshotStatus(error.message, "error");
+        if (replacingVisiblePreview) {
+            snapshotPublishStatus.textContent =
+                "The displayed preview was not replaced and cannot be published.";
+            snapshotPublishStatus.className = "status error";
+        }
     } finally {
         finishSnapshotOperation();
     }

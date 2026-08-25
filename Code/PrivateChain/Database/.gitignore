@@ -1,3 +1,0 @@
-# Snapshot archives are runtime data. Keep one stable example in the repository.
-snapshot-archive/**/*.json
-!snapshot-archive/BATCH-ORANGES-0001/SNAP-BATCH-ORANGES-0001-20260821T010334Z-V0001-r1.json

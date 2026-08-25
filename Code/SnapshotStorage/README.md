@@ -10,6 +10,8 @@ Node service.
 - A small in-memory map caches the current `active` Snapshot for each batch.
 - `snapshot_verification_status` stores the latest local verification time,
   status, and message without changing the published Snapshot.
+- `snapshot_verification_history` appends every scheduled or manual verification
+  result for audit without replacing earlier checks.
 - Every preview and publication is also written to a local archive directory.
 - A semantic route change marks that batch's `preview` and `active` records as
   `invalidated`.
@@ -19,8 +21,10 @@ Node service.
 The archive is cold local storage. The SQLite table is the source of truth for
 state; the memory cache is only a fast read path for the current active record.
 
-The control server creates the archive beside the configured SQLite database in
-`snapshot-archive/`. Historical revisions stay available there for local review.
+By default, the control server stores the SQLite database in
+`Storage/Database/` and the cold archive in `Storage/Snapshots/`. Historical
+revisions stay available there for local review. An explicitly supplied custom
+database path keeps its archive beside that database.
 
 ## Automatic refresh
 
@@ -47,6 +51,17 @@ Snapshot:
 - changed source blocks create and publish a new immutable Snapshot revision;
 - a completed route after an invalidation can publish its replacement revision;
 - the previous revision remains in SQLite and the cold archive for history.
+
+The latest verification remains a single fast-read row per batch. The same
+transaction also appends an immutable audit row, so the current status and its
+history cannot diverge. Existing databases are upgraded automatically; the
+latest pre-upgrade status is copied into the history once, and subsequent checks
+produce one history row each. History can be inspected directly with:
+
+```bash
+sqlite3 -header -column Storage/Database/supply_chain.db \
+  "SELECT id, batch_id, snapshot_id, checked_at, status, message FROM snapshot_verification_history ORDER BY id DESC LIMIT 50;"
+```
 
 The QR URL remains stable because it identifies the batch. A scan resolves the
 current active Snapshot at scan time. Before the window it remains hidden;

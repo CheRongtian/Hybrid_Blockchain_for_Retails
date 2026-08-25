@@ -7,3 +7,11 @@ build/
 *.db-shm
 .DS_Store
 *.log
+
+# Local runtime storage. Keep one stable Snapshot as a repository example.
+/Storage/Database/*
+/Storage/PublicManifests/*
+/Storage/QRCodes/*
+/Storage/Snapshots/**/*.json
+!/Storage/Snapshots/BATCH-ORANGES-0001/SNAP-BATCH-ORANGES-0001-20260821T010334Z-V0001-r1.json
+/Storage/**/*.tmp

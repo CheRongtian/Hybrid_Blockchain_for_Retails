@@ -11,11 +11,15 @@ import {
   traceBatch,
   traceSnapshot,
 } from "./scripts/publication.js";
+import {
+  publicManifestDirectory,
+  publicQrDirectory,
+} from "./scripts/runtime.js";
 
 const projectDirectory = path.dirname(fileURLToPath(import.meta.url));
 const staticRoot = path.join(projectDirectory, "consumer");
-const qrRoot = path.join(projectDirectory, "public-qrcodes");
-const publicManifestRoot = path.join(projectDirectory, "public-manifests");
+const qrRoot = publicQrDirectory;
+const publicManifestRoot = publicManifestDirectory;
 const port = Number(process.env.CONSUMER_PORT ?? "8082");
 const host = process.env.CONSUMER_HOST || "0.0.0.0";
 
@@ -338,6 +342,6 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(port, host, () => {
   console.log(`Consumer trace: ${consumerPublicUrl}`);
-  console.log(`Public manifests: ${path.join(projectDirectory, "public-manifests")}`);
+  console.log(`Public manifests: ${publicManifestRoot}`);
   console.log(`Public QR Codes: ${qrRoot}`);
 });

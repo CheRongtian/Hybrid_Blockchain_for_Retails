@@ -2,6 +2,7 @@
 #define SUPERMARKET_SNAPSHOT_STORAGE_HPP
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -64,6 +65,17 @@ struct VerificationStatus
     std::string message;
 };
 
+struct VerificationHistoryEntry
+{
+    std::int64_t id = 0;
+    std::string batch_id;
+    std::string snapshot_id;
+    std::string checked_at;
+    std::string status;
+    std::string message;
+    std::string recorded_at;
+};
+
 struct RefreshPolicy
 {
     std::string product;
@@ -112,6 +124,10 @@ public:
 
     std::optional<VerificationStatus> verification_status(
         const std::string& batch_id) const;
+
+    std::vector<VerificationHistoryEntry> verification_history(
+        const std::string& batch_id,
+        std::size_t limit = 100) const;
 
     std::vector<RefreshPolicy> refresh_policies() const;
 

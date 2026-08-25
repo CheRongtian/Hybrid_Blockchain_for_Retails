@@ -38,6 +38,7 @@ SnapshotStorage
   +-- SQLite hot lifecycle index
   +-- in-memory cache for the active Snapshot
   +-- latest local verification status
+  +-- append-only verification audit history
   +-- local cold archive for historical revisions
           |
 SnapshotScheduler
@@ -70,8 +71,7 @@ Blockchain Structure/
 │   │   ├── MerkleTree/              # Reusable Merkle Tree and CLI
 │   │   ├── DigitalSignature/         # ECDSA P-256 adapter
 │   │   ├── MemoryPool/               # Fixed-block allocator
-│   │   ├── ConMemPool/               # Concurrent allocator
-│   │   └── Database/                 # Local SQLite data
+│   │   └── ConMemPool/               # Concurrent allocator
 │   ├── Snapshot/                    # Public snapshot preview module
 │   ├── SnapshotStorage/              # Snapshot lifecycle, hot index, and archive
 │   ├── SnapshotScheduler/            # Independent C++ automatic refresh timer
@@ -82,6 +82,11 @@ Blockchain Structure/
 │   ├── PrCsample.sol                # Historical Solidity sample
 │   ├── SNsample.sol                 # Early snapshot contract sample
 │   └── QRCodeExample.html           # Historical QR sample
+├── Storage/                         # Generated database, Snapshots, Manifests, and QR images
+│   ├── Database/
+│   ├── Snapshots/
+│   ├── PublicManifests/
+│   └── QRCodes/
 ├── server_concurrency_test.py       # Allocator benchmark
 ├── start_user_server.sh             # User submission service :8080
 ├── start_control_server.sh          # Administrator control service :8081
@@ -89,21 +94,22 @@ Blockchain Structure/
 └── README.md
 ```
 
-Generated build output remains under `Code/build`. The private SQLite database
-is stored at `Code/PrivateChain/Database/supply_chain.db` and is ignored by
-Git.
+Generated build output remains under `Code/build`. Runtime data is isolated in
+the repository-level `Storage/` directory. The private SQLite database is
+stored at `Storage/Database/supply_chain.db` and is ignored by Git.
 
 Snapshot lifecycle records use a separate `snapshot_storage` SQLite table in
 that database. The current active record is also held in a small in-memory
 cache, while each preview and publication revision is written to the local
-`Code/PrivateChain/Database/snapshot-archive/` cold archive.
+`Storage/Snapshots/` cold archive. Public Manifests and stable QR images are
+stored in `Storage/PublicManifests/` and `Storage/QRCodes/`.
 
 ## Module documentation
 
 - [Private-chain overview](Code/PrivateChain/README.md)
 - [User and control servers](Code/PrivateChain/Server/README.md)
 - [Merkle Tree library and CLI](Code/PrivateChain/MerkleTree/README.md)
-- [Database notes](Code/PrivateChain/Database/README.md)
+- [Runtime storage](Storage/README.md)
 - [Public snapshot design](Code/Snapshot/README.md)
 - [Snapshot lifecycle storage](Code/SnapshotStorage/README.md)
 - [Snapshot automatic scheduler](Code/SnapshotScheduler/README.md)

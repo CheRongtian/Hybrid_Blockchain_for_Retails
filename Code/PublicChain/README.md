@@ -69,8 +69,6 @@ PublicChain/
 │   ├── js/main.js
 │   └── index.html
 ├── deployments/                    # Generated local deployment records
-├── public-manifests/               # Generated customer-safe publications
-├── public-qrcodes/                 # Generated stable batch QR Code PNG files
 ├── scripts/
 │   ├── deploy.js
 │   ├── publication.js
@@ -87,12 +85,13 @@ PublicChain/
 └── README.md
 ```
 
-Generated deployment records, public Manifest files, and QR Code PNG files are
-ignored by Git. They remain local runtime state.
+Generated deployment records are ignored by Git. Public Manifest files and QR
+Code PNG files are runtime state under the repository-level
+`Storage/PublicManifests/` and `Storage/QRCodes/` directories.
 
 `SnapshotQRCode` contains the independent generator source and build target.
-Generated PNG files are written to `PublicChain/public-qrcodes/`; they are not
-expected inside `SnapshotQRCode`.
+Generated PNG files are written to `Storage/QRCodes/`; they are not expected
+inside `SnapshotQRCode`.
 
 ## Apple Silicon environment
 

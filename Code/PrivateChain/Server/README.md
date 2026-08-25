@@ -76,7 +76,7 @@ The local application ports are:
 The default database path is:
 
 ```
-Code/PrivateChain/Database/supply_chain.db
+Storage/Database/supply_chain.db
 ```
 
 The control server also accepts:
@@ -84,6 +84,10 @@ The control server also accepts:
 ```
 ./control_server [port] [static_directory] [database_path]
 ```
+
+Set `SUPPLY_CHAIN_STORAGE_ROOT` to override the repository-level `Storage/`
+root. Passing an explicit database path keeps its Snapshot archive beside that
+custom database.
 
 ## Worker pool and allocators
 
@@ -441,7 +445,8 @@ the scheduler so it can recalculate the due time. Before the start, the batch is
 hidden from customers; at the end, no further refresh is scheduled and the last
 published Snapshot remains visible as a frozen off-shelf record. Administrators
 can preview and publish before the start time.
-Unchanged source hashes update only the hot verification status.
+Unchanged source hashes update the hot verification status and append an audit
+history row without creating a new Snapshot.
 Changed completed source data creates and publishes a new immutable revision.
 An invalidated route publishes its replacement after every connected stage has
 a verified Block.

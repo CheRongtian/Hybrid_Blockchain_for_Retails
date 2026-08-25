@@ -274,6 +274,30 @@ bool create_schema(sqlite3* database, std::string& error)
         "message TEXT NOT NULL DEFAULT '',"
         "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
         ");"
+        "CREATE TABLE IF NOT EXISTS snapshot_verification_history ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "batch_id TEXT NOT NULL,"
+        "snapshot_id TEXT NOT NULL DEFAULT '',"
+        "checked_at TEXT NOT NULL,"
+        "status TEXT NOT NULL DEFAULT '',"
+        "message TEXT NOT NULL DEFAULT '',"
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_snapshot_verification_history_batch_id "
+        "ON snapshot_verification_history (batch_id, id DESC);"
+        "INSERT INTO snapshot_verification_history "
+        "(batch_id, snapshot_id, checked_at, status, message) "
+        "SELECT current.batch_id, current.snapshot_id, current.checked_at, "
+        "current.status, current.message "
+        "FROM snapshot_verification_status current "
+        "WHERE current.checked_at <> '' AND NOT EXISTS ("
+        "SELECT 1 FROM snapshot_verification_history history "
+        "WHERE history.batch_id = current.batch_id "
+        "AND history.snapshot_id = current.snapshot_id "
+        "AND history.checked_at = current.checked_at "
+        "AND history.status = current.status "
+        "AND history.message = current.message"
+        ");"
         "CREATE INDEX IF NOT EXISTS idx_snapshot_storage_batch_state "
         "ON snapshot_storage (batch_id, state, revision);"
         "CREATE TABLE IF NOT EXISTS snapshot_refresh_policies ("
@@ -1057,6 +1081,34 @@ bool SnapshotStore::touch_verification(const std::string& batch_id,
     }
     sqlite3_finalize(statement);
 
+    const char* history_sql =
+        "INSERT INTO snapshot_verification_history "
+        "(batch_id, snapshot_id, checked_at, status, message) "
+        "VALUES (?, ?, ?, ?, ?);";
+    sqlite3_stmt* history_statement = nullptr;
+    if(sqlite3_prepare_v2(database, history_sql, -1, &history_statement, nullptr) !=
+       SQLITE_OK)
+    {
+        error = sqlite_error(database, "Prepare verification history insert failed");
+        execute_sql(database, "ROLLBACK;", error);
+        sqlite3_close(database);
+        return false;
+    }
+    const bool history_bound = bind_text(history_statement, 1, batch_id) &&
+        bind_text(history_statement, 2, snapshot_id) &&
+        bind_text(history_statement, 3, effective_checked_at) &&
+        bind_text(history_statement, 4, status) &&
+        bind_text(history_statement, 5, message);
+    if(!history_bound || sqlite3_step(history_statement) != SQLITE_DONE)
+    {
+        error = sqlite_error(database, "Write verification history failed");
+        sqlite3_finalize(history_statement);
+        execute_sql(database, "ROLLBACK;", error);
+        sqlite3_close(database);
+        return false;
+    }
+    sqlite3_finalize(history_statement);
+
     sqlite3_stmt* schedule_statement = nullptr;
     const char* schedule_sql =
         "INSERT INTO snapshot_refresh_schedule (batch_id, next_refresh_at) "
@@ -1121,6 +1173,55 @@ std::optional<VerificationStatus> SnapshotStore::verification_status(
     sqlite3_close(database);
     if(!read || !found) return std::nullopt;
     return status;
+}
+
+std::vector<VerificationHistoryEntry> SnapshotStore::verification_history(
+    const std::string& batch_id,
+    std::size_t limit) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<VerificationHistoryEntry> history;
+    if(batch_id.empty() || limit == 0) return history;
+
+    sqlite3* database = nullptr;
+    std::string error;
+    if(!open_database(database_path_, SQLITE_OPEN_READONLY |
+                          SQLITE_OPEN_FULLMUTEX, database, error))
+        return history;
+
+    sqlite3_stmt* statement = nullptr;
+    const char* sql =
+        "SELECT id, batch_id, snapshot_id, checked_at, status, message, "
+        "created_at FROM snapshot_verification_history "
+        "WHERE batch_id = ? ORDER BY id DESC LIMIT ?;";
+    const std::size_t effective_limit = std::min<std::size_t>(limit, 1000);
+    const bool prepared =
+        sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) == SQLITE_OK &&
+        bind_text(statement, 1, batch_id) &&
+        sqlite3_bind_int64(statement, 2,
+                           static_cast<sqlite3_int64>(effective_limit)) == SQLITE_OK;
+    if(!prepared)
+    {
+        if(statement) sqlite3_finalize(statement);
+        sqlite3_close(database);
+        return history;
+    }
+
+    while(sqlite3_step(statement) == SQLITE_ROW)
+    {
+        VerificationHistoryEntry entry;
+        entry.id = sqlite3_column_int64(statement, 0);
+        entry.batch_id = column_text(statement, 1);
+        entry.snapshot_id = column_text(statement, 2);
+        entry.checked_at = column_text(statement, 3);
+        entry.status = column_text(statement, 4);
+        entry.message = column_text(statement, 5);
+        entry.recorded_at = column_text(statement, 6);
+        history.push_back(std::move(entry));
+    }
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return history;
 }
 
 std::vector<RefreshPolicy> SnapshotStore::refresh_policies() const

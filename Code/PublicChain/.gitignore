@@ -4,7 +4,5 @@ cache/
 coverage/
 typechain-types/
 deployments/*.json
-public-manifests/*.json
-public-qrcodes/*.png
 .env
 *.log

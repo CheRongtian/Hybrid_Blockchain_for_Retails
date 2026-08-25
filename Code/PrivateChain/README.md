@@ -128,7 +128,7 @@ a second IPFS daemon for each server.
 The default SQLite database is:
 
 ```text
-Code/PrivateChain/Database/supply_chain.db
+Storage/Database/supply_chain.db
 ```
 
 The database stores structured records, hashes, Merkle proofs, block links,
@@ -136,11 +136,12 @@ identity metadata, and CID metadata. Large file bodies stay in IPFS.
 
 The control server uses the sibling `Code/SnapshotStorage` C++ module for
 Snapshot lifecycle records. SQLite stores the hot index and state transitions,
-the in-memory cache serves the current active record, and the local
-`Database/snapshot-archive/` directory keeps historical preview and publication
+the in-memory cache serves the current active record, and the repository-level
+`Storage/Snapshots/` directory keeps historical preview and publication
 revisions. `Code/SnapshotScheduler` waits for the next due time stored by
 SnapshotStorage. Unchanged source data updates the latest verification status;
-changed completed source data publishes a new immutable revision. Product-level
+every check is also appended to the verification audit history. Changed
+completed source data publishes a new immutable revision. Product-level
 refresh intervals and batch-level listing windows are configured together in
 the Snapshot preview form. Customer data is hidden before the saved start,
 updated during the window, and frozen at the final published revision after the

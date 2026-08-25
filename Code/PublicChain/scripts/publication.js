@@ -2,7 +2,11 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { Contract, JsonRpcProvider, ZeroHash, id, keccak256, toUtf8Bytes } from "ethers";
-import { projectDirectory, readJson } from "./runtime.js";
+import {
+  projectDirectory,
+  publicManifestDirectory,
+  readJson,
+} from "./runtime.js";
 
 const statusNames = ["None", "Active", "Superseded", "Recalled", "Revoked"];
 const privateControlServerUrl = (
@@ -223,7 +227,7 @@ function artifactPath() {
 }
 
 export function publicManifestPath(snapshotIdHash) {
-  return path.join(projectDirectory, "public-manifests", `${snapshotIdHash}.json`);
+  return path.join(publicManifestDirectory, `${snapshotIdHash}.json`);
 }
 
 export async function openGateway() {
@@ -288,8 +292,7 @@ export async function publishCandidate(candidate) {
     verification: candidateChecks,
   };
 
-  const directory = path.join(projectDirectory, "public-manifests");
-  fs.mkdirSync(directory, { recursive: true });
+  fs.mkdirSync(publicManifestDirectory, { recursive: true });
   fs.writeFileSync(
     publicManifestPath(candidate.snapshotIdHash),
     `${JSON.stringify(publication, null, 2)}\n`,
@@ -435,7 +438,7 @@ export async function traceSnapshot(snapshotId) {
 }
 
 export async function listPublishedBatches() {
-  const directory = path.join(projectDirectory, "public-manifests");
+  const directory = publicManifestDirectory;
   if (!fs.existsSync(directory)) return [];
 
   const files = fs.readdirSync(directory)
