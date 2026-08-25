@@ -7,8 +7,11 @@ remain outside this module.
 
 The control server supplies the next due time from SnapshotStorage. Product-level
 refresh periods are managed per product and default to 3600 seconds (1 hour).
+SnapshotStorage also supplies each batch's availability window: the next wait
+can end at the listing time, and no refresh is scheduled after the delisting
+time.
 The scheduler can also be woken explicitly when a route, block, publication, or
-product policy changes, so it does not depend on an arbitrary global polling
+schedule change occurs, so it does not depend on an arbitrary global polling
 period.
 
 The scheduler invokes the callback immediately after startup and then waits for

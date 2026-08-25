@@ -568,6 +568,12 @@ std::optional<Preview> build_preview(
     preview.public_evidence = public_evidence;
     preview.excluded_fields = excluded_private_fields();
 
+    if(input.available_from.empty() != input.available_until.empty())
+    {
+        error = "Snapshot availability requires both a start and an end time";
+        return std::nullopt;
+    }
+
     auto add_field = [&](const std::string& name, const std::string& value) {
         preview.public_fields.push_back(PublicField{name, value});
     };
@@ -577,6 +583,11 @@ std::optional<Preview> build_preview(
     add_field("snapshot_version", std::to_string(preview.snapshot_version));
     add_field("generated_at", preview.generated_at);
     add_field("route.fingerprint", preview.route_fingerprint);
+    if(!input.available_from.empty())
+    {
+        add_field("availability.available_from", input.available_from);
+        add_field("availability.available_until", input.available_until);
+    }
     add_field("batch.batch_id", input.batch_id);
     add_field("batch.product_name", input.product);
     add_field("batch.category", "Fresh Produce");
@@ -669,7 +680,15 @@ std::optional<Preview> build_preview(
         << ",\"snapshot_version\":" << preview.snapshot_version
         << ",\"generated_at\":" << json_string(preview.generated_at)
         << ",\"route_fingerprint\":"
-        << json_string(preview.route_fingerprint)
+        << json_string(preview.route_fingerprint);
+    if(!input.available_from.empty())
+    {
+        manifest << ",\"availability\":{\"available_from\":"
+                 << json_string(input.available_from)
+                 << ",\"available_until\":"
+                 << json_string(input.available_until) << "}";
+    }
+    manifest
         << ",\"batch\":{\"batch_id\":" << json_string(input.batch_id)
         << ",\"product_name\":" << json_string(input.product)
         << ",\"category\":\"Fresh Produce\",\"status\":\"completed\"}"

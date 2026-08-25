@@ -94,6 +94,42 @@ function candidateMatchesRoute(candidate, routeState) {
   return candidateRouteShape(candidate) === routeState.routeShape;
 }
 
+export class SnapshotAvailabilityError extends Error {
+  constructor(state, batchId, availableFrom, availableUntil) {
+    const message = state === "upcoming"
+      ? "This batch is not available to customers yet."
+      : "This Snapshot cannot be served in its current availability state.";
+    super(message);
+    this.name = "SnapshotAvailabilityError";
+    this.code = "SNAPSHOT_NOT_AVAILABLE";
+    this.state = state;
+    this.batchId = batchId;
+    this.availableFrom = availableFrom;
+    this.availableUntil = availableUntil;
+  }
+}
+
+function snapshotAvailability(manifest, now = Date.now()) {
+  if (manifest?.availability === undefined) {
+    return { state: "legacy", available: true, availableFrom: "", availableUntil: "" };
+  }
+  const availableFrom = manifest?.availability?.available_from;
+  const availableUntil = manifest?.availability?.available_until;
+  const start = Date.parse(availableFrom);
+  const end = Date.parse(availableUntil);
+  if (typeof availableFrom !== "string" || typeof availableUntil !== "string" ||
+      !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    throw new Error("The Snapshot availability window is invalid.");
+  }
+  if (now < start) {
+    return { state: "upcoming", available: false, availableFrom, availableUntil };
+  }
+  if (now >= end) {
+    return { state: "expired", available: true, availableFrom, availableUntil };
+  }
+  return { state: "available", available: true, availableFrom, availableUntil };
+}
+
 export function buildPublicRoot(publicFields) {
   if (!Array.isArray(publicFields) || publicFields.length === 0) {
     throw new Error("publicFields must contain at least one field.");
@@ -159,6 +195,7 @@ export function validateCandidate(candidate) {
   if (JSON.stringify(canonicalManifest) !== JSON.stringify(candidate.manifest)) {
     throw new Error("The parsed manifest does not match manifestCanonical.");
   }
+  snapshotAvailability(candidate.manifest);
 
   const checks = {
     protocolHash: id(protocol).toLowerCase() === protocolHash,
@@ -306,6 +343,15 @@ async function tracePublishedSnapshot(
  const record = await gateway.getSnapshot(snapshotHash);
   const status = statusNames[Number(record.status)] ?? "Unknown";
   if (requireActive && status !== "Active") return null;
+  const availability = snapshotAvailability(candidate.manifest);
+  if (!availability.available) {
+    throw new SnapshotAvailabilityError(
+      availability.state,
+      candidate.batchId,
+      availability.availableFrom,
+      availability.availableUntil,
+    );
+  }
   const { chainId, deployment } = runtime;
   const chainChecks = {
     snapshotId: record.snapshotId.toLowerCase() === candidate.snapshotIdHash.toLowerCase(),
@@ -328,6 +374,7 @@ async function tracePublishedSnapshot(
     integrityVerified,
     verified: integrityVerified && status === "Active",
     manifest: candidate.manifest,
+    availability,
    evidence: candidate.manifest.public_evidence ?? [],
    checks: { candidate: candidateChecks, chain: chainChecks },
     snapshotPublishedAt: localStatus?.publishedAt ??
@@ -405,6 +452,7 @@ export async function listPublishedBatches() {
     const publication = readJson(path.join(directory, fileName));
     const candidate = publication.candidate;
     validateCandidate(candidate);
+    if (!snapshotAvailability(candidate.manifest).available) continue;
 
     const currentSnapshotHash = await gateway.currentSnapshotByBatch(
       id(candidate.batchId),
@@ -426,6 +474,7 @@ export async function listPublishedBatches() {
       batchId: candidate.batchId,
       product: manifestBatch.product_name ?? candidate.batchId,
       category: manifestBatch.category ?? "",
+      availabilityState: snapshotAvailability(candidate.manifest).state,
       status: statusNames[Number(record.status)] ?? "Unknown",
       verified: Number(record.status) === 1,
       snapshotId: candidate.snapshotId,

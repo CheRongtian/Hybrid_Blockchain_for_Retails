@@ -182,10 +182,14 @@ page refresh.
 
 Each product has its own Snapshot refresh policy; a product with no saved policy
 uses the default interval of 3600 seconds (1 hour). Configure product intervals
-with the compact `Automatic refresh interval` fields inside the control-panel
-`Consumer Data Preview` form. The editor accepts whole minutes, hours, or days.
+and each batch's `Available from` / `Available until` window inside the compact
+schedule row in the control-panel `Consumer Data Preview` form. Intervals and
+window boundaries use whole-minute precision.
 SnapshotScheduler waits for the nearest due time stored in SnapshotStorage and
-wakes when a route, block, publication, or product policy changes.
+wakes when a route, block, publication, or schedule changes. A future batch may
+be published in advance, becomes visible at its start time, and is hidden from
+customer queries until then. At its end time, refreshing stops and customer
+queries continue to return the final published Snapshot as an off-shelf record.
 
 When a batch is due, an unchanged source block hash and route fingerprint only
 update the local latest-verification timestamp. A changed completed source
@@ -199,6 +203,11 @@ through the same-origin `/api/events` proxy on port 8082. A phone does not need
 direct access to the loopback-only control service on port 8081.
 It refreshes the active result and latest verification time without requiring a
 manual page reload.
+
+The stable QR Code continues to identify the batch across Snapshot revisions
+and availability changes. After delisting, it opens the frozen final result.
+Historical manifests and public-chain records remain stored. Legacy Snapshots
+without a saved availability window remain visible.
 
 For a phone on the same local network, run the same customer start command.
 The service listens on the LAN by default and automatically detects a private

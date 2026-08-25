@@ -319,6 +319,17 @@ const server = http.createServer(async (request, response) => {
   } catch (error) {
     console.error(error);
     const message = error instanceof Error ? error.message : "Unexpected server error";
+    if (error?.code === "SNAPSHOT_NOT_AVAILABLE") {
+      json(response, 404, {
+        error: message,
+        code: error.code,
+        state: error.state,
+        batchId: error.batchId,
+        availableFrom: error.availableFrom,
+        availableUntil: error.availableUntil,
+      });
+      return;
+    }
     const unavailable = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|socket/i
       .test(message);
     json(response, unavailable ? 503 : 422, { error: message });

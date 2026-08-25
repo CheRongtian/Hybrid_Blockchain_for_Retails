@@ -17,6 +17,7 @@ let liveEventSource = null;
 let liveRefreshInFlight = false;
 let liveRefreshQueued = false;
 let liveRefreshQueuedType = "";
+let availabilityTimer = 0;
 
 if (verificationOnly) {
   document.body.classList.add("verification-only");
@@ -228,8 +229,39 @@ function formatTimestamp(value) {
     `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+function clearAvailabilityTimer() {
+  if (!availabilityTimer) return;
+  window.clearTimeout(availabilityTimer);
+  availabilityTimer = 0;
+}
+
+function scheduleAvailabilityBoundary(timestamp, batchId) {
+  clearAvailabilityTimer();
+  const boundary = Date.parse(timestamp);
+  if (!batchId || !Number.isFinite(boundary)) return;
+  const maximumDelay = 2_147_000_000;
+  const arm = () => {
+    const remaining = boundary - Date.now();
+    if (remaining > 0) {
+      availabilityTimer = window.setTimeout(
+        arm,
+        Math.min(remaining + 250, maximumDelay),
+      );
+      return;
+    }
+    availabilityTimer = 0;
+    void (async () => {
+      await loadPublishedBatches({ background: true });
+      await searchBatch(batchId, { background: true });
+    })();
+  };
+  arm();
+}
+
 function renderTrace(trace) {
   const manifest = trace.manifest;
+  const availabilityState = trace.availability?.state || "legacy";
+  const offShelf = availabilityState === "expired";
   const badge = document.querySelector("#verification-badge");
   badge.className = `badge ${trace.verified ? "verified" :
     trace.integrityVerified ? "warning" : "failed"}`;
@@ -241,14 +273,22 @@ function renderTrace(trace) {
   text("#origin", manifest.origin.farm_location);
   text("#harvest-date", manifest.origin.harvest_date);
   text("#category", manifest.batch.category);
-  text("#chain-status", trace.status);
+  text("#availability-status", offShelf ? "Off shelf" : "On shelf");
   const snapshotPublishedAt = trace.snapshotPublishedAt || trace.technical?.publishedAt;
   const latestVerificationAt = trace.latestVerificationAt;
+  const lastUpdatedAt = latestVerificationAt || snapshotPublishedAt;
   text("#snapshot-published-at", snapshotPublishedAt);
   text("#latest-verification-at", latestVerificationAt, "Pending first verification");
-  text("#verification-last-updated", formatTimestamp(latestVerificationAt),
-    "Pending first verification");
+  text("#verification-last-updated", formatTimestamp(lastUpdatedAt), "Unavailable");
   text("#verification-snapshot-published", formatTimestamp(snapshotPublishedAt), "Unavailable");
+  if (availabilityState === "available") {
+    scheduleAvailabilityBoundary(
+      manifest.availability?.available_until,
+      trace.batchId,
+    );
+  } else {
+    clearAvailabilityTimer();
+  }
   renderRoute(manifest);
   text("#route-state", manifest.verification.route_completed ? "Route completed" : "Route incomplete");
   if (!verificationOnly) {
@@ -265,6 +305,7 @@ async function readTrace(
   { background = false, batchId = "", snapshotId = "" } = {},
 ) {
   if (!background) {
+    clearAvailabilityTimer();
     statusLine.className = "status";
     statusLine.textContent = "Reading public-chain trace...";
     resultSection.hidden = true;
@@ -274,7 +315,14 @@ async function readTrace(
   try {
     const response = await fetch(endpoint);
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+    if (!response.ok) {
+      if (payload.code === "SNAPSHOT_NOT_AVAILABLE" && payload.state === "upcoming") {
+        scheduleAvailabilityBoundary(payload.availableFrom, payload.batchId || batchId);
+      } else if (payload.code === "SNAPSHOT_NOT_AVAILABLE") {
+        clearAvailabilityTimer();
+      }
+      throw new Error(payload.error || `Request failed: ${response.status}`);
+    }
     renderTrace(payload);
     currentBatchId = payload.batchId || batchId;
     currentSnapshotId = payload.snapshotId || "";
@@ -282,9 +330,12 @@ async function readTrace(
     if ([...batchSelect.options].some((option) => option.value === currentBatchId)) {
       batchSelect.value = currentBatchId;
     }
-    statusLine.textContent = payload.verified
-      ? "Public Manifest and Merkle Root match the active chain record."
-      : "The trace requires attention. Review its status and verification details.";
+    const offShelf = payload.availability?.state === "expired";
+    statusLine.textContent = offShelf
+      ? "This batch is off shelf. Showing its final published Snapshot."
+      : payload.verified
+        ? "Public Manifest and Merkle Root match the active chain record."
+        : "The trace requires attention. Review its status and verification details.";
     statusLine.className = payload.verified ? "status" : "status error";
   } catch (error) {
     currentSnapshotId = "";
@@ -338,7 +389,8 @@ async function loadPublishedBatches({ background = false } = {}) {
     for (const batch of batches) {
       const option = document.createElement("option");
       option.value = batch.batchId;
-      option.textContent = `${batch.product} · ${batch.batchId}`;
+      option.textContent = `${batch.product} · ${batch.batchId}` +
+        (batch.availabilityState === "expired" ? " · Off shelf" : "");
       batchSelect.append(option);
     }
 

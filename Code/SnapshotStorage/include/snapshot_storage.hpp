@@ -71,6 +71,14 @@ struct RefreshPolicy
     std::string updated_at;
 };
 
+struct AvailabilityWindow
+{
+    std::string batch_id;
+    std::string available_from;
+    std::string available_until;
+    std::string updated_at;
+};
+
 int default_refresh_interval_seconds();
 
 class SnapshotStore
@@ -107,9 +115,17 @@ public:
 
     std::vector<RefreshPolicy> refresh_policies() const;
 
-    bool save_refresh_policy(const std::string& product,
-                             int interval_seconds,
-                             std::string& error);
+    std::vector<AvailabilityWindow> availability_windows() const;
+
+    std::optional<AvailabilityWindow> availability_window(
+        const std::string& batch_id) const;
+
+    bool save_refresh_settings(const std::string& product,
+                               int interval_seconds,
+                               const std::string& batch_id,
+                               const std::string& available_from,
+                               const std::string& available_until,
+                               std::string& error);
 
     bool refresh_due(const std::string& batch_id) const;
 

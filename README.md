@@ -185,7 +185,8 @@ verifiable tree for each event.
   Snapshot archive;
 - a C++ scheduler that waits for each batch's stored product due time, records
   unchanged verification times locally, and publishes a new immutable revision
-  when completed source data changes;
+  when completed source data changes, within the batch's configured public
+  availability window;
 - independently revalidated publication candidates and public Manifests;
 - customer published-batch selection with public route and chain verification
   details;
@@ -365,11 +366,18 @@ opens the new active revision.
 
 The control server stores a separate refresh period for each product. A product
 without a saved policy uses the default period of 3600 seconds (1 hour). The
+scheduling row in `Consumer Data Preview` also stores `Available from` and
+`Available until` for the selected batch, using whole-minute precision. The
 scheduler waits for each batch's next due time and wakes immediately when a
-route, block, publication, or product policy changes. When the source block hash
-and route fingerprint are unchanged, only the local latest-verification time is
-updated. A changed completed source creates and publishes a new immutable
-Snapshot revision.
+route, block, publication, or schedule changes. A Snapshot may be published
+before its start time; customer queries hide it until the start, refresh it
+during the window, and keep the final published revision visible after the end.
+Refreshing stops at the end and the customer view marks the batch `Off shelf`.
+When the source block hash and route fingerprint are unchanged, only the local
+latest-verification time is updated. A changed completed source creates and
+publishes a new immutable Snapshot revision. The batch QR Code stays unchanged,
+and historical archives and public-chain records remain available after
+delisting. Existing Snapshots without a window keep their legacy visibility.
 
 ## Demonstration accounts
 

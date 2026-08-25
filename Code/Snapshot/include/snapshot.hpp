@@ -67,6 +67,8 @@ struct BatchInput
     std::string farm_location;
     std::string certificate_id;
     std::string status;
+    std::string available_from;
+    std::string available_until;
     std::vector<StageInput> stages;
     std::vector<HistoricalBlockInput> historical_blocks;
     std::vector<RouteNodeInput> route_nodes;

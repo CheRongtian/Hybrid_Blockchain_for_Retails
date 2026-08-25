@@ -105,6 +105,26 @@ std::string column_text(sqlite3_stmt* statement, int index)
     return value ? reinterpret_cast<const char*>(value) : "";
 }
 
+std::optional<std::string> normalized_utc_minute(
+    sqlite3* database,
+    const std::string& value)
+{
+    sqlite3_stmt* statement = nullptr;
+    const char* sql = "SELECT strftime('%Y-%m-%dT%H:%M:00Z', ?);";
+    if(sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) != SQLITE_OK ||
+       !bind_text(statement, 1, value))
+    {
+        if(statement) sqlite3_finalize(statement);
+        return std::nullopt;
+    }
+    const int result = sqlite3_step(statement);
+    std::optional<std::string> normalized;
+    if(result == SQLITE_ROW && sqlite3_column_type(statement, 0) != SQLITE_NULL)
+        normalized = column_text(statement, 0);
+    sqlite3_finalize(statement);
+    return normalized;
+}
+
 std::string json_escape(const std::string& value)
 {
     std::ostringstream escaped;
@@ -264,8 +284,53 @@ bool create_schema(sqlite3* database, std::string& error)
         "CREATE TABLE IF NOT EXISTS snapshot_refresh_schedule ("
         "batch_id TEXT PRIMARY KEY,"
         "next_refresh_at TEXT NOT NULL DEFAULT ''"
+        ");"
+        "CREATE TABLE IF NOT EXISTS snapshot_availability_windows ("
+        "batch_id TEXT PRIMARY KEY,"
+        "available_from TEXT NOT NULL,"
+        "available_until TEXT NOT NULL,"
+        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+        "CHECK (julianday(available_from) IS NOT NULL),"
+        "CHECK (julianday(available_until) IS NOT NULL),"
+        "CHECK (julianday(available_until) > julianday(available_from))"
         ");",
        error);
+}
+
+bool read_availability_window(sqlite3* database,
+                              const std::string& batch_id,
+                              AvailabilityWindow& window,
+                              bool& found)
+{
+    found = false;
+    sqlite3_stmt* statement = nullptr;
+    const char* sql =
+        "SELECT batch_id, available_from, available_until, updated_at "
+        "FROM snapshot_availability_windows WHERE batch_id = ? LIMIT 1;";
+    if(sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) != SQLITE_OK ||
+       !bind_text(statement, 1, batch_id))
+    {
+        if(statement) sqlite3_finalize(statement);
+        return false;
+    }
+    const int result = sqlite3_step(statement);
+    if(result == SQLITE_DONE)
+    {
+        sqlite3_finalize(statement);
+        return true;
+    }
+    if(result != SQLITE_ROW)
+    {
+        sqlite3_finalize(statement);
+        return false;
+    }
+    found = true;
+    window.batch_id = column_text(statement, 0);
+    window.available_from = column_text(statement, 1);
+    window.available_until = column_text(statement, 2);
+    window.updated_at = column_text(statement, 3);
+    sqlite3_finalize(statement);
+    return true;
 }
 
 bool read_verification_status(sqlite3* database,
@@ -951,6 +1016,11 @@ bool SnapshotStore::touch_verification(const std::string& batch_id,
                           SQLITE_OPEN_FULLMUTEX,
                       database, error))
         return false;
+    if(!execute_sql(database, "BEGIN IMMEDIATE;", error))
+    {
+        sqlite3_close(database);
+        return false;
+    }
 
     const char* sql =
         "INSERT INTO snapshot_verification_status "
@@ -966,6 +1036,7 @@ bool SnapshotStore::touch_verification(const std::string& batch_id,
     if(sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) != SQLITE_OK)
     {
         error = sqlite_error(database, "Prepare verification status update failed");
+        execute_sql(database, "ROLLBACK;", error);
         sqlite3_close(database);
         return false;
     }
@@ -980,6 +1051,7 @@ bool SnapshotStore::touch_verification(const std::string& batch_id,
     {
         error = sqlite_error(database, "Write verification status failed");
         sqlite3_finalize(statement);
+        execute_sql(database, "ROLLBACK;", error);
         sqlite3_close(database);
         return false;
     }
@@ -987,26 +1059,45 @@ bool SnapshotStore::touch_verification(const std::string& batch_id,
 
     sqlite3_stmt* schedule_statement = nullptr;
     const char* schedule_sql =
-        "INSERT OR REPLACE INTO snapshot_refresh_schedule "
-        "(batch_id, next_refresh_at) "
-        "SELECT ?, datetime('now', '+' || CAST(COALESCE(p.interval_seconds, "
-        "3600) AS TEXT) || ' seconds') FROM batches b "
+        "INSERT INTO snapshot_refresh_schedule (batch_id, next_refresh_at) "
+        "SELECT b.batch_id, CASE "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') < julianday(w.available_from) "
+        "THEN w.available_from "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') >= julianday(w.available_until) THEN '' "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now', '+' || CAST(COALESCE(p.interval_seconds, 3600) "
+        "AS TEXT) || ' seconds') >= julianday(w.available_until) "
+        "THEN w.available_until "
+        "ELSE strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+' || "
+        "CAST(COALESCE(p.interval_seconds, 3600) AS TEXT) || ' seconds') END "
+        "FROM batches b "
         "LEFT JOIN snapshot_refresh_policies p ON p.product = b.product "
-        "WHERE b.batch_id = ?;";
+        "LEFT JOIN snapshot_availability_windows w ON w.batch_id = b.batch_id "
+        "WHERE b.batch_id = ? "
+        "ON CONFLICT(batch_id) DO UPDATE SET "
+        "next_refresh_at = excluded.next_refresh_at;";
     const bool scheduled =
         sqlite3_prepare_v2(database, schedule_sql, -1, &schedule_statement, nullptr) ==
             SQLITE_OK &&
         bind_text(schedule_statement, 1, batch_id) &&
-        bind_text(schedule_statement, 2, batch_id) &&
         sqlite3_step(schedule_statement) == SQLITE_DONE;
     if(!scheduled)
     {
         error = sqlite_error(database, "Schedule next Snapshot refresh failed");
         if(schedule_statement) sqlite3_finalize(schedule_statement);
+        execute_sql(database, "ROLLBACK;", error);
         sqlite3_close(database);
         return false;
     }
     sqlite3_finalize(schedule_statement);
+    if(!execute_sql(database, "COMMIT;", error))
+    {
+        execute_sql(database, "ROLLBACK;", error);
+        sqlite3_close(database);
+        return false;
+    }
     sqlite3_close(database);
     return true;
 }
@@ -1065,15 +1156,71 @@ std::vector<RefreshPolicy> SnapshotStore::refresh_policies() const
     return policies;
 }
 
-bool SnapshotStore::save_refresh_policy(const std::string& product,
-                                        int interval_seconds,
-                                        std::string& error)
+std::vector<AvailabilityWindow> SnapshotStore::availability_windows() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<AvailabilityWindow> windows;
+    sqlite3* database = nullptr;
+    std::string error;
+    if(!open_database(database_path_, SQLITE_OPEN_READONLY |
+                          SQLITE_OPEN_FULLMUTEX, database, error))
+        return windows;
+
+    sqlite3_stmt* statement = nullptr;
+    const char* sql =
+        "SELECT batch_id, available_from, available_until, updated_at "
+        "FROM snapshot_availability_windows ORDER BY batch_id;";
+    if(sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) != SQLITE_OK)
+    {
+        sqlite3_close(database);
+        return windows;
+    }
+    while(sqlite3_step(statement) == SQLITE_ROW)
+    {
+        AvailabilityWindow window;
+        window.batch_id = column_text(statement, 0);
+        window.available_from = column_text(statement, 1);
+        window.available_until = column_text(statement, 2);
+        window.updated_at = column_text(statement, 3);
+        windows.push_back(std::move(window));
+    }
+    sqlite3_finalize(statement);
+    sqlite3_close(database);
+    return windows;
+}
+
+std::optional<AvailabilityWindow> SnapshotStore::availability_window(
+    const std::string& batch_id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(batch_id.empty()) return std::nullopt;
+
+    sqlite3* database = nullptr;
+    std::string error;
+    if(!open_database(database_path_, SQLITE_OPEN_READONLY |
+                          SQLITE_OPEN_FULLMUTEX, database, error))
+        return std::nullopt;
+
+    AvailabilityWindow window;
+    bool found = false;
+    const bool read = read_availability_window(database, batch_id, window, found);
+    sqlite3_close(database);
+    if(!read || !found) return std::nullopt;
+    return window;
+}
+
+bool SnapshotStore::save_refresh_settings(const std::string& product,
+                                          int interval_seconds,
+                                          const std::string& batch_id,
+                                          const std::string& available_from,
+                                          const std::string& available_until,
+                                          std::string& error)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     error.clear();
-    if(product.empty() || interval_seconds < 60)
+    if(product.empty() || batch_id.empty() || interval_seconds < 60)
     {
-        error = "A product and a refresh interval of at least 1 minute are required";
+        error = "A product, batch, and refresh interval of at least 1 minute are required";
         return false;
     }
 
@@ -1083,6 +1230,17 @@ bool SnapshotStore::save_refresh_policy(const std::string& product,
                           SQLITE_OPEN_FULLMUTEX,
                       database, error))
         return false;
+
+    const auto normalized_from = normalized_utc_minute(database, available_from);
+    const auto normalized_until = normalized_utc_minute(database, available_until);
+    if(!normalized_from || !normalized_until ||
+       *normalized_from >= *normalized_until)
+    {
+        error = "Availability end time must be later than its start time";
+        sqlite3_close(database);
+        return false;
+    }
+
     if(!execute_sql(database, "BEGIN IMMEDIATE;", error))
     {
         sqlite3_close(database);
@@ -1111,19 +1269,59 @@ bool SnapshotStore::save_refresh_policy(const std::string& product,
     }
     sqlite3_finalize(policy_statement);
 
+    sqlite3_stmt* window_statement = nullptr;
+    const char* window_sql =
+        "INSERT INTO snapshot_availability_windows "
+        "(batch_id, available_from, available_until) VALUES (?, ?, ?) "
+        "ON CONFLICT(batch_id) DO UPDATE SET "
+        "available_from = excluded.available_from, "
+        "available_until = excluded.available_until, "
+        "updated_at = CURRENT_TIMESTAMP;";
+    const bool window_saved =
+        sqlite3_prepare_v2(database, window_sql, -1, &window_statement, nullptr) ==
+            SQLITE_OK &&
+        bind_text(window_statement, 1, batch_id) &&
+        bind_text(window_statement, 2, *normalized_from) &&
+        bind_text(window_statement, 3, *normalized_until) &&
+        sqlite3_step(window_statement) == SQLITE_DONE;
+    if(!window_saved)
+    {
+        error = sqlite_error(database, "Save Snapshot availability window failed");
+        if(window_statement) sqlite3_finalize(window_statement);
+        execute_sql(database, "ROLLBACK;", error);
+        sqlite3_close(database);
+        return false;
+    }
+    sqlite3_finalize(window_statement);
+
     sqlite3_stmt* schedule_statement = nullptr;
     const char* schedule_sql =
-        "INSERT OR REPLACE INTO snapshot_refresh_schedule "
-        "(batch_id, next_refresh_at) "
-        "SELECT b.batch_id, datetime('now', '+' || CAST(? AS TEXT) || ' seconds') "
-        "FROM batches b WHERE b.product = ? AND EXISTS ("
+        "INSERT INTO snapshot_refresh_schedule (batch_id, next_refresh_at) "
+        "SELECT b.batch_id, CASE "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') < julianday(w.available_from) "
+        "THEN w.available_from "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') >= julianday(w.available_until) THEN '' "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now', '+' || CAST(? AS TEXT) || ' seconds') >= "
+        "julianday(w.available_until) THEN w.available_until "
+        "ELSE strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+' || "
+        "CAST(? AS TEXT) || ' seconds') END "
+        "FROM batches b "
+        "LEFT JOIN snapshot_availability_windows w ON w.batch_id = b.batch_id "
+        "WHERE b.product = ? AND (b.batch_id = ? OR EXISTS ("
         "SELECT 1 FROM snapshot_storage r WHERE r.batch_id = b.batch_id "
-        "AND r.state IN ('active', 'invalidated'));";
+        "AND r.state IN ('active', 'invalidated'))) "
+        "ON CONFLICT(batch_id) DO UPDATE SET "
+        "next_refresh_at = excluded.next_refresh_at;";
     const bool scheduled =
         sqlite3_prepare_v2(database, schedule_sql, -1, &schedule_statement, nullptr) ==
             SQLITE_OK &&
         sqlite3_bind_int(schedule_statement, 1, interval_seconds) == SQLITE_OK &&
-        bind_text(schedule_statement, 2, product) &&
+        sqlite3_bind_int(schedule_statement, 2, interval_seconds) == SQLITE_OK &&
+        bind_text(schedule_statement, 3, product) &&
+        bind_text(schedule_statement, 4, batch_id) &&
         sqlite3_step(schedule_statement) == SQLITE_DONE;
     if(!scheduled)
     {
@@ -1158,11 +1356,15 @@ bool SnapshotStore::refresh_due(const std::string& batch_id) const
 
     sqlite3_stmt* statement = nullptr;
     const char* sql =
-        "SELECT CASE WHEN COALESCE(s.next_refresh_at, '') = '' "
+        "SELECT CASE WHEN w.batch_id IS NOT NULL AND ("
+        "julianday('now') < julianday(w.available_from) OR "
+        "julianday('now') >= julianday(w.available_until)) THEN 0 "
+        "WHEN COALESCE(s.next_refresh_at, '') = '' "
         "OR julianday(s.next_refresh_at) IS NULL "
         "OR julianday(s.next_refresh_at) <= julianday('now') "
         "THEN 1 ELSE 0 END FROM batches b "
         "LEFT JOIN snapshot_refresh_schedule s ON s.batch_id = b.batch_id "
+        "LEFT JOIN snapshot_availability_windows w ON w.batch_id = b.batch_id "
         "WHERE b.batch_id = ? LIMIT 1;";
     if(sqlite3_prepare_v2(database, sql, -1, &statement, nullptr) != SQLITE_OK ||
        !bind_text(statement, 1, batch_id))
@@ -1191,12 +1393,19 @@ std::optional<std::chrono::milliseconds> SnapshotStore::next_refresh_delay() con
     sqlite3_stmt* statement = nullptr;
     const char* sql =
         "SELECT MIN(CASE "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') >= julianday(w.available_until) THEN NULL "
+        "WHEN w.batch_id IS NOT NULL AND "
+        "julianday('now') < julianday(w.available_from) "
+        "THEN MAX(0.0, (julianday(w.available_from) - "
+        "julianday('now')) * 86400000.0) "
         "WHEN COALESCE(s.next_refresh_at, '') = '' "
         "OR julianday(s.next_refresh_at) IS NULL THEN 0.0 "
         "ELSE MAX(0.0, (julianday(s.next_refresh_at) - "
         "julianday('now')) * 86400000.0) END) "
         "FROM snapshot_storage r "
         "LEFT JOIN snapshot_refresh_schedule s ON s.batch_id = r.batch_id "
+        "LEFT JOIN snapshot_availability_windows w ON w.batch_id = r.batch_id "
         "WHERE r.revision = (SELECT MAX(r2.revision) "
         "FROM snapshot_storage r2 WHERE r2.batch_id = r.batch_id) "
         "AND r.state IN ('active', 'invalidated');";

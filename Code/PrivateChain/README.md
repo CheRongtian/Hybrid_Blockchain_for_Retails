@@ -140,7 +140,12 @@ the in-memory cache serves the current active record, and the local
 `Database/snapshot-archive/` directory keeps historical preview and publication
 revisions. `Code/SnapshotScheduler` waits for the next due time stored by
 SnapshotStorage. Unchanged source data updates the latest verification status;
-changed completed source data publishes a new immutable revision.
+changed completed source data publishes a new immutable revision. Product-level
+refresh intervals and batch-level listing windows are configured together in
+the Snapshot preview form. Customer data is hidden before the saved start,
+updated during the window, and frozen at the final published revision after the
+saved end. Delisting stops future refreshes while preserving customer access,
+archives, and public-chain history.
 
 The local Kubo API is expected at:
 

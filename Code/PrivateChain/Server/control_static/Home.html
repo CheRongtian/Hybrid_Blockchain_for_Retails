@@ -151,7 +151,7 @@
                         </label>
                         <div class="snapshot-refresh-setting">
                             <div class="snapshot-refresh-heading">
-                                <strong>Automatic refresh interval</strong>
+                                <strong>Public availability and refresh</strong>
                                 <span id="snapshot-refresh-product">
                                     Select a completed batch
                                 </span>
@@ -168,6 +168,16 @@
                                     <option value="hours" selected>hours</option>
                                     <option value="days">days</option>
                                 </select>
+                            </label>
+                            <label>
+                                Available from
+                                <input id="snapshot-available-from"
+                                       type="datetime-local" step="60" disabled>
+                            </label>
+                            <label>
+                                Available until
+                                <input id="snapshot-available-until"
+                                       type="datetime-local" step="60" disabled>
                             </label>
                         </div>
                         <p id="snapshot-refresh-policy-status"

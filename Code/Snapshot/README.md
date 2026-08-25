@@ -254,6 +254,10 @@ owned by this module.
 SnapshotStorage keeps `preview`, `active`, `superseded`, and `invalidated`
 states. SQLite is the hot lifecycle index, the current active record has an
 in-memory cache, and each revision is archived locally for historical lookup.
+The Public Manifest can include a batch availability window. Its start and end
+are public Merkle fields, so the window is covered by the Public Root and
+Manifest hash. Both values must be present and the end must follow the start.
+Legacy inputs may omit the window.
 The control server's independent `Code/SnapshotScheduler` waits for the nearest
 due time recorded by SnapshotStorage for active and previously invalidated
 batches. Unchanged source data updates local verification status only; changed
@@ -266,5 +270,4 @@ transactions.
 - durable relayer job and nonce persistence;
 - wallet and key custody;
 - transaction confirmation and retry handling;
-- finer-grained publication schedules per product or batch; and
 - optional cross-chain messaging protocol adapters.

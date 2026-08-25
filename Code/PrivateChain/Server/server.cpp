@@ -2411,6 +2411,7 @@ bool snapshot_refresh_policies_json(
     if(!load_supply_chain_batches(database_path, batches)) return false;
 
     const auto configured_policies = snapshot_store.refresh_policies();
+    const auto configured_windows = snapshot_store.availability_windows();
     std::unordered_map<std::string,
                        supermarket::snapshot_storage::RefreshPolicy>
         configured_by_product;
@@ -2454,6 +2455,19 @@ bool snapshot_refresh_policies_json(
              << ",\"updatedAt\":\""
              << json_escape(has_configured_policy ? policy.updated_at : "")
              << "\"}";
+    }
+    json << "],\"batchWindows\":[";
+    for(std::size_t index = 0; index < configured_windows.size(); ++index)
+    {
+        if(index > 0) json << ',';
+        const auto& window = configured_windows[index];
+        json << "{\"batchId\":\"" << json_escape(window.batch_id)
+             << "\",\"availableFrom\":\""
+             << json_escape(window.available_from)
+             << "\",\"availableUntil\":\""
+             << json_escape(window.available_until)
+             << "\",\"updatedAt\":\""
+             << json_escape(window.updated_at) << "\"}";
     }
     json << "]}";
     body = json.str();
@@ -2521,8 +2535,13 @@ void automatic_snapshot_refresh(
                 continue;
             }
 
-            const auto input = make_snapshot_batch_input(
+            auto input = make_snapshot_batch_input(
                 batch, records, workflow->nodes, workflow->edges);
+            if(const auto window = snapshot_store.availability_window(batch.batch_id))
+            {
+                input.available_from = window->available_from;
+                input.available_until = window->available_until;
+            }
             const auto eligibility = supermarket::snapshot::evaluate_eligibility(input);
             if(!eligibility.eligible || input.stages.empty())
             {
@@ -4520,11 +4539,31 @@ int main(int argc, char* argv[])
             const auto interval_field = fields
                 ? fields->find("intervalSeconds")
                 : std::unordered_map<std::string, std::string>::const_iterator{};
+            const auto batch_field = fields
+                ? fields->find("batchId")
+                : std::unordered_map<std::string, std::string>::const_iterator{};
+            const auto available_from_field = fields
+                ? fields->find("availableFrom")
+                : std::unordered_map<std::string, std::string>::const_iterator{};
+            const auto available_until_field = fields
+                ? fields->find("availableUntil")
+                : std::unordered_map<std::string, std::string>::const_iterator{};
             int interval_seconds = 0;
             const bool has_product = fields && product_field != fields->end();
             const bool has_interval = fields && interval_field != fields->end();
+            const bool has_batch = fields && batch_field != fields->end();
+            const bool has_available_from = fields &&
+                available_from_field != fields->end();
+            const bool has_available_until = fields &&
+                available_until_field != fields->end();
             const std::string product = has_product
                 ? trim(product_field->second) : "";
+            const std::string batch_id = has_batch
+                ? trim(batch_field->second) : "";
+            const std::string available_from = has_available_from
+                ? trim(available_from_field->second) : "";
+            const std::string available_until = has_available_until
+                ? trim(available_until_field->second) : "";
             const bool valid_interval = has_interval &&
                 parse_integer(trim(interval_field->second), interval_seconds) &&
                 interval_seconds >= 60 && interval_seconds <= 365 * 24 * 60 * 60;
@@ -4540,33 +4579,54 @@ int main(int argc, char* argv[])
                 body = json_error("Admin role required");
             }
             else if(!correct_type || !fields || !has_product || product.empty() ||
-                    product.size() > 256 || !valid_interval)
+                    product.size() > 256 || !has_batch || batch_id.empty() ||
+                    batch_id.size() > 256 || !has_available_from ||
+                    available_from.empty() || available_from.size() > 64 ||
+                    !has_available_until || available_until.empty() ||
+                    available_until.size() > 64 || !valid_interval)
             {
                 status = "422 Unprocessable Entity";
                 body = json_error(
-                    "A product and an interval from 1 minute to 365 days are required");
+                    "A batch, availability window, and interval from 1 minute to 365 days are required");
             }
             else
             {
-                std::string save_error;
-                if(!snapshot_store.save_refresh_policy(
-                       product, interval_seconds, save_error))
+                const auto batch = find_supply_chain_batch(
+                    database_path.string(), batch_id);
+                if(!batch)
                 {
-                    status = "500 Internal Server Error";
-                    body = json_error(save_error);
+                    status = "404 Not Found";
+                    body = json_error("The selected batch does not exist");
                 }
-                else if(!snapshot_refresh_policies_json(
-                            snapshot_store, database_path.string(), body))
+                else if(batch->product != product)
                 {
-                    status = "500 Internal Server Error";
-                    body = json_error("Failed to read updated Snapshot policies");
+                    status = "422 Unprocessable Entity";
+                    body = json_error(
+                        "The selected product does not match the batch");
                 }
                 else
                 {
-                    status = "200 OK";
-                    live_event_hub.publish(
-                        "snapshot_refresh_policy_changed", product);
-                    snapshot_scheduler.wake();
+                    std::string save_error;
+                    if(!snapshot_store.save_refresh_settings(
+                           product, interval_seconds, batch_id,
+                           available_from, available_until, save_error))
+                    {
+                        status = "422 Unprocessable Entity";
+                        body = json_error(save_error);
+                    }
+                    else if(!snapshot_refresh_policies_json(
+                                snapshot_store, database_path.string(), body))
+                    {
+                        status = "500 Internal Server Error";
+                        body = json_error("Failed to read updated Snapshot settings");
+                    }
+                    else
+                    {
+                        status = "200 OK";
+                        live_event_hub.publish(
+                            "snapshot_schedule_changed", batch_id);
+                        snapshot_scheduler.wake();
+                    }
                 }
             }
             send_response(client_fd, status, content_type, body, true, CORS_HEADERS);
@@ -4654,51 +4714,72 @@ int main(int argc, char* argv[])
                             }
                             if(status.empty())
                             {
-                                const auto input = make_snapshot_batch_input(
+                                auto input = make_snapshot_batch_input(
                                     *batch, records, route_nodes, route_edges);
-                                std::string preview_error;
-                                const auto preview = supermarket::snapshot::build_preview(
-                                    input, selected_evidence, preview_error);
-                            if(!preview)
-                            {
-                                status = "422 Unprocessable Entity";
-                                body = json_error(preview_error);
-                            }
-                            else
-                            {
-                                const std::string candidate_json =
-                                    supermarket::snapshot::publication_candidate_json(
-                                        *preview);
-                                supermarket::snapshot_storage::SnapshotPreview
-                                    storage_preview;
-                                storage_preview.protocol = preview->protocol;
-                                storage_preview.snapshot_id = preview->snapshot_id;
-                                storage_preview.schema_version =
-                                    preview->snapshot_version;
-                                storage_preview.generated_at = preview->generated_at;
-                                storage_preview.batch_id = preview->batch_id;
-                                storage_preview.manifest_json = preview->manifest_json;
-                                storage_preview.public_root = preview->public_root;
-                                storage_preview.source_block_hash =
-                                    preview->final_private_block_hash;
-                                storage_preview.route_fingerprint =
-                                    preview->route_fingerprint;
-                                storage_preview.candidate_json = candidate_json;
-                                std::string storage_error;
-                                if(!snapshot_store.save_preview(
-                                       storage_preview, storage_error))
+                                const auto window =
+                                    snapshot_store.availability_window(batch_id);
+                                if(!window)
                                 {
-                                    status = "500 Internal Server Error";
+                                    status = "422 Unprocessable Entity";
                                     body = json_error(
-                                        "Failed to store the Snapshot preview: " +
-                                        storage_error);
+                                        "Set the batch availability window before generating a Snapshot");
                                 }
                                 else
                                 {
-                                    status = "200 OK";
-                                    body = snapshot_preview_json(*preview);
+                                    input.available_from = window->available_from;
+                                    input.available_until = window->available_until;
                                 }
-                            }
+                                if(status.empty())
+                                {
+                                    std::string preview_error;
+                                    const auto preview =
+                                        supermarket::snapshot::build_preview(
+                                            input, selected_evidence, preview_error);
+                                    if(!preview)
+                                    {
+                                        status = "422 Unprocessable Entity";
+                                        body = json_error(preview_error);
+                                    }
+                                    else
+                                    {
+                                        const std::string candidate_json =
+                                            supermarket::snapshot::
+                                                publication_candidate_json(*preview);
+                                        supermarket::snapshot_storage::SnapshotPreview
+                                            storage_preview;
+                                        storage_preview.protocol = preview->protocol;
+                                        storage_preview.snapshot_id =
+                                            preview->snapshot_id;
+                                        storage_preview.schema_version =
+                                            preview->snapshot_version;
+                                        storage_preview.generated_at =
+                                            preview->generated_at;
+                                        storage_preview.batch_id = preview->batch_id;
+                                        storage_preview.manifest_json =
+                                            preview->manifest_json;
+                                        storage_preview.public_root =
+                                            preview->public_root;
+                                        storage_preview.source_block_hash =
+                                            preview->final_private_block_hash;
+                                        storage_preview.route_fingerprint =
+                                            preview->route_fingerprint;
+                                        storage_preview.candidate_json = candidate_json;
+                                        std::string storage_error;
+                                        if(!snapshot_store.save_preview(
+                                               storage_preview, storage_error))
+                                        {
+                                            status = "500 Internal Server Error";
+                                            body = json_error(
+                                                "Failed to store the Snapshot preview: " +
+                                                storage_error);
+                                        }
+                                        else
+                                        {
+                                            status = "200 OK";
+                                            body = snapshot_preview_json(*preview);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

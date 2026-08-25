@@ -434,9 +434,14 @@ The independent C++ SnapshotScheduler runs one check immediately after
 control-server startup and then waits for the nearest due time from
 SnapshotStorage. Each product uses a separate Snapshot refresh policy from the
 `Consumer Data Preview` form; the default product period is 3600 seconds
-(1 hour), and the editor accepts whole minutes, hours, or days. Route, block,
-publication, and policy changes wake the scheduler so it can recalculate the
-due time. Unchanged source hashes update only the hot verification status.
+(1 hour), and the editor accepts whole minutes, hours, or days. The same compact
+row requires a batch `Available from` and `Available until` value at
+whole-minute precision. Route, block, publication, and schedule changes wake
+the scheduler so it can recalculate the due time. Before the start, the batch is
+hidden from customers; at the end, no further refresh is scheduled and the last
+published Snapshot remains visible as a frozen off-shelf record. Administrators
+can preview and publish before the start time.
+Unchanged source hashes update only the hot verification status.
 Changed completed source data creates and publishes a new immutable revision.
 An invalidated route publishes its replacement after every connected stage has
 a verified Block.

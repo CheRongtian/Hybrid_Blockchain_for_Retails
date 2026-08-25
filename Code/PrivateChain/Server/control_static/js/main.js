@@ -35,6 +35,8 @@ const policyStatus = document.querySelector("#policy-status");
 const snapshotRefreshProduct = document.querySelector("#snapshot-refresh-product");
 const snapshotRefreshValue = document.querySelector("#snapshot-refresh-value");
 const snapshotRefreshUnit = document.querySelector("#snapshot-refresh-unit");
+const snapshotAvailableFrom = document.querySelector("#snapshot-available-from");
+const snapshotAvailableUntil = document.querySelector("#snapshot-available-until");
 const snapshotRefreshPolicyStatus = document.querySelector("#snapshot-refresh-policy-status");
 const snapshotPreviewForm = document.querySelector("#snapshot-preview-form");
 const snapshotBatchSelect = document.querySelector("#snapshot-batch-select");
@@ -76,9 +78,11 @@ let workflowAutoSaveQueued = false;
 let snapshotRefreshInFlight = false;
 let snapshotRefreshQueued = false;
 let snapshotRefreshPolicies = [];
+let snapshotAvailabilityWindows = [];
 let snapshotRefreshDefaultSeconds = 3600;
 let snapshotRefreshPoliciesAvailable = false;
 let snapshotRefreshEditorProduct = "";
+let snapshotRefreshEditorBatchId = "";
 let confirmationPolicies = [];
 let confirmationPolicyLoadId = 0;
 let workflowLoadId = 0;
@@ -91,6 +95,7 @@ let liveRefreshQueuedType = "";
 let dashboardReady = false;
 let ignoreInitialLiveStateSync = false;
 let snapshotOperation = "";
+let snapshotPublicationComplete = false;
 
 function showSession(result) {
     session = result;
@@ -177,16 +182,23 @@ function clearSession() {
     snapshotRefreshInFlight = false;
     snapshotRefreshQueued = false;
     snapshotRefreshPolicies = [];
+    snapshotAvailabilityWindows = [];
     snapshotRefreshDefaultSeconds = 3600;
     snapshotRefreshPoliciesAvailable = false;
     snapshotRefreshEditorProduct = "";
+    snapshotRefreshEditorBatchId = "";
     snapshotRefreshProduct.textContent = "Select a completed batch";
     snapshotRefreshValue.value = "1";
     snapshotRefreshValue.disabled = true;
     snapshotRefreshUnit.value = "hours";
     snapshotRefreshUnit.disabled = true;
+    snapshotAvailableFrom.value = "";
+    snapshotAvailableFrom.disabled = true;
+    snapshotAvailableUntil.value = "";
+    snapshotAvailableUntil.disabled = true;
     snapshotRefreshPolicyStatus.textContent = "";
     snapshotRefreshPolicyStatus.className = "status";
+    snapshotPublicationComplete = false;
 }
 
 function stopLiveUpdates() {
@@ -202,7 +214,7 @@ function stopLiveUpdates() {
 function queueLiveRefreshType(eventType) {
     liveRefreshQueued = true;
     const priorities = {
-        snapshot_refresh_policy_changed: 1,
+        snapshot_schedule_changed: 1,
         snapshot_published: 2,
         batch_changed: 3,
         route_changed: 4,
@@ -243,11 +255,11 @@ function queueLiveRefresh(eventType = "") {
                 await loadWorkflowView(workflowBatchId);
             }
             const refreshes = [];
-            if (eventType !== "snapshot_refresh_policy_changed") {
+            if (eventType !== "snapshot_schedule_changed") {
                 refreshes.push(loadSnapshotCandidates());
             }
             if (eventType === "state_sync" ||
-                eventType === "snapshot_refresh_policy_changed") {
+                eventType === "snapshot_schedule_changed") {
                 refreshes.push(loadSnapshotRefreshPolicies());
             }
             await Promise.all(refreshes);
@@ -274,7 +286,7 @@ function startLiveUpdates() {
         try {
             const payload = JSON.parse(event.data);
             if (["state_sync", "route_changed", "batch_changed", "snapshot_published",
-                "snapshot_refresh_policy_changed"].includes(payload.type)) {
+                "snapshot_schedule_changed"].includes(payload.type)) {
                 if (payload.type === "state_sync" && ignoreInitialLiveStateSync) {
                     ignoreInitialLiveStateSync = false;
                     return;
@@ -2193,16 +2205,37 @@ function setSnapshotRefreshPolicyStatus(message, state = "") {
 }
 
 function updateSnapshotControls() {
-    const busy = Boolean(snapshotOperation) || snapshotRefreshInFlight;
+    const operationBusy = Boolean(snapshotOperation);
+    const busy = operationBusy || snapshotRefreshInFlight;
     const hasBatches = snapshotBatches.length > 0;
     const hasProduct = Boolean(selectedSnapshotBatch()?.product);
     snapshotBatchSelect.disabled = busy || !hasBatches;
-    generateSnapshotButton.disabled = busy || !hasBatches;
+    generateSnapshotButton.disabled = busy || !hasBatches ||
+        !snapshotRefreshPoliciesAvailable;
     publishSnapshotButton.disabled = busy || !publicationCandidate;
     snapshotRefreshValue.disabled = busy || !hasProduct ||
         !snapshotRefreshPoliciesAvailable;
     snapshotRefreshUnit.disabled = busy || !hasProduct ||
         !snapshotRefreshPoliciesAvailable;
+    snapshotAvailableFrom.disabled = busy || !hasProduct ||
+        !snapshotRefreshPoliciesAvailable;
+    snapshotAvailableUntil.disabled = busy || !hasProduct ||
+        !snapshotRefreshPoliciesAvailable;
+
+    const generating = snapshotOperation === "preview";
+    const publishing = snapshotOperation === "publish";
+    generateSnapshotButton.classList.toggle("is-busy", generating);
+    publishSnapshotButton.classList.toggle("is-busy", publishing);
+    generateSnapshotButton.toggleAttribute("aria-busy", generating);
+    publishSnapshotButton.toggleAttribute("aria-busy", publishing);
+    generateSnapshotButton.textContent = generating
+        ? "Generating Snapshot Preview..."
+        : "Generate Snapshot Preview";
+    publishSnapshotButton.textContent = publishing
+        ? "Publishing..."
+        : snapshotPublicationComplete
+            ? "Published"
+            : "Publish to Local Public Chain";
 }
 
 function beginSnapshotOperation(operation) {
@@ -2278,14 +2311,49 @@ function selectedSnapshotRefreshPolicy() {
     return snapshotRefreshPolicies.find((policy) => policy.product === product);
 }
 
+function selectedSnapshotAvailabilityWindow() {
+    const batchId = String(selectedSnapshotBatch()?.batchId || "");
+    return snapshotAvailabilityWindows.find((window) => window.batchId === batchId);
+}
+
+function localDateTimeValue(isoValue) {
+    if (!isoValue) return "";
+    const value = new Date(isoValue);
+    if (Number.isNaN(value.getTime())) return "";
+    const pad = (part) => String(part).padStart(2, "0");
+    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}` +
+        `T${pad(value.getHours())}:${pad(value.getMinutes())}`;
+}
+
+function availabilityIsoValue(input, label) {
+    if (!input.value) throw new Error(`${label} is required.`);
+    const value = new Date(input.value);
+    if (Number.isNaN(value.getTime())) throw new Error(`Enter a valid ${label.toLowerCase()}.`);
+    value.setSeconds(0, 0);
+    return value.toISOString();
+}
+
+function snapshotAvailabilityValues() {
+    const availableFrom = availabilityIsoValue(snapshotAvailableFrom, "Available from");
+    const availableUntil = availabilityIsoValue(snapshotAvailableUntil, "Available until");
+    if (Date.parse(availableUntil) <= Date.parse(availableFrom)) {
+        throw new Error("Available until must be later than available from.");
+    }
+    return { availableFrom, availableUntil };
+}
+
 function syncSnapshotRefreshEditor({ force = false } = {}) {
     const batch = selectedSnapshotBatch();
     const product = String(batch?.product || "");
-    if (!product) {
+    const batchId = String(batch?.batchId || "");
+    if (!product || !batchId) {
         snapshotRefreshEditorProduct = "";
+        snapshotRefreshEditorBatchId = "";
         snapshotRefreshProduct.textContent = "Select a completed batch";
         snapshotRefreshValue.value = "1";
         snapshotRefreshUnit.value = "hours";
+        snapshotAvailableFrom.value = "";
+        snapshotAvailableUntil.value = "";
         updateSnapshotControls();
         return;
     }
@@ -2297,20 +2365,28 @@ function syncSnapshotRefreshEditor({ force = false } = {}) {
     snapshotRefreshProduct.textContent = policy?.configured
         ? `${product} · currently ${formatRefreshInterval(intervalSeconds)}`
         : `${product} · default ${formatRefreshInterval(snapshotRefreshDefaultSeconds)}`;
-    if (!force && snapshotRefreshEditorProduct === product) {
+    if (!force && snapshotRefreshEditorProduct === product &&
+        snapshotRefreshEditorBatchId === batchId) {
         updateSnapshotControls();
         return;
     }
 
     const editor = refreshIntervalEditor(intervalSeconds);
+    const window = selectedSnapshotAvailabilityWindow();
     snapshotRefreshValue.value = String(editor.value);
     snapshotRefreshUnit.value = editor.unit;
+    snapshotAvailableFrom.value = localDateTimeValue(window?.availableFrom);
+    snapshotAvailableUntil.value = localDateTimeValue(window?.availableUntil);
     snapshotRefreshEditorProduct = product;
+    snapshotRefreshEditorBatchId = batchId;
     updateSnapshotControls();
 }
 
 function applySnapshotRefreshPolicies(result) {
     snapshotRefreshPolicies = Array.isArray(result.products) ? result.products : [];
+    snapshotAvailabilityWindows = Array.isArray(result.batchWindows)
+        ? result.batchWindows
+        : [];
     const defaultSeconds = Number(result.defaultIntervalSeconds);
     snapshotRefreshDefaultSeconds = Number.isInteger(defaultSeconds) && defaultSeconds >= 60
         ? defaultSeconds
@@ -2331,8 +2407,8 @@ async function loadSnapshotRefreshPolicies() {
             throw new Error("Control-panel session expired or insufficient permissions.");
         }
         if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-        if (!Array.isArray(result.products)) {
-            throw new Error("The Snapshot refresh policy response is malformed.");
+        if (!Array.isArray(result.products) || !Array.isArray(result.batchWindows)) {
+            throw new Error("The Snapshot schedule response is malformed.");
         }
         applySnapshotRefreshPolicies(result);
         setSnapshotRefreshPolicyStatus("");
@@ -2343,21 +2419,30 @@ async function loadSnapshotRefreshPolicies() {
     }
 }
 
-async function saveSnapshotRefreshPolicyIfChanged() {
-    if (!snapshotRefreshPoliciesAvailable) return false;
+async function saveSnapshotScheduleIfChanged() {
+    if (!snapshotRefreshPoliciesAvailable) {
+        throw new Error("Snapshot schedule settings are unavailable.");
+    }
     const batch = selectedSnapshotBatch();
     const product = String(batch?.product || "");
-    if (!product) throw new Error("Select a completed batch first.");
+    const batchId = String(batch?.batchId || "");
+    if (!product || !batchId) throw new Error("Select a completed batch first.");
 
     const intervalSeconds = snapshotRefreshIntervalSeconds();
+    const { availableFrom, availableUntil } = snapshotAvailabilityValues();
     const policy = selectedSnapshotRefreshPolicy();
+    const window = selectedSnapshotAvailabilityWindow();
     const currentSeconds = Number(policy?.intervalSeconds) > 0
         ? Number(policy.intervalSeconds)
         : snapshotRefreshDefaultSeconds;
-    if (intervalSeconds === currentSeconds) return false;
+    if (policy?.configured && intervalSeconds === currentSeconds &&
+        window?.availableFrom === availableFrom &&
+        window?.availableUntil === availableUntil) {
+        return false;
+    }
 
-    setSnapshotRefreshPolicyStatus(`Saving ${product}: ${formatRefreshInterval(intervalSeconds)}...`,
-        "pending");
+    setSnapshotRefreshPolicyStatus(
+        `Saving ${product} refresh and ${batchId} availability...`, "pending");
     const response = await fetch("/api/snapshot/refresh-policies", {
         method: "POST",
         headers: {
@@ -2366,7 +2451,10 @@ async function saveSnapshotRefreshPolicyIfChanged() {
         },
         body: new URLSearchParams({
             product,
-            intervalSeconds: String(intervalSeconds)
+            intervalSeconds: String(intervalSeconds),
+            batchId,
+            availableFrom,
+            availableUntil
         }).toString()
     });
     const result = await readJsonResponse(response);
@@ -2375,12 +2463,13 @@ async function saveSnapshotRefreshPolicyIfChanged() {
         throw new Error("Control-panel session expired or insufficient permissions.");
     }
     if (!response.ok) throw new Error(result.error || `Request failed: ${response.status}`);
-    if (!Array.isArray(result.products)) {
-        throw new Error("The updated Snapshot refresh policy response is malformed.");
+    if (!Array.isArray(result.products) || !Array.isArray(result.batchWindows)) {
+        throw new Error("The updated Snapshot schedule response is malformed.");
     }
     applySnapshotRefreshPolicies(result);
     setSnapshotRefreshPolicyStatus(
-        `Automatic refresh set to ${formatRefreshInterval(intervalSeconds)} for ${product}.`,
+        `${product} refresh: ${formatRefreshInterval(intervalSeconds)}. ` +
+        `${batchId} availability saved.`,
         "success"
     );
     return true;
@@ -2393,11 +2482,21 @@ function selectedSnapshotBatch() {
 function clearSnapshotPreview() {
     snapshotPreview.hidden = true;
     publicationCandidate = null;
+    snapshotPublicationComplete = false;
     snapshotPreviewBatchId = "";
     snapshotPreviewRouteFingerprint = "";
     snapshotPreviewPrivateHash = "";
     snapshotPublishStatus.textContent = "";
     updateSnapshotControls();
+}
+
+function invalidateSnapshotPreviewForEdit() {
+    if (snapshotPreview.hidden && !publicationCandidate &&
+        !snapshotPublicationComplete) {
+        return;
+    }
+    clearSnapshotPreview();
+    setSnapshotStatus("Snapshot inputs changed. Generate a new preview.", "pending");
 }
 
 function renderSnapshotEvidence({ clearPreview = true } = {}) {
@@ -2541,6 +2640,7 @@ function renderSnapshotPreview(result) {
         snapshotExcludedFields.append(item);
     }
     publicationCandidate = result.publicationCandidate;
+    snapshotPublicationComplete = false;
     snapshotPreviewBatchId = snapshotBatchSelect.value;
     snapshotPreviewRouteFingerprint = result.routeFingerprint || "";
     snapshotPreviewPrivateHash = result.finalPrivateBlockHash || "";
@@ -2578,6 +2678,7 @@ async function publishSnapshot() {
             `Published in block ${result.blockNumber}. Open the QR display page on port 8084.`;
         snapshotPublishStatus.className = "status success";
         publicationCandidate = null;
+        snapshotPublicationComplete = true;
     } catch (error) {
         snapshotPublishStatus.textContent = error.message;
         snapshotPublishStatus.className = "status error";
@@ -2597,10 +2698,8 @@ async function generateSnapshotPreview(event) {
 
     clearSnapshotPreview();
     try {
-        if (snapshotRefreshPoliciesAvailable) {
-            setSnapshotStatus("Checking the automatic refresh interval...", "pending");
-            await saveSnapshotRefreshPolicyIfChanged();
-        }
+        setSnapshotStatus("Saving the public availability schedule...", "pending");
+        await saveSnapshotScheduleIfChanged();
         setSnapshotStatus("Generating a private, non-published preview...", "pending");
         const response = await fetch("/api/snapshot/preview", {
             method: "POST",
@@ -3010,8 +3109,18 @@ document.addEventListener("keydown", (event) => {
 });
 snapshotBatchSelect.addEventListener("change", () => {
     snapshotRefreshEditorProduct = "";
+    snapshotRefreshEditorBatchId = "";
     syncSnapshotRefreshEditor({ force: true });
     renderSnapshotEvidence();
+});
+snapshotRefreshValue.addEventListener("change", invalidateSnapshotPreviewForEdit);
+snapshotRefreshUnit.addEventListener("change", invalidateSnapshotPreviewForEdit);
+snapshotAvailableFrom.addEventListener("change", invalidateSnapshotPreviewForEdit);
+snapshotAvailableUntil.addEventListener("change", invalidateSnapshotPreviewForEdit);
+snapshotEvidenceList.addEventListener("change", (event) => {
+    if (event.target.matches('input[name="selectedEvidence"]')) {
+        invalidateSnapshotPreviewForEdit();
+    }
 });
 snapshotPreviewForm.addEventListener("submit", generateSnapshotPreview);
 publishSnapshotButton.addEventListener("click", publishSnapshot);

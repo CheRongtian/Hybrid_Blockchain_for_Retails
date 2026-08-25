@@ -28,11 +28,16 @@ The control server uses the independent `Code/SnapshotScheduler` module to wait
 for the nearest due time stored in `snapshot_refresh_schedule`. The actual
 refresh period is configured per product in the control panel and defaults to
 3600 seconds (1 hour) when no product policy has been saved. The compact editor
-inside `Consumer Data Preview` accepts whole minutes, hours, or days.
+inside `Consumer Data Preview` accepts whole minutes, hours, or days. Each batch
+also has an `Available from` / `Available until` window, stored at whole-minute
+UTC precision.
 
 Each batch keeps its next due time in `snapshot_refresh_schedule`. Saving a
 product policy resets the next due time for that product so the new period takes
-effect without a page reload.
+effect without a page reload. A future window waits until its start time. At the
+end time the batch stops refreshing and its final published Snapshot remains
+available to customers as a frozen record. Publishing before the start time is
+allowed, so the public record can be ready before the batch is listed.
 
 Each scheduled cycle checks batches that already have a published or invalidated
 Snapshot:
@@ -44,4 +49,7 @@ Snapshot:
 - the previous revision remains in SQLite and the cold archive for history.
 
 The QR URL remains stable because it identifies the batch. A scan resolves the
-current active Snapshot at scan time.
+current active Snapshot at scan time. Before the window it remains hidden;
+during the window it is refreshed; after the window its final revision remains
+readable. Existing Snapshots created before availability windows were added
+remain readable.
