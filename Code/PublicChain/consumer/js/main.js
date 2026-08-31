@@ -6,7 +6,9 @@ const routeDetailTitle = document.querySelector("#route-detail-title");
 const routeDetailIndex = document.querySelector("#route-detail-index");
 const routeDetailPrimary = document.querySelector("#route-detail-primary");
 const routeDetailSecondary = document.querySelector("#route-detail-secondary");
+const assistantLauncher = document.querySelector("#assistant-open");
 const assistantSection = document.querySelector("#ai-assistant");
+const assistantClose = document.querySelector("#assistant-close");
 const assistantMessagesElement = document.querySelector("#assistant-messages");
 const assistantForm = document.querySelector("#assistant-form");
 const assistantInput = document.querySelector("#assistant-input");
@@ -44,17 +46,54 @@ function setAssistantBusy(busy) {
   assistantSend.disabled = busy;
 }
 
+function assistantMessageTime(date = new Date()) {
+  return new Intl.DateTimeFormat([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 function appendAssistantMessage(role, content) {
   const message = document.createElement("article");
   message.className = `assistant-message ${role}`;
-  const label = document.createElement("strong");
-  label.textContent = role === "user" ? "You" : "AI assistant";
+  const timestamp = document.createElement("time");
+  const createdAt = new Date();
+  timestamp.dateTime = createdAt.toISOString();
+  timestamp.textContent = assistantMessageTime(createdAt);
+  const row = document.createElement("div");
+  row.className = "assistant-message-row";
+  const avatar = document.createElement("span");
+  avatar.className = "assistant-avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent = role === "user" ? "ME" : "AI";
+  const bubble = document.createElement("div");
+  bubble.className = "assistant-bubble";
   const body = document.createElement("p");
   body.textContent = content;
-  message.append(label, body);
+  bubble.append(body);
+  row.append(avatar, bubble);
+  message.append(timestamp, row);
   assistantMessagesElement.append(message);
-  message.scrollIntoView({ block: "nearest" });
+  window.requestAnimationFrame(() => {
+    assistantMessagesElement.scrollTo({
+      top: assistantMessagesElement.scrollHeight,
+      behavior: "smooth",
+    });
+  });
   return message;
+}
+
+function openAssistant() {
+  if (assistantLauncher.hidden) return;
+  assistantSection.hidden = false;
+  document.body.classList.add("assistant-open");
+  window.requestAnimationFrame(() => assistantInput.focus());
+}
+
+function closeAssistant({ restoreFocus = true } = {}) {
+  assistantSection.hidden = true;
+  document.body.classList.remove("assistant-open");
+  if (restoreFocus && !assistantLauncher.hidden) assistantLauncher.focus();
 }
 
 function resetAssistant(contextKey = "") {
@@ -68,13 +107,14 @@ function resetAssistant(contextKey = "") {
 
 function configureAssistant(trace) {
   if (!verificationOnly || !trace.verified) {
-    assistantSection.hidden = true;
+    assistantLauncher.hidden = true;
+    closeAssistant({ restoreFocus: false });
     return;
   }
 
   const contextKey = `${trace.batchId}:${trace.snapshotId}`;
   if (assistantContextKey !== contextKey) resetAssistant(contextKey);
-  assistantSection.hidden = false;
+  assistantLauncher.hidden = false;
 }
 
 async function submitAssistantQuestion(event) {
@@ -118,7 +158,7 @@ async function submitAssistantQuestion(event) {
   } finally {
     if (assistantContextKey === requestContextKey) {
       setAssistantBusy(false);
-      assistantInput.focus();
+      if (!assistantSection.hidden) assistantInput.focus();
     }
   }
 }
@@ -535,6 +575,14 @@ batchSelect.addEventListener("change", () => {
 });
 
 assistantForm.addEventListener("submit", submitAssistantQuestion);
+assistantLauncher.addEventListener("click", openAssistant);
+assistantClose.addEventListener("click", () => closeAssistant());
+assistantSection.addEventListener("click", (event) => {
+  if (event.target === assistantSection) closeAssistant();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !assistantSection.hidden) closeAssistant();
+});
 
 async function refreshFromLiveEvent(eventType = "") {
   if (batchRefreshInFlight || liveRefreshInFlight) {

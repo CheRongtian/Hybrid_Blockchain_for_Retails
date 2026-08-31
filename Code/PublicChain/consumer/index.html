@@ -70,24 +70,39 @@
         </section>
       </section>
 
-      <section id="ai-assistant" class="ai-assistant" aria-label="AI product assistant" hidden>
-        <p class="eyebrow">AI PRODUCT ASSISTANT</p>
-        <h2>Ask about this product</h2>
-        <p class="assistant-intro">
-          Ask a question about the verified product trace shown above.
-        </p>
-        <div id="assistant-messages" class="assistant-messages" role="log"
-             aria-live="polite"></div>
-        <form id="assistant-form" class="assistant-form">
-          <label for="assistant-input">Your question</label>
-          <div class="assistant-input-row">
-            <input id="assistant-input" name="question" type="text" maxlength="1000"
-                   autocomplete="off" placeholder="Where did this product come from?" required>
-            <button id="assistant-send" type="submit">Send</button>
-          </div>
-        </form>
-        <p id="assistant-status" class="assistant-status" role="status"
-           aria-live="polite"></p>
+      <button id="assistant-open" class="assistant-launcher" type="button"
+              aria-controls="ai-assistant" aria-haspopup="dialog" hidden>
+        <span aria-hidden="true">AI</span>
+        Ask AI about this product
+      </button>
+
+      <section id="ai-assistant" class="ai-assistant" role="dialog" aria-modal="true"
+               aria-labelledby="assistant-title" hidden>
+        <div class="assistant-dialog">
+          <header class="assistant-header">
+            <button id="assistant-close" class="assistant-close" type="button"
+                    aria-label="Close AI assistant">←</button>
+            <div>
+              <p class="eyebrow">AI PRODUCT ASSISTANT</p>
+              <h2 id="assistant-title">Ask about this product</h2>
+            </div>
+          </header>
+          <p class="assistant-intro">
+            Ask a question about the verified product trace.
+          </p>
+          <div id="assistant-messages" class="assistant-messages" role="log"
+               aria-live="polite"></div>
+          <form id="assistant-form" class="assistant-form">
+            <label class="visually-hidden" for="assistant-input">Your question</label>
+            <div class="assistant-input-row">
+              <input id="assistant-input" name="question" type="text" maxlength="1000"
+                     autocomplete="off" placeholder="Ask about this product..." required>
+              <button id="assistant-send" type="submit">Send</button>
+            </div>
+          </form>
+          <p id="assistant-status" class="assistant-status" role="status"
+             aria-live="polite"></p>
+        </div>
       </section>
 
       <section id="evidence-section" class="evidence-section" hidden>
