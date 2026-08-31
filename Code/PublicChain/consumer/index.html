@@ -70,6 +70,26 @@
         </section>
       </section>
 
+      <section id="ai-assistant" class="ai-assistant" aria-label="AI product assistant" hidden>
+        <p class="eyebrow">AI PRODUCT ASSISTANT</p>
+        <h2>Ask about this product</h2>
+        <p class="assistant-intro">
+          Ask a question about the verified product trace shown above.
+        </p>
+        <div id="assistant-messages" class="assistant-messages" role="log"
+             aria-live="polite"></div>
+        <form id="assistant-form" class="assistant-form">
+          <label for="assistant-input">Your question</label>
+          <div class="assistant-input-row">
+            <input id="assistant-input" name="question" type="text" maxlength="1000"
+                   autocomplete="off" placeholder="Where did this product come from?" required>
+            <button id="assistant-send" type="submit">Send</button>
+          </div>
+        </form>
+        <p id="assistant-status" class="assistant-status" role="status"
+           aria-live="polite"></p>
+      </section>
+
       <section id="evidence-section" class="evidence-section" hidden>
         <p class="eyebrow">PUBLIC EVIDENCE</p>
         <h2>Referenced files</h2>

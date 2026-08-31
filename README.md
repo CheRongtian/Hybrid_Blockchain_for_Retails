@@ -88,6 +88,7 @@ Blockchain Structure/
 │   ├── PublicManifests/
 │   └── QRCodes/
 ├── server_concurrency_test.py       # Allocator benchmark
+├── start_all.sh                     # One-command local startup and browser launch
 ├── start_user_server.sh             # User submission service :8080
 ├── start_control_server.sh          # Administrator control service :8081
 ├── start_customer_server.sh         # Customer trace :8082 and QR display :8084
@@ -239,19 +240,20 @@ http://127.0.0.1:5002
 
 | Service | Address | Started by |
 | --- | --- | --- |
-| Participant submission page | `http://127.0.0.1:8080/` | `start_user_server.sh` |
-| Administrator control page | `http://127.0.0.1:8081/` | `start_control_server.sh` |
-| Customer trace page and publication API | `http://127.0.0.1:8082/` | `start_customer_server.sh` |
-| Stable batch QR display | `http://127.0.0.1:8084/` | `start_customer_server.sh` |
-| Hardhat JSON-RPC node | `http://127.0.0.1:8545` | `start_customer_server.sh` |
+| Participant submission page | `http://127.0.0.1:8080/` | `start_all.sh` or `start_user_server.sh` |
+| Administrator control page | `http://127.0.0.1:8081/` | `start_all.sh` or `start_control_server.sh` |
+| Customer trace page and publication API | `http://127.0.0.1:8082/` | `start_all.sh` or `start_customer_server.sh` |
+| Stable batch QR display | `http://127.0.0.1:8084/` | `start_all.sh` or `start_customer_server.sh` |
+| Hardhat JSON-RPC node | `http://127.0.0.1:8545` | `start_all.sh` or `start_customer_server.sh` |
 | Kubo IPFS API | `http://127.0.0.1:5002` | Homebrew service |
 
 Kubo is one background service shared by the participant and administrator
 servers. It does not need a dedicated terminal after it has been configured.
-The three project scripts remain separate because they represent three
-different application roles. A port error usually means that the corresponding
-service is already running; close the old process or reuse the existing page
-instead of starting a second copy.
+`start_all.sh` coordinates the three application launchers in one terminal.
+The individual scripts remain available when only one application role is
+needed. A port error usually means that the corresponding service is already
+running; close the old process or reuse the existing page instead of starting
+a second copy.
 
 The administrator workflow editor is a lightweight static SVG/DOM Canvas. It
 supports node dragging, output-to-input handle connections, connection
@@ -303,8 +305,22 @@ cmake --build build
 
 ## Run the three business services
 
-After the one-time CMake build and PublicChain npm setup, run these three
-scripts from the project root. Each script owns one business-facing service:
+After the one-time CMake build and PublicChain npm setup, start the complete
+local application from the project root:
+
+```bash
+./start_all.sh
+```
+
+The script starts the three business services, waits for ports 8080, 8081, and
+8082, then opens the participant, administrator, and customer pages in the
+default browser. Combined output remains visible in the terminal and is also
+written under `logs/`. Press Ctrl+C to stop the managed application processes.
+The Homebrew-managed Kubo service remains available in the background. An
+existing service on a required business port must be stopped before using the
+combined launcher.
+
+To run only selected application roles, use the individual launchers:
 
 ```bash
 ./start_user_server.sh

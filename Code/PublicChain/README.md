@@ -43,6 +43,7 @@ Customer :8082/
        +-- normal page: choose a published product batch and view the full trace
         +-- QR URL: ?batch=<batch-id>&view=verification
         +-- QR view: Verification Result and Trace Route
+        +-- QR view: verified-trace AI question box
         +-- resolve the batch's current active Snapshot at scan time
        +-- load matching public Manifest
        +-- compare the publication route fingerprint with the current private route
@@ -51,7 +52,8 @@ Customer :8082/
 ```
 
 The customer page cannot access the private database, participant credentials,
-signatures, private Merkle leaves, or excluded attachment metadata.
+signatures, private Merkle leaves, or excluded attachment metadata. The AI
+question box appears only in the QR verification view.
 
 ## Layout
 
@@ -82,6 +84,7 @@ PublicChain/
 ├── qr_display_server.js
 ├── hardhat.config.js
 ├── package.json
+├── AGENT_PROMPT.md                 # Prompt for the scan-page trace assistant
 └── README.md
 ```
 
@@ -225,6 +228,19 @@ The low-level `publish:local` and `query:local` commands remain contract smoke
 tools. The integrated customer flow should use the administrator Publish button
 so the exact public Manifest is retained for later verification.
 
+## Scan-page AI assistant
+
+After a QR scan resolves to an active verified Snapshot, the scan-only view
+shows an AI question box. The first Agent message contains the complete trace
+JSON, followed by a blank line and the customer's first question outside that
+JSON. The server creates one session ID and returns it to the page. Every later
+message contains only the new question and reuses that session ID; the trace
+JSON is sent once per session. A changed Snapshot starts a new session.
+
+Browser requests use the same-origin `POST /api/assistant` endpoint. The Agent
+URL and authorization value stay on the consumer server. Configure the shared
+Agent with [AGENT_PROMPT.md](AGENT_PROMPT.md).
+
 ## Configuration
 
 Copy `.env.example` to `.env` only when overriding defaults.
@@ -244,6 +260,8 @@ Copy `.env.example` to `.env` only when overriding defaults.
 | `CONSUMER_INTERNAL_URL` | `http://127.0.0.1:8082` internal QR display-to-customer URL |
 | `PRIVATE_CONTROL_SERVER_URL` | `http://127.0.0.1:8081` current private-route state used to validate public snapshots |
 | `IPFS_API_URL` | `http://127.0.0.1:5002` private-chain file-upload API |
+| `url` | Agent chat-completion URL, including its required share ID |
+| `key` | Exact value sent in the Agent `Authorization` header |
 | `PUBLIC_CHAIN_PUBLICATION_TOKEN` | Internal control-to-publisher token |
 | `SNAPSHOT_PAYLOAD_PATH` | Low-level Gateway Payload smoke-test input |
 | `QUERY_BATCH_ID` | Low-level query Batch ID |

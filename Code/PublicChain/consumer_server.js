@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import "dotenv/config";
@@ -54,6 +55,8 @@ const publicationToken = process.env.PUBLIC_CHAIN_PUBLICATION_TOKEN ??
 const privateControlUrl = (
   process.env.PRIVATE_CONTROL_SERVER_URL || "http://127.0.0.1:8081"
 ).replace(/\/+$/, "");
+const agentUrl = process.env.url?.trim() ?? "";
+const agentKey = process.env.key?.trim() ?? "";
 const qrGenerationCache = new Map();
 
 const contentTypes = new Map([
@@ -85,7 +88,7 @@ async function readJsonBody(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > maximumBodySize) throw new Error("The publication candidate is too large.");
+    if (size > maximumBodySize) throw new Error("The request body is too large.");
     chunks.push(chunk);
   }
   try {
@@ -93,6 +96,155 @@ async function readJsonBody(request) {
   } catch {
     throw new Error("The request body must be valid JSON.");
   }
+}
+
+function httpError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function validateAssistantRequest(body) {
+  const batchId = typeof body?.batchId === "string" ? body.batchId.trim() : "";
+  const snapshotId = typeof body?.snapshotId === "string" ? body.snapshotId.trim() : "";
+  const providedSessionId = typeof body?.sessionId === "string"
+    ? body.sessionId.trim()
+    : "";
+  const question = typeof body?.question === "string" ? body.question.trim() : "";
+
+  if (!batchId || batchId.length > 256) {
+    throw httpError("A valid Batch ID is required.", 422);
+  }
+  if (!snapshotId || snapshotId.length > 256) {
+    throw httpError("A valid Snapshot ID is required.", 422);
+  }
+  if (providedSessionId && (providedSessionId.length > 128 ||
+      !/^[A-Za-z0-9-]+$/.test(providedSessionId))) {
+    throw httpError("A valid assistant session ID is required.", 422);
+  }
+  if (!question || question.length > 1000) {
+    throw httpError("A question between 1 and 1000 characters is required.", 422);
+  }
+
+  return {
+    batchId,
+    snapshotId,
+    sessionId: providedSessionId || crypto.randomUUID(),
+    firstQuestion: !providedSessionId,
+    question,
+  };
+}
+
+async function readAgentAnswer(response) {
+  if (!response.body) throw httpError("The AI service returned an empty stream.", 502);
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+
+  const consumeLine = (line) => {
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trim();
+    if (!data || data === "[DONE]") return;
+
+    let event;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      throw httpError("The AI service returned a malformed event stream.", 502);
+    }
+    if (typeof event.content === "string") answer += event.content;
+    if (answer.length > 64000) {
+      throw httpError("The AI response is too large.", 502);
+    }
+  };
+
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) consumeLine(line);
+  }
+  buffer += decoder.decode();
+  if (buffer) consumeLine(buffer);
+
+  const completeAnswer = answer.trim();
+  if (!completeAnswer) throw httpError("The AI service returned no answer.", 502);
+
+  let parsedAnswer;
+  try {
+    parsedAnswer = JSON.parse(completeAnswer);
+  } catch {
+    return completeAnswer;
+  }
+
+  const displayValues = [];
+  const collectDisplayValues = (value) => {
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (text) displayValues.push(text);
+      return;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      displayValues.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(collectDisplayValues);
+      return;
+    }
+    if (value && typeof value === "object") {
+      Object.values(value).forEach(collectDisplayValues);
+    }
+  };
+
+  collectDisplayValues(parsedAnswer);
+  if (displayValues.length === 0) {
+    throw httpError("The AI service returned no displayable answer value.", 502);
+  }
+  return displayValues.join("\n");
+}
+
+async function askAgent(trace, sessionId, question, firstQuestion) {
+  if (!agentUrl || !agentKey) {
+    throw httpError("The AI assistant has not been configured.", 503);
+  }
+  try {
+    new URL(agentUrl);
+  } catch {
+    throw httpError("The AI assistant URL is invalid.", 503);
+  }
+
+  const content = firstQuestion
+    ? `${JSON.stringify(trace)}\n\n${question}`
+    : question;
+
+  let response;
+  try {
+    response = await fetch(agentUrl, {
+      method: "POST",
+      headers: {
+        Authorization: agentKey,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({
+        messages: [{ role: "user", content }],
+        sessionId,
+        source: "api",
+        extra: {},
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "request failed";
+    throw httpError(`The AI service is unavailable: ${message}`, 503);
+  }
+
+  if (!response.ok) {
+    throw httpError(`The AI service rejected the request (${response.status}).`, 502);
+  }
+  return readAgentAnswer(response);
 }
 
 function serveStatic(response, pathname) {
@@ -290,6 +442,40 @@ const server = http.createServer(async (request, response) => {
       });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/assistant") {
+      const assistantRequest = validateAssistantRequest(await readJsonBody(request));
+      const trace = await traceBatch(assistantRequest.batchId);
+      if (!trace) {
+        json(response, 404, { error: "No active public trace was found for this Batch ID." });
+        return;
+      }
+      if (!trace.verified) {
+        json(response, 409, {
+          error: "AI questions are available only for a verified active Snapshot.",
+        });
+        return;
+      }
+      if (trace.snapshotId !== assistantRequest.snapshotId) {
+        json(response, 409, {
+          error: "The active Snapshot changed. Refresh the scan result before asking again.",
+        });
+        return;
+      }
+
+      const answer = await askAgent(
+        trace,
+        assistantRequest.sessionId,
+        assistantRequest.question,
+        assistantRequest.firstQuestion,
+      );
+      json(response, 200, {
+        batchId: trace.batchId,
+        snapshotId: trace.snapshotId,
+        sessionId: assistantRequest.sessionId,
+        answer,
+      });
+      return;
+    }
     if (request.method === "GET" && url.pathname.startsWith("/api/trace/snapshot/")) {
       const snapshotId = decodeURIComponent(
         url.pathname.slice("/api/trace/snapshot/".length),
@@ -332,6 +518,10 @@ const server = http.createServer(async (request, response) => {
         availableFrom: error.availableFrom,
         availableUntil: error.availableUntil,
       });
+      return;
+    }
+    if (Number.isInteger(error?.statusCode)) {
+      json(response, error.statusCode, { error: message });
       return;
     }
     const unavailable = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|socket/i

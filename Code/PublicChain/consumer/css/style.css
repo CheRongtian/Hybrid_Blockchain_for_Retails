@@ -115,7 +115,7 @@ body.verification-only .facts {
 body.verification-only .facts article { padding: 0.75rem; }
 body.verification-only .route-section { margin-top: 1rem; padding-top: 1rem; }
 
-.route-section, .evidence-section, .technical { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #263b58; }
+.route-section, .ai-assistant, .evidence-section, .technical { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #263b58; }
 .route-state { background: rgba(54, 210, 160, 0.12); color: #60e1b4; }
 .route { display: flex; align-items: stretch; gap: 0.75rem; margin-top: 1.25rem; padding-bottom: 0.75rem; overflow-x: auto; }
 .route-node { position: relative; flex: 0 0 15rem; min-width: 15rem; padding: 1rem; border: 1px solid #31506d; border-radius: 1rem; background: #081525; }
@@ -171,6 +171,34 @@ body.verification-only .route-overview-node[aria-current="step"] {
 body.verification-only .route-overview-node strong { overflow-wrap: anywhere; }
 body.verification-only .route-overview-node .route-index { flex: 0 0 auto; margin: 0; }
 
+.assistant-intro { margin-bottom: 1rem; color: #91a2b9; line-height: 1.6; }
+.assistant-messages {
+  display: grid;
+  max-height: 24rem;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  overflow-y: auto;
+}
+.assistant-message {
+  width: min(88%, 42rem);
+  padding: 0.85rem 1rem;
+  border: 1px solid #31506d;
+  border-radius: 1rem;
+  background: #081525;
+}
+.assistant-message.user {
+  justify-self: end;
+  border-color: rgba(54, 210, 160, 0.5);
+  background: rgba(54, 210, 160, 0.1);
+}
+.assistant-message strong { display: block; margin-bottom: 0.35rem; color: #6fd6ff; font-size: 0.8rem; }
+.assistant-message.user strong { color: #60e1b4; }
+.assistant-message p { margin: 0; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-form label { display: block; margin-bottom: 0.55rem; font-weight: 700; }
+.assistant-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem; }
+.assistant-status { min-height: 1.4rem; margin: 0.65rem 0 0; color: #f4ce68; }
+.assistant-status.error { color: #ff8f94; }
+
 .evidence-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.75rem; }
 .evidence-item { padding: 0.9rem; border: 1px solid #263b58; border-radius: 0.9rem; background: #081525; }
 .evidence-item code { display: block; margin-top: 0.45rem; color: #78dcbf; font-size: 0.75rem; overflow-wrap: anywhere; }
@@ -202,4 +230,6 @@ body.verification-only .route-overview-node .route-index { flex: 0 0 auto; margi
   }
   body.verification-only .badge { margin-top: 0; }
   body.verification-only .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .assistant-input-row { grid-template-columns: 1fr; }
+  .assistant-message { width: 94%; }
 }

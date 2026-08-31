@@ -6,6 +6,12 @@ const routeDetailTitle = document.querySelector("#route-detail-title");
 const routeDetailIndex = document.querySelector("#route-detail-index");
 const routeDetailPrimary = document.querySelector("#route-detail-primary");
 const routeDetailSecondary = document.querySelector("#route-detail-secondary");
+const assistantSection = document.querySelector("#ai-assistant");
+const assistantMessagesElement = document.querySelector("#assistant-messages");
+const assistantForm = document.querySelector("#assistant-form");
+const assistantInput = document.querySelector("#assistant-input");
+const assistantSend = document.querySelector("#assistant-send");
+const assistantStatus = document.querySelector("#assistant-status");
 const verificationOnly = new URLSearchParams(window.location.search).get("view") ===
   "verification";
 let currentBatchId = "";
@@ -18,6 +24,9 @@ let liveRefreshInFlight = false;
 let liveRefreshQueued = false;
 let liveRefreshQueuedType = "";
 let availabilityTimer = 0;
+let assistantSessionId = "";
+let assistantContextKey = "";
+let assistantRequestInFlight = false;
 
 if (verificationOnly) {
   document.body.classList.add("verification-only");
@@ -27,6 +36,93 @@ if (verificationOnly) {
 function setVerificationReady(ready) {
   if (verificationOnly) document.body.classList.toggle("verification-ready", ready);
 }
+
+function setAssistantBusy(busy) {
+  assistantRequestInFlight = busy;
+  assistantForm.hidden = busy;
+  assistantInput.disabled = busy;
+  assistantSend.disabled = busy;
+}
+
+function appendAssistantMessage(role, content) {
+  const message = document.createElement("article");
+  message.className = `assistant-message ${role}`;
+  const label = document.createElement("strong");
+  label.textContent = role === "user" ? "You" : "AI assistant";
+  const body = document.createElement("p");
+  body.textContent = content;
+  message.append(label, body);
+  assistantMessagesElement.append(message);
+  message.scrollIntoView({ block: "nearest" });
+  return message;
+}
+
+function resetAssistant(contextKey = "") {
+  assistantContextKey = contextKey;
+  assistantSessionId = "";
+  assistantMessagesElement.replaceChildren();
+  assistantStatus.textContent = "";
+  assistantInput.value = "";
+  setAssistantBusy(false);
+}
+
+function configureAssistant(trace) {
+  if (!verificationOnly || !trace.verified) {
+    assistantSection.hidden = true;
+    return;
+  }
+
+  const contextKey = `${trace.batchId}:${trace.snapshotId}`;
+  if (assistantContextKey !== contextKey) resetAssistant(contextKey);
+  assistantSection.hidden = false;
+}
+
+async function submitAssistantQuestion(event) {
+  event.preventDefault();
+  if (!verificationOnly || assistantRequestInFlight || assistantSection.hidden) return;
+
+  const question = assistantInput.value.trim();
+  if (!question || !currentBatchId || !currentSnapshotId) return;
+
+  const requestContextKey = assistantContextKey;
+  const pendingMessage = appendAssistantMessage("user", question);
+  assistantInput.value = "";
+  assistantStatus.textContent = "Thinking...";
+  assistantStatus.className = "assistant-status";
+  setAssistantBusy(true);
+
+  try {
+    const response = await fetch("/api/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        batchId: currentBatchId,
+        snapshotId: currentSnapshotId,
+        sessionId: assistantSessionId,
+        question,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+    if (assistantContextKey !== requestContextKey) return;
+
+    assistantSessionId = payload.sessionId;
+    appendAssistantMessage("assistant", payload.answer);
+    assistantStatus.textContent = "";
+  } catch (error) {
+    if (assistantContextKey !== requestContextKey) return;
+    pendingMessage.remove();
+    assistantInput.value = question;
+    assistantStatus.textContent = error.message;
+    assistantStatus.className = "assistant-status error";
+  } finally {
+    if (assistantContextKey === requestContextKey) {
+      setAssistantBusy(false);
+      assistantInput.focus();
+    }
+  }
+}
+
 
 const text = (selector, value, fallback = "Not disclosed") => {
   document.querySelector(selector).textContent = value || fallback;
@@ -296,6 +392,7 @@ function renderTrace(trace) {
     renderTechnical(trace.technical);
     renderChecks(trace.checks);
   }
+  configureAssistant(trace);
   resultSection.hidden = false;
   setVerificationReady(true);
 }
@@ -436,6 +533,8 @@ batchSelect.addEventListener("change", () => {
   window.history.replaceState(null, "", pageUrl);
   searchBatch(batchSelect.value);
 });
+
+assistantForm.addEventListener("submit", submitAssistantQuestion);
 
 async function refreshFromLiveEvent(eventType = "") {
   if (batchRefreshInFlight || liveRefreshInFlight) {
