@@ -3361,6 +3361,11 @@ int main(int argc, char* argv[])
         return 1;
     }
 
+    const char* configured_host = std::getenv("SERVER_HOST");
+    const std::string server_host = configured_host && *configured_host
+        ? configured_host
+        : "127.0.0.1";
+
     const fs::path requested_static = argc >= 3
         ? fs::path(argv[2])
         : fs::path(CONTROL_DEFAULT_STATIC_DIR);
@@ -3472,7 +3477,12 @@ int main(int argc, char* argv[])
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if(inet_pton(AF_INET, server_host.c_str(), &address.sin_addr) != 1)
+    {
+        std::cerr << "Invalid SERVER_HOST: expected an IPv4 address\n";
+        close(server_fd);
+        return 1;
+    }
     address.sin_port = htons(static_cast<uint16_t>(port));
 
     if(bind(server_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1)
@@ -3502,7 +3512,7 @@ int main(int argc, char* argv[])
                 database_path.string(), snapshot_store, chain_mutex);
         });
     snapshot_scheduler.start();
-    std::cout << "Control server: http://127.0.0.1:" << port << '\n'
+    std::cout << "Control server: http://" << server_host << ':' << port << '\n'
              << "Static root: " << static_root << '\n'
              << "Database: " << database_path << '\n'
              << "Restored blocks: " << stored_records.size() << '\n'

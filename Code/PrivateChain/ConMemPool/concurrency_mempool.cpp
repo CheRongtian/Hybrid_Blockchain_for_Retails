@@ -1,4 +1,5 @@
 #include <iostream>
+#include <atomic>
 #include <vector>
 #include <mutex>
 #include <cstdlib>
@@ -149,48 +150,6 @@ class SpanList
 
 };
 
-template <int BITS>
-class PageMap2
-{
-    private:
-        static const int kLeafBits = 15;
-        static const int kLeafLength = 1 << kLeafBits;
-        static const int kRootBits = BITS - kLeafBits;
-        static const int kRootLength = 1 << kLeafBits;
-        Span** root_[kRootLength];
-    
-    public:
-        PageMap2()
-        {
-            memset(root_, 0, sizeof(root_));
-        }
-
-        Span* get(size_t k) const
-        {
-            size_t i1 = k >> kLeafBits;
-            size_t i2 = k & (kLeafLength - 1);
-            if(i1 >= kRootLength || !root_[i1]) return nullptr;
-            return root_[i1][i2];
-        }
-
-        void set(size_t k, Span *v)
-        {
-            size_t i1 = k >> kLeafBits;
-            size_t i2 = k & (kLeafLength - 1);
-            if(!root_[i1])
-            {
-                #ifdef _WIN32
-                    void *ptr = VirtualAlloc(nullptr, kLeafLength * sizeof(Span *), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                #else
-                    void *ptr = mmap(nullptr, kLeafLength * sizeof(Span *), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-                #endif
-                memset(ptr, 0, kLeafLength * sizeof(Span*));
-                root_[i1] = (Span**)ptr;
-            }
-            root_[i1][i2]=v;
-        }
-};
-
 class PageCache
 {
     private:
@@ -198,8 +157,7 @@ class PageCache
         SpanList span_lists_[kMaxPageCount + 1];
         std::mutex mutex_;
         size_t page_size_;
-        //std::unordered_map<size_t, Span*> page_id_to_span_;
-        PageMap2<36> page_id_to_span_;
+        std::unordered_map<size_t, Span*> page_id_to_span_;
         PageCache()
         {
             #ifdef _WIN32
@@ -228,7 +186,7 @@ class PageCache
             {
                 Span *span = span_lists_[n].PopFront();
                 for(size_t i=0; i<span->page_count; ++i)
-                    page_id_to_span_.set(span->page_id + i, span);
+                    page_id_to_span_[span->page_id + i] = span;
                 span->is_used=true;
                 return span;
             }
@@ -248,7 +206,7 @@ class PageCache
                     span_lists_[big_span->page_count].PushBack(big_span);
 
                     for(size_t j=0; j<small_span->page_count; ++j)
-                        page_id_to_span_.set(small_span->page_id+j, small_span);
+                        page_id_to_span_[small_span->page_id+j] = small_span;
                     return small_span;
                 }
             }
@@ -261,7 +219,7 @@ class PageCache
             span->page_count = n;
             span->is_used = true;
 
-            for(size_t i=0; i<n; ++i) page_id_to_span_.set(span->page_id+i, span);
+            for(size_t i=0; i<n; ++i) page_id_to_span_[span->page_id+i] = span;
             return span;
         }
 
@@ -282,16 +240,11 @@ class PageCache
         
         Span *FindSpanByAddr(void *addr)
         {
-            /*
             if(!addr) return nullptr;
             size_t page_id = reinterpret_cast<size_t>(addr)/page_size_;
             std::lock_guard<std::mutex>lock(mutex_);
             auto it=page_id_to_span_.find(page_id);
             return it!=page_id_to_span_.end()?it->second:nullptr;
-            */
-            if(!addr) return nullptr;
-            size_t page_id = reinterpret_cast<size_t>(addr)/page_size_;
-            return page_id_to_span_.get(page_id);
         }
 
         size_t GetPageSize()const
@@ -303,7 +256,10 @@ class PageCache
         void MergeSpan(Span *&span)
         {
             size_t prev_page_id = span->page_id-1;
-            Span *prev_span = page_id_to_span_.get(prev_page_id);
+            auto prev_item = page_id_to_span_.find(prev_page_id);
+            Span *prev_span = prev_item == page_id_to_span_.end()
+                ? nullptr
+                : prev_item->second;
             if(prev_span!=nullptr)
             {
                 if(!prev_span->is_used && span->page_count + prev_span->page_count <= kMaxPageCount&&prev_span->page_id + prev_span->page_count == span->page_id)
@@ -312,12 +268,16 @@ class PageCache
                     prev_span->page_count += span->page_count;
                     SpanPool::GetInstance().Delete(span);
                     span=prev_span;
-                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_.set(span->page_id+i, span);
+                    for(size_t i=0; i<span->page_count; ++i)
+                        page_id_to_span_[span->page_id+i] = span;
                 }
             }
 
             size_t next_page_id = span->page_id + span->page_count;
-            Span *next_span = page_id_to_span_.get(next_page_id);
+            auto next_item = page_id_to_span_.find(next_page_id);
+            Span *next_span = next_item == page_id_to_span_.end()
+                ? nullptr
+                : next_item->second;
             if(next_span!=nullptr)
             {
                 if(!next_span->is_used && next_span->page_count + span->page_count <= kMaxPageCount &&span->page_id+span->page_count==next_span->page_id)
@@ -325,7 +285,8 @@ class PageCache
                     span_lists_[next_span->page_count].RemoveSpan(next_span);
                     span->page_count += next_span->page_count;
                    SpanPool::GetInstance().Delete(next_span);
-                    for(size_t i=0; i<span->page_count; ++i) page_id_to_span_.set(span->page_id+i, span);
+                    for(size_t i=0; i<span->page_count; ++i)
+                        page_id_to_span_[span->page_id+i] = span;
                 }
             }
         }

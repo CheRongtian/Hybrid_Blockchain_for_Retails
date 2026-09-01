@@ -1,0 +1,16 @@
+.git
+.DS_Store
+**/.DS_Store
+**/__pycache__
+**/*.pyc
+**/*.log
+logs
+Storage
+Code/build
+Code/SnapshotQRCode/build
+Code/PublicChain/node_modules
+Code/PublicChain/artifacts
+Code/PublicChain/cache
+Code/PublicChain/deployments
+Code/PublicChain/.env
+docker/docker.env
