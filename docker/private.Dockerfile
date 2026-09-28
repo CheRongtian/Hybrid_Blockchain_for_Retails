@@ -1,3 +1,12 @@
+FROM node:22-bookworm-slim AS frontend-builder
+
+WORKDIR /source
+COPY Code/ /source/
+
+WORKDIR /source/Frontend
+RUN npm install \
+    && npm run build:private
+
 FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,6 +22,8 @@ RUN apt-get update \
 
 WORKDIR /source
 COPY Code/ /source/
+COPY --from=frontend-builder /source/Frontend/dist/control /source/Frontend/dist/control
+COPY --from=frontend-builder /source/Frontend/dist/participant /source/Frontend/dist/participant
 
 RUN cmake -S /source -B /build \
         -DCMAKE_BUILD_TYPE=Release \

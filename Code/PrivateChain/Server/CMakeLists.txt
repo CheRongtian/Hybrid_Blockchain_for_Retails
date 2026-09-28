@@ -103,18 +103,42 @@ function(add_static_sync sync_target consumer_target source_dir output_dir descr
     add_dependencies(${consumer_target} ${sync_target})
 endfunction()
 
+set(CONTROL_FRONTEND_DIST
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../Frontend/dist/control"
+)
+
+if(NOT EXISTS "${CONTROL_FRONTEND_DIST}/Home.html")
+    message(FATAL_ERROR
+        "Vue control frontend is missing. Run npm run build:control from Code/Frontend, "
+        "then reconfigure CMake."
+    )
+endif()
+set(CONTROL_STATIC_SOURCE "${CONTROL_FRONTEND_DIST}")
+
 add_static_sync(
     sync_control_static
     control_server
-    "${CMAKE_CURRENT_SOURCE_DIR}/control_static"
+    "${CONTROL_STATIC_SOURCE}"
     "${CMAKE_CURRENT_BINARY_DIR}/control_static"
     "control server"
 )
 
+set(PARTICIPANT_FRONTEND_DIST
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../Frontend/dist/participant"
+)
+
+if(NOT EXISTS "${PARTICIPANT_FRONTEND_DIST}/Home.html")
+    message(FATAL_ERROR
+        "Vue participant frontend is missing. Run npm run build:participant from Code/Frontend, "
+        "then reconfigure CMake."
+    )
+endif()
+set(USER_STATIC_SOURCE "${PARTICIPANT_FRONTEND_DIST}")
+
 add_static_sync(
     sync_user_static
     user_server
-    "${CMAKE_CURRENT_SOURCE_DIR}/static"
+    "${USER_STATIC_SOURCE}"
     "${CMAKE_CURRENT_BINARY_DIR}/user_static"
     "user server"
 )

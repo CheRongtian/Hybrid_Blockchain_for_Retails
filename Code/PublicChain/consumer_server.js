@@ -18,7 +18,10 @@ import {
 } from "./scripts/runtime.js";
 
 const projectDirectory = path.dirname(fileURLToPath(import.meta.url));
-const staticRoot = path.join(projectDirectory, "consumer");
+const staticRoot = path.resolve(
+  process.env.CONSUMER_STATIC_ROOT ??
+    path.join(projectDirectory, "..", "Frontend", "dist", "consumer"),
+);
 const qrRoot = publicQrDirectory;
 const publicManifestRoot = publicManifestDirectory;
 const port = Number(process.env.CONSUMER_PORT ?? "8082");

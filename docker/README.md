@@ -88,6 +88,10 @@ The Docker setup uses these files:
 - `docker/public.Dockerfile` builds the image used by Hardhat, the customer page, the QR display, and contract deployment.
 - `compose.yaml` defines services, dependencies, ports, health checks, and volumes.
 
+The private image builds the Vue control and participant applications. The
+public image builds the Vue customer application. No host-side frontend build
+is required before `docker compose up --build`.
+
 ## 5. Services and Ports
 
 | Compose service | Purpose | Host access |

@@ -75,6 +75,7 @@ Blockchain Structure/
 │   ├── Snapshot/                    # Public snapshot preview module
 │   ├── SnapshotStorage/              # Snapshot lifecycle, hot index, and archive
 │   ├── SnapshotScheduler/            # Independent C++ automatic refresh timer
+│   ├── Frontend/                     # Vue control, participant, and consumer apps
 │   ├── PublicChain/                 # EVM gateway, publisher, and customer page
 │   ├── MerkleTreeNTree/              # Standalone N-ary Merkle Tree visualizer
 │   ├── SnapshotQRCode/               # Independent QR generator integration copy
@@ -95,8 +96,9 @@ Blockchain Structure/
 └── README.md
 ```
 
-Generated build output remains under `Code/build`. Runtime data is isolated in
-the repository-level `Storage/` directory. The private SQLite database is
+Generated C++ output remains under `Code/build`; Vue production assets are
+generated under `Code/Frontend/dist`. Runtime data is isolated in the
+repository-level `Storage/` directory. The private SQLite database is
 stored at `Storage/Database/supply_chain.db` and is ignored by Git.
 
 Snapshot lifecycle records use a separate `snapshot_storage` SQLite table in
@@ -109,6 +111,7 @@ stored in `Storage/PublicManifests/` and `Storage/QRCodes/`.
 
 - [Private-chain overview](Code/PrivateChain/README.md)
 - [User and control servers](Code/PrivateChain/Server/README.md)
+- [Vue frontend workspace](Code/Frontend/README.md)
 - [Merkle Tree library and CLI](Code/PrivateChain/MerkleTree/README.md)
 - [Runtime storage](Storage/README.md)
 - [Public snapshot design](Code/Snapshot/README.md)
@@ -224,8 +227,8 @@ public-testnet deployment are pending.
 - local Kubo/IPFS when file upload is used.
 - Python 3 for the standalone N-ary Merkle Tree visualizer.
 
-The independent PublicChain prototype additionally requires Node.js 22 LTS
-and npm. An Apple M3 Mac with 18 GB memory is sufficient for the local Hardhat
+The three Vue business frontends and independent PublicChain prototype additionally
+require Node.js 22 LTS and npm. An Apple M3 Mac with 18 GB memory is sufficient for the local Hardhat
 node and C++ demo servers. See
 [Public-chain setup](Code/PublicChain/README.md#apple-silicon-environment) for
 the Homebrew commands and local EVM workflow.
@@ -255,7 +258,8 @@ needed. A port error usually means that the corresponding service is already
 running; close the old process or reuse the existing page instead of starting
 a second copy.
 
-The administrator workflow editor is a lightweight static SVG/DOM Canvas. It
+The administrator workflow editor is an SVG/DOM Canvas hosted by the Vue control
+application. It
 supports node dragging, output-to-input handle connections, connection
 selection and deletion, background panning, trackpad pinch zoom, zoom controls,
 fit-to-route, explicit left-to-right auto-arrangement, and Undo/Redo. Adding a
@@ -266,8 +270,7 @@ edits are autosaved as revisions and invalidate the current Snapshot
 immediately. Only connected nodes appear in the route preview. A connected node
 without a submitted Block has no preview arrow; the arrow appears after the
 assigned participant submits and passes verification. The editor continues using
-the existing workflow API and SQLite data; no new frontend framework or graph
-database is required.
+the existing workflow API and SQLite data; no graph database is required.
 
 ### One-time Kubo setup on macOS
 
@@ -294,8 +297,17 @@ requires updating `IPFS_API_URL` for the private-chain server as well.
 
 ## Build
 
-Configure from the central `Code` directory. Reconfigure after pulling the
-directory migration so CMake discovers the new source paths.
+Build all Vue business frontends first. The control and participant production
+assets are synchronized by the central CMake build; the customer service reads
+its production output directly.
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/Frontend"
+npm install
+npm run build
+```
+
+Configure from the central `Code` directory after the frontend output exists:
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"
@@ -305,8 +317,8 @@ cmake --build build
 
 ## Run the three business services
 
-After the one-time CMake build and PublicChain npm setup, start the complete
-local application from the project root:
+After the one-time frontend, CMake, and PublicChain npm setup, start the
+complete local application from the project root:
 
 ```bash
 ./start_all.sh

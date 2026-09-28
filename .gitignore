@@ -1,4 +1,6 @@
 build/
+Code/Frontend/node_modules/
+Code/Frontend/dist/
 *.o
 *.a
 *.so

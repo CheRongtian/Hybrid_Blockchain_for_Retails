@@ -62,10 +62,6 @@ PublicChain/
 ├── contracts/
 │   ├── SnapshotGateway.sol
 │   └── SnapshotGateway.t.sol
-├── consumer/
-│   ├── css/style.css
-│   ├── js/main.js
-│   └── index.html
 ├── qr-display/                     # QR display page served on :8084
 │   ├── css/style.css
 │   ├── js/main.js
@@ -92,6 +88,10 @@ Generated deployment records are ignored by Git. Public Manifest files and QR
 Code PNG files are runtime state under the repository-level
 `Storage/PublicManifests/` and `Storage/QRCodes/` directories.
 
+The complete customer interface and trace interaction live in
+`Code/Frontend/apps/consumer`. Its Vite build writes production assets to
+`Code/Frontend/dist/consumer`, which `consumer_server.js` serves.
+
 `SnapshotQRCode` contains the independent generator source and build target.
 Generated PNG files are written to `Storage/QRCodes/`; they are not expected
 inside `SnapshotQRCode`.
@@ -116,6 +116,16 @@ npm --version
 ```
 
 ## Install, compile, and test
+
+Build the Vue customer interface from the shared frontend workspace:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/Frontend"
+npm install
+npm run build:consumer
+```
+
+Then install and compile the PublicChain module:
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/PublicChain"

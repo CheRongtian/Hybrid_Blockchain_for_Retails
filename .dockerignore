@@ -8,6 +8,8 @@ logs
 Storage
 Code/build
 Code/SnapshotQRCode/build
+Code/Frontend/node_modules
+Code/Frontend/dist
 Code/PublicChain/node_modules
 Code/PublicChain/artifacts
 Code/PublicChain/cache

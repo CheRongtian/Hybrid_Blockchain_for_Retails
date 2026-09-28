@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PUBLIC_CHAIN_DIR="$SCRIPT_DIR/Code/PublicChain"
+FRONTEND_DIR="$SCRIPT_DIR/Code/Frontend"
+CONSUMER_FRONTEND_SOURCE="$FRONTEND_DIR/dist/consumer"
 SNAPSHOT_QR_DIR="$SCRIPT_DIR/Code/SnapshotQRCode"
 SNAPSHOT_QR_BUILD_DIR="$SNAPSHOT_QR_DIR/build"
 SNAPSHOT_QR_BINARY="$SNAPSHOT_QR_BUILD_DIR/snapshot_qr"
@@ -18,6 +20,32 @@ if [[ ! -d "$PUBLIC_CHAIN_DIR/node_modules" ]]; then
     echo "Run npm install in Code/PublicChain first." >&2
     exit 1
 fi
+
+if [[ ! -f "$CONSUMER_FRONTEND_SOURCE/index.html" ]]; then
+    echo "Vue customer frontend was not built." >&2
+    echo "Build it from Code/Frontend with: npm install && npm run build:consumer" >&2
+    exit 1
+fi
+
+STALE_FRONTEND_SOURCE="$({
+    find \
+        "$FRONTEND_DIR/apps/consumer" \
+        "$FRONTEND_DIR/shared" \
+        "$FRONTEND_DIR/package.json" \
+        "$FRONTEND_DIR/vite.app.config.js" \
+        "$FRONTEND_DIR/vite.consumer.config.js" \
+        -type f \
+        -newer "$CONSUMER_FRONTEND_SOURCE/index.html" \
+        -print -quit
+} 2>/dev/null)"
+
+if [[ -n "$STALE_FRONTEND_SOURCE" ]]; then
+    echo "Vue customer frontend is older than its source: $STALE_FRONTEND_SOURCE" >&2
+    echo "Rebuild it from Code/Frontend with: npm run build:consumer" >&2
+    exit 1
+fi
+
+export CONSUMER_STATIC_ROOT="${CONSUMER_STATIC_ROOT:-$CONSUMER_FRONTEND_SOURCE}"
 
 if ! command -v cmake >/dev/null 2>&1; then
     echo "CMake is required to build the QR Code generator." >&2

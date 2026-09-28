@@ -1,0 +1,29 @@
+{
+  "name": "blockchain-structure-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:control": "vite --config vite.control.config.js",
+    "dev:participant": "vite --config vite.participant.config.js",
+    "dev:consumer": "vite --config vite.consumer.config.js",
+    "build": "npm run build:private && npm run build:consumer",
+    "build:private": "npm run build:control && npm run build:participant",
+    "build:control": "vite build --config vite.control.config.js",
+    "build:participant": "vite build --config vite.participant.config.js",
+    "build:consumer": "vite build --config vite.consumer.config.js",
+    "preview:control": "vite preview --config vite.control.config.js",
+    "preview:participant": "vite preview --config vite.participant.config.js",
+    "preview:consumer": "vite preview --config vite.consumer.config.js"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "dependencies": {
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "vite": "^7.0.0"
+  }
+}

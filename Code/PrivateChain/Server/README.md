@@ -18,14 +18,23 @@ Control browser -> control_server :8081
                 -> PublicChain service :8082/api/publish
 ```
 
-user_server serves the user-facing static page. control_server owns
+The Vue participant and control applications are built from `Code/Frontend`
+and served as static production assets by user_server and control_server. The
+server layer owns
 authentication, SQLite, ECDSA P-256 verification, one independent Merkle Tree
 per block, IPFS forwarding, block creation, the worker pool, and the control
 page.
 
 ## Build
 
-The project is configured from the Code directory:
+Build both private-side Vue applications, then configure the C++ project from
+the Code directory:
+
+```bash
+cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code/Frontend"
+npm install
+npm run build:private
+```
 
 ```bash
 cd "/Users/cherongtian/Desktop/Projects/Blockchain Structure/Code"

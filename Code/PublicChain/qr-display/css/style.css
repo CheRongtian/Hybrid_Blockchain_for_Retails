@@ -1,11 +1,14 @@
-:root { color-scheme: light; }
+:root {
+    color-scheme: light;
+    --color-background: #f8fafc;
+}
 
 * { box-sizing: border-box; }
 
 body {
     min-height: 100vh;
     margin: 0;
-    background: #fff;
+    background: var(--color-background);
 }
 
 .qr-only-page {
@@ -17,7 +20,7 @@ body {
 
 #qr-image {
     display: block;
-    width: min(90vw, 560px);
+    width: min(90vw, 90vh, 560px);
     aspect-ratio: 1;
     background: #fff;
 }

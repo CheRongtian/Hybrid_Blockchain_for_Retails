@@ -1,6 +1,7 @@
 const loginCard = document.querySelector("#login-card");
 const loginForm = document.querySelector("#login-form");
 const loginStatus = document.querySelector("#login-status");
+const loginButton = loginForm.querySelector('button[type="submit"]');
 const rememberLogin = document.querySelector("#remember-login");
 const dashboard = document.querySelector("#dashboard");
 const identityStatus = document.querySelector("#identity-status");
@@ -20,6 +21,9 @@ const workflowAutoLayout = document.querySelector("#workflow-auto-layout");
 const workflowResetRoute = document.querySelector("#workflow-reset-route");
 const workflowUndo = document.querySelector("#workflow-undo");
 const workflowRedo = document.querySelector("#workflow-redo");
+const workflowConnectFrom = document.querySelector("#workflow-connect-from");
+const workflowConnectTo = document.querySelector("#workflow-connect-to");
+const workflowConnectNodes = document.querySelector("#workflow-connect-nodes");
 const workflowScene = document.querySelector("#workflow-scene");
 const workflowEdgeLayer = document.querySelector("#workflow-edge-layer");
 const workflowNodeLayer = document.querySelector("#workflow-node-layer");
@@ -329,6 +333,9 @@ async function logout() {
 
 async function login(event) {
     event.preventDefault();
+    loginButton.disabled = true;
+    loginButton.setAttribute("aria-busy", "true");
+    loginButton.textContent = "Authenticating...";
     loginStatus.textContent = "Authenticating administrator...";
     loginStatus.className = "status pending";
 
@@ -350,6 +357,10 @@ async function login(event) {
     } catch (error) {
         loginStatus.textContent = error.message;
         loginStatus.className = "status error";
+    } finally {
+        loginButton.disabled = false;
+        loginButton.removeAttribute("aria-busy");
+        loginButton.textContent = "Enter control center";
     }
 }
 
@@ -545,6 +556,8 @@ async function saveConfirmationPolicy(event) {
     const routeId = workflowData.routeId || "";
     const batchId = workflowBatchId;
     savePolicyButton.disabled = true;
+    savePolicyButton.setAttribute("aria-busy", "true");
+    savePolicyButton.textContent = "Saving policies...";
     setPolicyStatus("Saving confirmation methods...", "pending");
     try {
         const response = await fetch("/api/confirmation-policy", {
@@ -578,6 +591,8 @@ async function saveConfirmationPolicy(event) {
     } catch (error) {
         setPolicyStatus(error.message, "error");
     } finally {
+        savePolicyButton.removeAttribute("aria-busy");
+        savePolicyButton.textContent = "Save Route Node Policies";
         if (session && workflowData?.routeId === routeId && workflowBatchId === batchId) {
             savePolicyButton.disabled = false;
         }
@@ -1636,6 +1651,68 @@ function syncWorkflowNodeAccountControl() {
     populateWorkflowNodeAccounts(workflowRoleForType(workflowNodeType.value));
 }
 
+function workflowConnectionOption(node) {
+    const option = document.createElement("option");
+    option.value = node.id;
+    option.textContent = `${node.label} · ${node.username || "Unassigned"}`;
+    return option;
+}
+
+function populateWorkflowConnectionControls() {
+    if (!workflowConnectFrom || !workflowConnectTo || !workflowConnectNodes) return;
+    const previousFrom = workflowConnectFrom.value;
+    const previousTo = workflowConnectTo.value;
+    const nodes = workflowData?.nodes || [];
+    const sources = nodes.filter((node) =>
+        node.role !== "supermarket" &&
+        !workflowData.edges.some((edge) => edge.from === node.id)
+    );
+    const targets = nodes.filter((node) =>
+        node.role !== "supplier" &&
+        !workflowData.edges.some((edge) => edge.to === node.id)
+    );
+
+    workflowConnectFrom.replaceChildren(...sources.map(workflowConnectionOption));
+    const preferredSource = sources.find((node) => node.id === previousFrom) ||
+        sources.find((node) => !workflowData.edges.some((edge) => edge.from === node.id)) ||
+        sources[0];
+    workflowConnectFrom.value = preferredSource?.id || "";
+
+    const availableTargets = targets.filter((node) =>
+        node.id !== workflowConnectFrom.value
+    );
+    workflowConnectTo.replaceChildren(...availableTargets.map(workflowConnectionOption));
+    const preferredTarget = availableTargets.find((node) => node.id === previousTo) ||
+        availableTargets.find((node) =>
+            !workflowData.edges.some((edge) => edge.to === node.id)
+        ) ||
+        availableTargets[0];
+    workflowConnectTo.value = preferredTarget?.id || "";
+
+    workflowConnectFrom.disabled = sources.length === 0;
+    workflowConnectTo.disabled = availableTargets.length === 0;
+    workflowConnectNodes.disabled =
+        !workflowConnectFrom.value || !workflowConnectTo.value;
+}
+
+function connectWorkflowNodes() {
+    if (!workflowData || !workflowConnectFrom || !workflowConnectTo) return;
+    const fromId = workflowConnectFrom.value;
+    const toId = workflowConnectTo.value;
+    const error = workflowConnectionError(fromId, toId);
+    if (error) {
+        setWorkflowRouteError(error);
+        return;
+    }
+
+    captureWorkflowHistory();
+    workflowData.edges.push({ from: fromId, to: toId });
+    workflowSelectedNodeId = toId;
+    workflowSelectedEdgeIndex = -1;
+    renderWorkflow(workflowData);
+    markWorkflowDraftChanged("Connection added. Synchronizing the route draft...");
+}
+
 function createWorkflowNodeElement(position) {
     const { node, x, y } = position;
     const element = document.createElement("article");
@@ -1815,7 +1892,7 @@ function renderWorkflow(workflow, options = {}) {
         remove.setAttribute("transform", `translate(${removePoint.x} ${removePoint.y})`);
         remove.dataset.edgeIndex = String(index);
         remove.append(
-            workflowSvgElement("circle", { cx: "0", cy: "0", r: "11" }),
+            workflowSvgElement("circle", { cx: "0", cy: "0", r: "14" }),
             workflowSvgElement("text", {
                 x: "0",
                 y: "0",
@@ -1867,12 +1944,13 @@ function renderWorkflow(workflow, options = {}) {
 
     const validation = workflowValidation(workflowData);
     syncWorkflowNodeAccountControl();
+    populateWorkflowConnectionControls();
     workflowRouteBadge.textContent = workflowData.routeId || "Route unavailable";
     workflowRouteBadge.className = "badge " + (validation.valid ? "verified" : "pending");
     workflowDeleteNode.disabled = !workflowSelectedNodeId;
     workflowDeleteEdge.disabled = workflowSelectedEdgeIndex < 0;
     workflowStatus.textContent = validation.valid
-        ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes or use the handles to edit the route.`
+        ? `${workflowData.nodes.length} route node(s), ${workflowData.edges.length} connection(s). Drag nodes or use the connection controls to edit the route.`
         : `Route error: ${validation.error}`;
     workflowStatus.className = "status " + (validation.valid ? "success" : "error");
     refreshChainPreview();
@@ -3100,6 +3178,12 @@ workflowResetRoute.addEventListener("click", () => {
 });
 workflowUndo.addEventListener("click", undoWorkflowEdit);
 workflowRedo.addEventListener("click", redoWorkflowEdit);
+if (workflowConnectFrom) {
+    workflowConnectFrom.addEventListener("change", populateWorkflowConnectionControls);
+}
+if (workflowConnectNodes) {
+    workflowConnectNodes.addEventListener("click", connectWorkflowNodes);
+}
 confirmationPolicyForm.addEventListener("submit", saveConfirmationPolicy);
 document.addEventListener("keydown", (event) => {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
