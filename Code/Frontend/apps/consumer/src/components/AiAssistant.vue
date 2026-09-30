@@ -29,6 +29,7 @@ onBeforeUnmount(() => document.body.classList.remove("assistant-open"));
     class="assistant-launcher"
     type="button"
     aria-haspopup="dialog"
+    :aria-expanded="assistant.open"
     @click="assistant.openAssistant"
   >
     <span class="assistant-launcher-mark" aria-hidden="true">AI</span>
@@ -43,6 +44,7 @@ onBeforeUnmount(() => document.body.classList.remove("assistant-open"));
     aria-modal="true"
     aria-labelledby="assistant-title"
     @click.self="assistant.closeAssistant"
+    @keydown.esc.prevent="assistant.closeAssistant"
   >
     <div class="assistant-dialog">
       <header class="assistant-header">

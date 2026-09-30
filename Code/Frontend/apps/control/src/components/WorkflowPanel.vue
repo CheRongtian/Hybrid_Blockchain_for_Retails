@@ -1,3 +1,9 @@
+<script setup>
+import WorkflowCanvas from "./WorkflowCanvas.vue";
+
+defineProps({ control: { type: Object, required: true } });
+</script>
+
 <template>
   <section id="workflow-panel" class="record-card workflow-card" aria-labelledby="workflow-title">
     <header>
@@ -6,40 +12,48 @@
         <h2 id="workflow-title">Supply Chain Route</h2>
         <p class="section-description">Assign participants, connect stages, and review the active route revision.</p>
       </div>
-      <span id="workflow-route-badge" class="badge pending">Loading route</span>
+      <span class="badge" :class="control.workflowValidation.valid ? 'verified' : 'pending'">
+        {{ control.state.workflow?.routeId || 'Loading route' }}
+      </span>
     </header>
 
     <div class="workflow-toolbar" aria-label="Route editing tools">
       <label>
         Route scope
-        <select id="workflow-batch-select">
+        <select :value="control.state.selectedScope" @change="control.selectScope($event.target.value)">
           <option value="">Default route</option>
+          <option v-for="scope in control.state.scopes" :key="scope.batchId" :value="scope.batchId">
+            {{ scope.batchId }} · {{ scope.product }}
+          </option>
         </select>
       </label>
       <label>
         Add route node
-        <select id="workflow-node-type">
+        <select :value="control.state.nodeType" @change="control.setNodeType($event.target.value)">
           <option value="transport">Transport</option>
           <option value="warehouse">Warehouse</option>
         </select>
       </label>
       <label>
         Assigned participant
-        <select id="workflow-node-account">
+        <select v-model="control.state.nodeAccount">
           <option value="">Select account</option>
+          <option v-for="account in control.nodeAccounts" :key="account.username" :value="account.username">
+            {{ account.username }} · {{ account.organizationId || account.role }}
+          </option>
         </select>
       </label>
-      <button id="workflow-add-node" type="button">Add node</button>
-      <button id="workflow-delete-node" class="workflow-secondary" type="button" disabled>
+      <button type="button" :disabled="!control.state.workflow || !control.state.nodeAccount" @click="control.addNode">Add node</button>
+      <button class="workflow-secondary danger-action" type="button" :disabled="!control.state.selectedNodeId" @click="control.deleteNode">
         Delete selected
       </button>
-      <button id="workflow-delete-edge" class="workflow-secondary" type="button" disabled>
+      <button class="workflow-secondary danger-action" type="button" :disabled="control.state.selectedEdgeIndex < 0" @click="control.deleteEdge()">
         Remove connection
       </button>
-      <button id="workflow-auto-layout" class="workflow-secondary" type="button">Auto arrange</button>
-      <button id="workflow-reset-route" class="workflow-secondary" type="button">Reload route</button>
-      <button id="workflow-undo" class="workflow-secondary" type="button" disabled>Undo</button>
-      <button id="workflow-redo" class="workflow-secondary" type="button" disabled>Redo</button>
+      <button class="workflow-secondary" type="button" @click="control.autoArrange">Auto arrange</button>
+      <button class="workflow-secondary" type="button" @click="control.reloadRoute">Reload route</button>
+      <button class="workflow-secondary" type="button" :disabled="control.state.history.past.length === 0" @click="control.undo">Undo</button>
+      <button class="workflow-secondary" type="button" :disabled="control.state.history.future.length === 0" @click="control.redo">Redo</button>
     </div>
 
     <div class="workflow-connect-panel" aria-labelledby="workflow-connect-title">
@@ -49,37 +63,26 @@
       </div>
       <label>
         From
-        <select id="workflow-connect-from" aria-label="Connection source node"></select>
+        <select v-model="control.state.connectFrom" aria-label="Connection source node">
+          <option v-for="node in control.connectionSources" :key="node.id" :value="node.id">{{ node.label }}</option>
+        </select>
       </label>
       <label>
         To
-        <select id="workflow-connect-to" aria-label="Connection target node"></select>
+        <select v-model="control.state.connectTo" aria-label="Connection target node">
+          <option v-for="node in control.connectionTargets" :key="node.id" :value="node.id">{{ node.label }}</option>
+        </select>
       </label>
-      <button id="workflow-connect-nodes" class="workflow-secondary" type="button">Connect nodes</button>
+      <button class="workflow-secondary" type="button" :disabled="!control.state.connectFrom || !control.state.connectTo" @click="control.connectNodes()">Connect nodes</button>
     </div>
 
     <p id="workflow-help" class="workflow-help">
-      Drag nodes or the background to navigate. Pinch to zoom. Use handles or the keyboard connection controls to connect stages.
+      Select or drag nodes to edit the route. Pinch to zoom. Use the handles or keyboard connection controls to connect stages.
     </p>
-    <div
-      id="workflow-canvas"
-      class="workflow-canvas"
-      role="application"
-      aria-label="Editable supply chain route"
-      aria-describedby="workflow-help"
-    >
-      <div id="workflow-scene" class="workflow-scene">
-        <svg id="workflow-edge-layer" class="workflow-edge-layer" aria-hidden="true"></svg>
-        <div id="workflow-node-layer" class="workflow-node-layer"></div>
-      </div>
-      <div class="workflow-canvas-controls" aria-label="Canvas controls">
-        <button id="workflow-zoom-out" type="button" aria-label="Zoom out">−</button>
-        <span id="workflow-zoom-level" class="workflow-zoom-level" aria-live="polite">100%</span>
-        <button id="workflow-fit-view" type="button">Fit route</button>
-        <button id="workflow-zoom-in" type="button" aria-label="Zoom in">+</button>
-      </div>
-      <p class="workflow-canvas-tip">Drag or two-finger scroll to pan · Pinch to zoom · Use × to remove connections</p>
-    </div>
-    <p id="workflow-status" class="status" role="status" aria-live="polite">Loading route...</p>
+    <WorkflowCanvas v-if="control.state.workflow" :control="control" />
+    <div v-else class="workflow-canvas workflow-empty">Loading route canvas…</div>
+    <p class="status" :class="control.state.workflowStatusKind" role="status" aria-live="polite">
+      {{ control.state.workflowStatus }}
+    </p>
   </section>
 </template>

@@ -1,7 +1,7 @@
 # Frontend workspace
 
 This workspace owns the Vue 3 administrator, participant, and customer
-interfaces plus shared design tokens and runtime mounting. The QR display and
+interfaces plus shared design tokens. The QR display and
 standalone Merkle visualizer remain small native HTML applications.
 
 ## Build
@@ -32,7 +32,7 @@ The development pages are `http://127.0.0.1:5173/Home.html`,
 `http://127.0.0.1:5174/Home.html`, and `http://127.0.0.1:5175/`. Vite proxies
 each app to its existing backend API.
 
-Vue owns the page composition, shared presentation, participant form state,
-consumer trace state, SSE updates, and assistant interaction. The control app
-also uses Vue for its complete page shell; its mature route-canvas controller
-is retained as a focused module behind the Vue components.
+Vue owns all three page shells, presentation, application state, API calls,
+SSE updates, route editing, participant submissions, trace results, and the
+assistant interaction. The administrator interface no longer loads the former
+static CSS or imperative DOM runtime.

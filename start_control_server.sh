@@ -85,7 +85,6 @@ STALE_FRONTEND_SOURCE="$({
     find \
         "$SCRIPT_DIR/Code/Frontend/apps/control" \
         "$SCRIPT_DIR/Code/Frontend/shared" \
-        "$SCRIPT_DIR/Code/PrivateChain/Server/control_static" \
         "$SCRIPT_DIR/Code/Frontend/package.json" \
         "$SCRIPT_DIR/Code/Frontend/vite.app.config.js" \
         "$SCRIPT_DIR/Code/Frontend/vite.control.config.js" \

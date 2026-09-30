@@ -1,80 +1,111 @@
+<script setup>
+defineProps({ control: { type: Object, required: true } });
+</script>
+
 <template>
-  <details id="snapshot-panel" class="record-card snapshot-card">
+  <details id="snapshot-panel" class="record-card snapshot-card" open>
     <summary class="snapshot-summary">
       <div>
         <p class="eyebrow">PUBLIC SNAPSHOT</p>
         <h2>Consumer Data Preview</h2>
         <p>Review public fields, availability, and evidence before publication.</p>
       </div>
-      <span id="snapshot-batch-count" class="badge pending">Loading batches</span>
+      <span class="badge" :class="control.state.snapshot.candidates.length ? 'verified' : 'pending'">
+        {{ control.state.snapshot.candidates.length }} eligible {{ control.state.snapshot.candidates.length === 1 ? 'batch' : 'batches' }}
+      </span>
     </summary>
     <div class="snapshot-content">
-      <form id="snapshot-preview-form" class="snapshot-form">
+      <form class="snapshot-form" @submit.prevent="control.generateSnapshotPreview">
         <label>
           Completed Batch
-          <select id="snapshot-batch-select" name="batchId"></select>
+          <select v-model="control.state.snapshot.selectedBatchId" name="batchId" :disabled="control.state.snapshot.operation || control.state.snapshot.candidates.length === 0">
+            <option v-for="batch in control.state.snapshot.candidates" :key="batch.batchId" :value="batch.batchId">
+              {{ batch.batchId }} · {{ batch.product }}
+            </option>
+          </select>
         </label>
         <div class="snapshot-refresh-setting">
           <div class="snapshot-refresh-heading">
             <strong>Public availability and refresh</strong>
-            <span id="snapshot-refresh-product">Select a completed batch</span>
+            <span>
+              {{ control.selectedBatch ? `${control.selectedBatch.product} · public availability` : 'Select a completed batch' }}
+            </span>
           </div>
           <label>
             Every
-            <input id="snapshot-refresh-value" type="number" min="1" step="1" value="1" disabled>
+            <input v-model.number="control.state.snapshot.refreshValue" type="number" min="1" step="1" :disabled="!control.selectedBatch || !control.state.snapshot.schedulesAvailable" @change="control.invalidateSnapshot">
           </label>
           <label>
             Unit
-            <select id="snapshot-refresh-unit" disabled>
+            <select v-model="control.state.snapshot.refreshUnit" :disabled="!control.selectedBatch || !control.state.snapshot.schedulesAvailable" @change="control.invalidateSnapshot">
               <option value="minutes">minutes</option>
-              <option value="hours" selected>hours</option>
+              <option value="hours">hours</option>
               <option value="days">days</option>
             </select>
           </label>
           <label>
             Available from
-            <input id="snapshot-available-from" type="datetime-local" step="60" disabled>
+            <input v-model="control.state.snapshot.availableFrom" type="datetime-local" step="60" :disabled="!control.selectedBatch || !control.state.snapshot.schedulesAvailable" @change="control.invalidateSnapshot">
           </label>
           <label>
             Available until
-            <input id="snapshot-available-until" type="datetime-local" step="60" disabled>
+            <input v-model="control.state.snapshot.availableUntil" type="datetime-local" step="60" :disabled="!control.selectedBatch || !control.state.snapshot.schedulesAvailable" @change="control.invalidateSnapshot">
           </label>
         </div>
         <p
-          id="snapshot-refresh-policy-status"
           class="status snapshot-refresh-policy-status"
+          :class="control.state.snapshot.scheduleStatusKind"
           role="status"
           aria-live="polite"
-        ></p>
+        >{{ control.state.snapshot.scheduleStatus }}</p>
         <fieldset class="snapshot-evidence-fieldset">
           <legend>Public Evidence</legend>
           <p>Only administrator-selected CIDs from the public evidence allowlist enter the preview.</p>
-          <div id="snapshot-evidence-list" class="snapshot-evidence-list"></div>
+          <div class="snapshot-evidence-list">
+            <label v-for="item in control.evidence" :key="`${item.stage}-${item.category}-${item.cid}`" class="snapshot-evidence-option">
+              <input
+                v-model="control.state.snapshot.selectedEvidence"
+                type="checkbox"
+                :value="`${item.stage}|${item.category}|${item.cid}`"
+                @change="control.invalidateSnapshot"
+              >
+              <span><strong>{{ item.label }} · {{ item.stage }}</strong><code>{{ item.cid }}</code></span>
+            </label>
+            <p v-if="control.evidence.length === 0" class="empty-copy">No approved public evidence is attached to this batch.</p>
+          </div>
         </fieldset>
         <div class="snapshot-actions">
-          <button id="generate-snapshot-button" type="submit">Generate Snapshot Preview</button>
-          <p id="snapshot-status" class="status" role="status" aria-live="polite"></p>
+          <button type="submit" :disabled="!control.selectedBatch || !control.state.snapshot.schedulesAvailable || Boolean(control.state.snapshot.operation)">
+            {{ control.state.snapshot.operation === 'preview' ? 'Generating preview…' : 'Generate Snapshot Preview' }}
+          </button>
+          <p class="status" :class="control.state.snapshot.statusKind" role="status" aria-live="polite">
+            {{ control.state.snapshot.status }}
+          </p>
         </div>
       </form>
 
-      <section id="snapshot-preview" class="snapshot-preview" hidden aria-label="Generated Snapshot preview">
+      <section v-if="control.state.snapshot.preview" class="snapshot-preview" aria-label="Generated Snapshot preview">
         <dl class="snapshot-metadata">
-          <div><dt>Snapshot ID</dt><dd id="snapshot-id"></dd></div>
-          <div><dt>Public Root</dt><dd id="snapshot-public-root"></dd></div>
-          <div><dt>Final Private Block Hash</dt><dd id="snapshot-private-hash"></dd></div>
-          <div><dt>Public Fields</dt><dd id="snapshot-field-count"></dd></div>
+          <div><dt>Snapshot ID</dt><dd>{{ control.state.snapshot.preview.snapshotId }}</dd></div>
+          <div><dt>Public Root</dt><dd>{{ control.state.snapshot.preview.publicRoot }}</dd></div>
+          <div><dt>Final Private Block Hash</dt><dd>{{ control.state.snapshot.preview.finalPrivateBlockHash }}</dd></div>
+          <div><dt>Public Fields</dt><dd>{{ control.state.snapshot.preview.publicFieldCount }} fields · {{ control.state.snapshot.preview.selectedEvidenceCount }} evidence CID(s)</dd></div>
         </dl>
         <details class="snapshot-manifest" open>
           <summary>Public Manifest</summary>
-          <pre id="snapshot-manifest-json"></pre>
+          <pre>{{ JSON.stringify(control.state.snapshot.preview.manifest, null, 2) }}</pre>
         </details>
         <details class="snapshot-exclusions">
           <summary>Excluded Private Data</summary>
-          <ul id="snapshot-excluded-fields"></ul>
+          <ul><li v-for="field in control.state.snapshot.preview.excludedFields || []" :key="field">{{ field }}</li></ul>
         </details>
         <div class="snapshot-publish-actions">
-          <button id="publish-snapshot-button" class="button-accent" type="button">Publish to Local Public Chain</button>
-          <p id="snapshot-publish-status" class="status" role="status" aria-live="polite"></p>
+          <button class="button-accent" type="button" :disabled="!control.state.snapshot.publicationCandidate || Boolean(control.state.snapshot.operation)" @click="control.publishSnapshot">
+            {{ control.state.snapshot.operation === 'publish' ? 'Publishing…' : control.state.snapshot.published ? 'Published' : 'Publish to Local Public Chain' }}
+          </button>
+          <p class="status" :class="control.state.snapshot.publishStatusKind" role="status" aria-live="polite">
+            {{ control.state.snapshot.publishStatus }}
+          </p>
         </div>
       </section>
     </div>
